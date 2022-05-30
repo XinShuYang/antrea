@@ -104,13 +104,17 @@ type AgentConfig struct {
 	// WireGuard related configurations.
 	WireGuard WireGuardConfig `yaml:"wireGuard"`
 	// Enable bridging mode of Pod network on Nodes, in which the Node's transport interface is connected
-	// to the OVS bridge, and cross-Node/VLAN traffic from AntreaIPAM Pods (Pods whose IP addresses are
-	// allocated by AntreaIPAM from IPPools) is sent to the underlay network via the uplink, and
-	// forwarded/routed by the underlay network.
+	// to the OVS bridge, and cross-Node/VLAN traffic of AntreaIPAM Pods (Pods whose IP addresses are
+	// allocated by AntreaIPAM from IPPools) is sent to the underlay network, and forwarded/routed by the
+	// underlay network.
 	// This option requires the `AntreaIPAM` feature gate to be enabled. At this moment, it supports only
 	// IPv4 and Linux Nodes, and can be enabled only when `ovsDatapathType` is `system`,
 	// `trafficEncapMode` is `noEncap`, and `noSNAT` is true.
 	EnableBridgingMode bool `yaml:"enableBridgingMode,omitempty"`
+	// Disable TX checksum offloading for container network interfaces. It's supposed to be set to true when the
+	// datapath doesn't support TX checksum offloading, which causes packets to be dropped due to bad checksum.
+	// It affects Pods running on Linux Nodes only.
+	DisableTXChecksumOffload bool `yaml:"disableTXChecksumOffload,omitempty"`
 	// APIPort is the port for the antrea-agent APIServer to serve on.
 	// Defaults to 10350.
 	APIPort int `yaml:"apiPort,omitempty"`
@@ -182,9 +186,8 @@ type AgentConfig struct {
 	// 2. TransportInterfaceCIDRs
 	// 3. The Node IP
 	TransportInterfaceCIDRs []string `yaml:"transportInterfaceCIDRs,omitempty"`
-	// The names of the interfaces on Nodes that are used to forward multicast traffic.
-	// Defaults to transport interface if not set.
-	MulticastInterfaces []string `yaml:"multicastInterfaces,omitempty"`
+	// Multicast configuration options.
+	Multicast MulticastConfig `yaml:"multicast,omitempty"`
 	// AntreaProxy contains AntreaProxy related configuration options.
 	AntreaProxy AntreaProxyConfig `yaml:"antreaProxy,omitempty"`
 	// Egress related configurations.
@@ -229,6 +232,15 @@ type NodePortLocalConfig struct {
 	// pod.spec.containers[].ports), and all Node traffic directed to that port will be
 	// forwarded to the Pod.
 	PortRange string `yaml:"portRange,omitempty"`
+}
+
+type MulticastConfig struct {
+	// The names of the interfaces on Nodes that are used to forward multicast traffic.
+	// Defaults to transport interface if not set.
+	MulticastInterfaces []string `yaml:"multicastInterfaces,omitempty"`
+	// The interval for antrea-agent to send IGMP queries to Pods.
+	// Defaults to 125 seconds.
+	IGMPQueryInterval string `yaml:"igmpQueryInterval"`
 }
 
 type EgressConfig struct {

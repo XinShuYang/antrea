@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"time"
@@ -64,7 +65,6 @@ import (
 	"antrea.io/antrea/pkg/util/channel"
 	"antrea.io/antrea/pkg/util/cipher"
 	"antrea.io/antrea/pkg/util/k8s"
-	"antrea.io/antrea/pkg/util/runtime"
 	"antrea.io/antrea/pkg/version"
 )
 
@@ -83,9 +83,6 @@ var excludeNodePortDevices = []string{"antrea-egress0", "antrea-ingress0", "kube
 // run starts Antrea agent with the given options and waits for termination signal.
 func run(o *Options) error {
 	klog.Infof("Starting Antrea agent (version %s)", version.GetFullVersion())
-
-	// Windows platform doesn't support Egress feature yet.
-	egressEnabled := features.DefaultFeatureGate.Enabled(features.Egress) && !runtime.IsWindowsPlatform()
 
 	// Create K8s Clientset, CRD Clientset and SharedInformerFactory for the given config.
 	k8sClient, _, crdClient, _, err := k8s.CreateClients(o.config.ClientConnection, o.config.KubeAPIServerOverride)
@@ -119,25 +116,28 @@ func run(o *Options) error {
 	}
 	defer ovsdbConnection.Close()
 
-	enableBridgingMode := features.DefaultFeatureGate.Enabled(features.AntreaIPAM) && o.config.EnableBridgingMode
+	egressEnabled := features.DefaultFeatureGate.Enabled(features.Egress)
+	enableAntreaIPAM := features.DefaultFeatureGate.Enabled(features.AntreaIPAM)
+	enableBridgingMode := enableAntreaIPAM && o.config.EnableBridgingMode
 	// Bridging mode will connect the uplink interface to the OVS bridge.
 	connectUplinkToBridge := enableBridgingMode
 
 	ovsDatapathType := ovsconfig.OVSDatapathType(o.config.OVSDatapathType)
 	ovsBridgeClient := ovsconfig.NewOVSBridge(o.config.OVSBridge, ovsDatapathType, ovsdbConnection)
 	ovsBridgeMgmtAddr := ofconfig.GetMgmtAddress(o.config.OVSRunDir, o.config.OVSBridge)
-	ofClient := openflow.NewClient(o.config.OVSBridge, ovsBridgeMgmtAddr, ovsDatapathType,
+	ofClient := openflow.NewClient(o.config.OVSBridge, ovsBridgeMgmtAddr,
 		features.DefaultFeatureGate.Enabled(features.AntreaProxy),
 		features.DefaultFeatureGate.Enabled(features.AntreaPolicy),
 		egressEnabled,
 		features.DefaultFeatureGate.Enabled(features.FlowExporter),
 		o.config.AntreaProxy.ProxyAll,
 		connectUplinkToBridge,
-		features.DefaultFeatureGate.Enabled(features.Multicast))
+		features.DefaultFeatureGate.Enabled(features.Multicast),
+		features.DefaultFeatureGate.Enabled(features.TrafficControl),
+	)
 
 	_, serviceCIDRNet, _ := net.ParseCIDR(o.config.ServiceCIDR)
 	var serviceCIDRNetv6 *net.IPNet
-	// Todo: use FeatureGate to check if IPv6 is enabled and then read configuration item "ServiceCIDRv6".
 	if o.config.ServiceCIDRv6 != "" {
 		_, serviceCIDRNetv6, _ = net.ParseCIDR(o.config.ServiceCIDRv6)
 	}
@@ -182,6 +182,11 @@ func run(o *Options) error {
 	// cause the stopCh channel to be closed; if another signal is received before the program
 	// exits, we will force exit.
 	stopCh := signals.RegisterSignalHandlers()
+	// Generate a context for functions which require one (instead of stopCh).
+	// We cancel the context when the function returns, which in the normal case will be when
+	// stopCh is closed.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Get all available NodePort addresses.
 	var nodePortAddressesIPv4, nodePortAddressesIPv6 []net.IP
@@ -190,6 +195,12 @@ func run(o *Options) error {
 		if err != nil {
 			return fmt.Errorf("getting available NodePort IP addresses failed: %v", err)
 		}
+	}
+	serviceConfig := &config.ServiceConfig{
+		ServiceCIDR:           serviceCIDRNet,
+		ServiceCIDRv6:         serviceCIDRNetv6,
+		NodePortAddressesIPv4: nodePortAddressesIPv4,
+		NodePortAddressesIPv6: nodePortAddressesIPv6,
 	}
 
 	// Initialize agent and node network.
@@ -202,17 +213,14 @@ func run(o *Options) error {
 		o.config.OVSBridge,
 		o.config.HostGateway,
 		o.config.DefaultMTU,
-		serviceCIDRNet,
-		serviceCIDRNetv6,
 		networkConfig,
 		wireguardConfig,
 		egressConfig,
+		serviceConfig,
 		networkReadyCh,
 		stopCh,
 		features.DefaultFeatureGate.Enabled(features.AntreaProxy),
 		o.config.AntreaProxy.ProxyAll,
-		nodePortAddressesIPv4,
-		nodePortAddressesIPv6,
 		connectUplinkToBridge)
 	err = agentInitializer.Initialize()
 	if err != nil {
@@ -362,9 +370,11 @@ func run(o *Options) error {
 		o.config.HostProcPathPrefix,
 		nodeConfig,
 		k8sClient,
-		isChaining,
-		enableBridgingMode, // activate AntreaIPAM in CNIServer when bridging mode is enabled
 		routeClient,
+		isChaining,
+		enableBridgingMode,
+		enableAntreaIPAM,
+		o.config.DisableTXChecksumOffload,
 		networkReadyCh)
 
 	var cniPodInfoStore cnipodcache.CNIPodInfoStore
@@ -472,7 +482,7 @@ func run(o *Options) error {
 
 	go cniServer.Run(stopCh)
 
-	go antreaClientProvider.Run(stopCh)
+	go antreaClientProvider.Run(ctx)
 
 	go nodeRouteController.Run(stopCh)
 
@@ -493,15 +503,11 @@ func run(o *Options) error {
 		go nplController.Run(stopCh)
 	}
 
-	// Now Antrea IPAM is used only by bridging mode, so we initialize AntreaIPAMController only
-	// when the bridging mode is enabled.
-	if enableBridgingMode {
+	// Antrea IPAM is needed by bridging mode and secondary network IPAM.
+	if enableAntreaIPAM {
 		ipamController, err := ipam.InitializeAntreaIPAMController(
-			k8sClient,
-			crdClient,
-			informerFactory,
-			localPodInformer,
-			crdInformerFactory)
+			crdClient, informerFactory, crdInformerFactory,
+			localPodInformer, enableBridgingMode)
 		if err != nil {
 			return fmt.Errorf("failed to start Antrea IPAM agent: %v", err)
 		}
@@ -579,11 +585,14 @@ func run(o *Options) error {
 		}
 		mcastController := multicast.NewMulticastController(
 			ofClient,
+			v4GroupIDAllocator,
 			nodeConfig,
 			ifaceStore,
 			multicastSocket,
-			sets.NewString(append(o.config.MulticastInterfaces, nodeConfig.NodeTransportInterfaceName)...),
-			ovsBridgeClient)
+			sets.NewString(append(o.config.Multicast.MulticastInterfaces, nodeConfig.NodeTransportInterfaceName)...),
+			ovsBridgeClient,
+			podUpdateChannel,
+			o.igmpQueryInterval)
 		if err := mcastController.Initialize(); err != nil {
 			return err
 		}
@@ -612,6 +621,7 @@ func run(o *Options) error {
 	apiServer, err := apiserver.New(
 		agentQuerier,
 		networkPolicyController,
+		externalIPController,
 		o.config.APIPort,
 		*o.config.EnablePrometheusMetrics,
 		o.config.ClientConnection.Kubeconfig,
@@ -624,17 +634,8 @@ func run(o *Options) error {
 	}
 	go apiServer.Run(stopCh)
 
-	// Start PacketIn for features and specify their own reason.
-	var packetInReasons []uint8
-	if features.DefaultFeatureGate.Enabled(features.Traceflow) {
-		packetInReasons = append(packetInReasons, uint8(openflow.PacketInReasonTF))
-	}
-	if features.DefaultFeatureGate.Enabled(features.AntreaPolicy) {
-		packetInReasons = append(packetInReasons, uint8(openflow.PacketInReasonNP))
-	}
-	if len(packetInReasons) > 0 {
-		go ofClient.StartPacketInHandler(packetInReasons, stopCh)
-	}
+	// Start PacketIn
+	go ofClient.StartPacketInHandler(stopCh)
 
 	// Start the goroutine to periodically export IPFIX flow records.
 	if features.DefaultFeatureGate.Enabled(features.FlowExporter) {

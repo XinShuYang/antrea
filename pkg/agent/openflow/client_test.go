@@ -56,6 +56,8 @@ var (
 		NodeIPv4Addr:    nodeIP,
 	}
 	networkConfig = &config.NetworkConfig{IPv4Enabled: true}
+	egressConfig  = &config.EgressConfig{}
+	serviceConfig = &config.ServiceConfig{}
 )
 
 func installNodeFlows(ofClient Client, cacheKey string) (int, error) {
@@ -105,12 +107,14 @@ func TestIdempotentFlowInstallation(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			m := oftest.NewMockOFEntryOperations(ctrl)
-			ofClient := NewClient(bridgeName, bridgeMgmtAddr, ovsconfig.OVSDatapathSystem, true, false, false, false, false, false, false)
+			ofClient := NewClient(bridgeName, bridgeMgmtAddr, true, false, false, false, false, false, false, false)
 			client := ofClient.(*client)
 			client.cookieAllocator = cookie.NewAllocator(0)
 			client.ofEntryOperations = m
 			client.nodeConfig = nodeConfig
 			client.networkConfig = networkConfig
+			client.egressConfig = egressConfig
+			client.serviceConfig = serviceConfig
 			client.ipProtocols = []binding.Protocol{binding.ProtocolIP}
 			client.generatePipelines()
 
@@ -136,12 +140,14 @@ func TestIdempotentFlowInstallation(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			m := oftest.NewMockOFEntryOperations(ctrl)
-			ofClient := NewClient(bridgeName, bridgeMgmtAddr, ovsconfig.OVSDatapathSystem, true, false, false, false, false, false, false)
+			ofClient := NewClient(bridgeName, bridgeMgmtAddr, true, false, false, false, false, false, false, false)
 			client := ofClient.(*client)
 			client.cookieAllocator = cookie.NewAllocator(0)
 			client.ofEntryOperations = m
 			client.nodeConfig = nodeConfig
 			client.networkConfig = networkConfig
+			client.egressConfig = egressConfig
+			client.serviceConfig = serviceConfig
 			client.ipProtocols = []binding.Protocol{binding.ProtocolIP}
 			client.generatePipelines()
 
@@ -180,12 +186,14 @@ func TestFlowInstallationFailed(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			m := oftest.NewMockOFEntryOperations(ctrl)
-			ofClient := NewClient(bridgeName, bridgeMgmtAddr, ovsconfig.OVSDatapathSystem, true, false, false, false, false, false, false)
+			ofClient := NewClient(bridgeName, bridgeMgmtAddr, true, false, false, false, false, false, false, false)
 			client := ofClient.(*client)
 			client.cookieAllocator = cookie.NewAllocator(0)
 			client.ofEntryOperations = m
 			client.nodeConfig = nodeConfig
 			client.networkConfig = networkConfig
+			client.egressConfig = egressConfig
+			client.serviceConfig = serviceConfig
 			client.ipProtocols = []binding.Protocol{binding.ProtocolIP}
 			client.generatePipelines()
 
@@ -217,12 +225,14 @@ func TestConcurrentFlowInstallation(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			m := oftest.NewMockOFEntryOperations(ctrl)
-			ofClient := NewClient(bridgeName, bridgeMgmtAddr, ovsconfig.OVSDatapathSystem, true, false, false, false, false, false, false)
+			ofClient := NewClient(bridgeName, bridgeMgmtAddr, true, false, false, false, false, false, false, false)
 			client := ofClient.(*client)
 			client.cookieAllocator = cookie.NewAllocator(0)
 			client.ofEntryOperations = m
 			client.nodeConfig = nodeConfig
 			client.networkConfig = networkConfig
+			client.egressConfig = egressConfig
+			client.serviceConfig = serviceConfig
 			client.ipProtocols = []binding.Protocol{binding.ProtocolIP}
 			client.generatePipelines()
 
@@ -357,6 +367,7 @@ func Test_client_SendTraceflowPacket(t *testing.T) {
 			name: "IPv6 ICMPv6",
 			args: args{
 				Packet: binding.Packet{
+					IsIPv6:         true,
 					SourceMAC:      srcMAC,
 					DestinationMAC: dstMAC,
 					SourceIP:       net.ParseIP("1111::4444"),
@@ -371,6 +382,7 @@ func Test_client_SendTraceflowPacket(t *testing.T) {
 			name: "IPv6 TCP",
 			args: args{
 				Packet: binding.Packet{
+					IsIPv6:         true,
 					SourceMAC:      srcMAC,
 					DestinationMAC: dstMAC,
 					SourceIP:       net.ParseIP("1111::4444"),
@@ -384,6 +396,7 @@ func Test_client_SendTraceflowPacket(t *testing.T) {
 			name: "IPv6 UDP",
 			args: args{
 				Packet: binding.Packet{
+					IsIPv6:         true,
 					SourceMAC:      srcMAC,
 					DestinationMAC: dstMAC,
 					SourceIP:       net.ParseIP("1111::4444"),
@@ -407,7 +420,7 @@ func Test_client_SendTraceflowPacket(t *testing.T) {
 }
 
 func prepareTraceflowFlow(ctrl *gomock.Controller) *client {
-	ofClient := NewClient(bridgeName, bridgeMgmtAddr, ovsconfig.OVSDatapathSystem, true, true, false, false, false, false, false)
+	ofClient := NewClient(bridgeName, bridgeMgmtAddr, true, true, false, false, false, false, false, false)
 	c := ofClient.(*client)
 	c.cookieAllocator = cookie.NewAllocator(0)
 	c.nodeConfig = nodeConfig
@@ -415,6 +428,8 @@ func prepareTraceflowFlow(ctrl *gomock.Controller) *client {
 	c.ofEntryOperations = m
 	c.nodeConfig = nodeConfig
 	c.networkConfig = networkConfig
+	c.egressConfig = egressConfig
+	c.serviceConfig = serviceConfig
 	c.ipProtocols = []binding.Protocol{binding.ProtocolIP}
 	c.generatePipelines()
 
@@ -431,7 +446,7 @@ func prepareTraceflowFlow(ctrl *gomock.Controller) *client {
 }
 
 func prepareSendTraceflowPacket(ctrl *gomock.Controller, success bool) *client {
-	ofClient := NewClient(bridgeName, bridgeMgmtAddr, ovsconfig.OVSDatapathSystem, true, true, false, false, false, false, false)
+	ofClient := NewClient(bridgeName, bridgeMgmtAddr, true, true, false, false, false, false, false, false)
 	c := ofClient.(*client)
 	c.nodeConfig = nodeConfig
 	m := ovsoftest.NewMockBridge(ctrl)
@@ -519,7 +534,7 @@ func Test_client_setBasePacketOutBuilder(t *testing.T) {
 }
 
 func prepareSetBasePacketOutBuilder(ctrl *gomock.Controller, success bool) *client {
-	ofClient := NewClient(bridgeName, bridgeMgmtAddr, ovsconfig.OVSDatapathSystem, true, true, false, false, false, false, false)
+	ofClient := NewClient(bridgeName, bridgeMgmtAddr, true, true, false, false, false, false, false, false)
 	c := ofClient.(*client)
 	m := ovsoftest.NewMockBridge(ctrl)
 	c.bridge = m

@@ -134,6 +134,20 @@ func (mr *MockBridgeMockRecorder) CreateGroup(arg0 interface{}) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateGroup", reflect.TypeOf((*MockBridge)(nil).CreateGroup), arg0)
 }
 
+// CreateGroupTypeAll mocks base method
+func (m *MockBridge) CreateGroupTypeAll(arg0 openflow.GroupIDType) openflow.Group {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateGroupTypeAll", arg0)
+	ret0, _ := ret[0].(openflow.Group)
+	return ret0
+}
+
+// CreateGroupTypeAll indicates an expected call of CreateGroupTypeAll
+func (mr *MockBridgeMockRecorder) CreateGroupTypeAll(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateGroupTypeAll", reflect.TypeOf((*MockBridge)(nil).CreateGroupTypeAll), arg0)
+}
+
 // CreateMeter mocks base method
 func (m *MockBridge) CreateMeter(arg0 openflow.MeterIDType, arg1 ofctrl.MeterFlag) openflow.Meter {
 	m.ctrl.T.Helper()
@@ -844,17 +858,21 @@ func (mr *MockActionMockRecorder) LoadRange(arg0, arg1, arg2 interface{}) *gomoc
 }
 
 // LoadRegMark mocks base method
-func (m *MockAction) LoadRegMark(arg0 *openflow.RegMark) openflow.FlowBuilder {
+func (m *MockAction) LoadRegMark(arg0 ...*openflow.RegMark) openflow.FlowBuilder {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "LoadRegMark", arg0)
+	varargs := []interface{}{}
+	for _, a := range arg0 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "LoadRegMark", varargs...)
 	ret0, _ := ret[0].(openflow.FlowBuilder)
 	return ret0
 }
 
 // LoadRegMark indicates an expected call of LoadRegMark
-func (mr *MockActionMockRecorder) LoadRegMark(arg0 interface{}) *gomock.Call {
+func (mr *MockActionMockRecorder) LoadRegMark(arg0 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadRegMark", reflect.TypeOf((*MockAction)(nil).LoadRegMark), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadRegMark", reflect.TypeOf((*MockAction)(nil).LoadRegMark), arg0...)
 }
 
 // LoadToRegField mocks base method
@@ -1277,17 +1295,21 @@ func (mr *MockCTActionMockRecorder) DNAT(arg0, arg1 interface{}) *gomock.Call {
 }
 
 // LoadToCtMark mocks base method
-func (m *MockCTAction) LoadToCtMark(arg0 *openflow.CtMark) openflow.CTAction {
+func (m *MockCTAction) LoadToCtMark(arg0 ...*openflow.CtMark) openflow.CTAction {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "LoadToCtMark", arg0)
+	varargs := []interface{}{}
+	for _, a := range arg0 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "LoadToCtMark", varargs...)
 	ret0, _ := ret[0].(openflow.CTAction)
 	return ret0
 }
 
 // LoadToCtMark indicates an expected call of LoadToCtMark
-func (mr *MockCTActionMockRecorder) LoadToCtMark(arg0 interface{}) *gomock.Call {
+func (mr *MockCTActionMockRecorder) LoadToCtMark(arg0 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadToCtMark", reflect.TypeOf((*MockCTAction)(nil).LoadToCtMark), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadToCtMark", reflect.TypeOf((*MockCTAction)(nil).LoadToCtMark), arg0...)
 }
 
 // LoadToLabelField mocks base method
@@ -1566,17 +1588,21 @@ func (mr *MockFlowBuilderMockRecorder) MatchCTLabelField(arg0, arg1, arg2 interf
 }
 
 // MatchCTMark mocks base method
-func (m *MockFlowBuilder) MatchCTMark(arg0 *openflow.CtMark) openflow.FlowBuilder {
+func (m *MockFlowBuilder) MatchCTMark(arg0 ...*openflow.CtMark) openflow.FlowBuilder {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MatchCTMark", arg0)
+	varargs := []interface{}{}
+	for _, a := range arg0 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "MatchCTMark", varargs...)
 	ret0, _ := ret[0].(openflow.FlowBuilder)
 	return ret0
 }
 
 // MatchCTMark indicates an expected call of MatchCTMark
-func (mr *MockFlowBuilderMockRecorder) MatchCTMark(arg0 interface{}) *gomock.Call {
+func (mr *MockFlowBuilderMockRecorder) MatchCTMark(arg0 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MatchCTMark", reflect.TypeOf((*MockFlowBuilder)(nil).MatchCTMark), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MatchCTMark", reflect.TypeOf((*MockFlowBuilder)(nil).MatchCTMark), arg0...)
 }
 
 // MatchCTProtocol mocks base method
@@ -1817,6 +1843,34 @@ func (mr *MockFlowBuilderMockRecorder) MatchDstPort(arg0, arg1 interface{}) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MatchDstPort", reflect.TypeOf((*MockFlowBuilder)(nil).MatchDstPort), arg0, arg1)
 }
 
+// MatchICMPCode mocks base method
+func (m *MockFlowBuilder) MatchICMPCode(arg0 byte) openflow.FlowBuilder {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MatchICMPCode", arg0)
+	ret0, _ := ret[0].(openflow.FlowBuilder)
+	return ret0
+}
+
+// MatchICMPCode indicates an expected call of MatchICMPCode
+func (mr *MockFlowBuilderMockRecorder) MatchICMPCode(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MatchICMPCode", reflect.TypeOf((*MockFlowBuilder)(nil).MatchICMPCode), arg0)
+}
+
+// MatchICMPType mocks base method
+func (m *MockFlowBuilder) MatchICMPType(arg0 byte) openflow.FlowBuilder {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MatchICMPType", arg0)
+	ret0, _ := ret[0].(openflow.FlowBuilder)
+	return ret0
+}
+
+// MatchICMPType indicates an expected call of MatchICMPType
+func (mr *MockFlowBuilderMockRecorder) MatchICMPType(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MatchICMPType", reflect.TypeOf((*MockFlowBuilder)(nil).MatchICMPType), arg0)
+}
+
 // MatchICMPv6Code mocks base method
 func (m *MockFlowBuilder) MatchICMPv6Code(arg0 byte) openflow.FlowBuilder {
 	m.ctrl.T.Helper()
@@ -1944,17 +1998,21 @@ func (mr *MockFlowBuilderMockRecorder) MatchRegFieldWithValue(arg0, arg1 interfa
 }
 
 // MatchRegMark mocks base method
-func (m *MockFlowBuilder) MatchRegMark(arg0 *openflow.RegMark) openflow.FlowBuilder {
+func (m *MockFlowBuilder) MatchRegMark(arg0 ...*openflow.RegMark) openflow.FlowBuilder {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MatchRegMark", arg0)
+	varargs := []interface{}{}
+	for _, a := range arg0 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "MatchRegMark", varargs...)
 	ret0, _ := ret[0].(openflow.FlowBuilder)
 	return ret0
 }
 
 // MatchRegMark indicates an expected call of MatchRegMark
-func (mr *MockFlowBuilderMockRecorder) MatchRegMark(arg0 interface{}) *gomock.Call {
+func (mr *MockFlowBuilderMockRecorder) MatchRegMark(arg0 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MatchRegMark", reflect.TypeOf((*MockFlowBuilder)(nil).MatchRegMark), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MatchRegMark", reflect.TypeOf((*MockFlowBuilder)(nil).MatchRegMark), arg0...)
 }
 
 // MatchSrcIP mocks base method

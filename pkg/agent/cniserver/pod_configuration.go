@@ -27,10 +27,12 @@ import (
 	"k8s.io/klog/v2"
 
 	"antrea.io/antrea/pkg/agent/cniserver/ipam"
+	"antrea.io/antrea/pkg/agent/cniserver/types"
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/route"
 	"antrea.io/antrea/pkg/agent/secondarynetwork/cnipodcache"
+	agenttypes "antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/agent/util"
 	"antrea.io/antrea/pkg/ovs/ovsconfig"
 	"antrea.io/antrea/pkg/util/channel"
@@ -80,8 +82,9 @@ func newPodConfigurator(
 	isOvsHardwareOffloadEnabled bool,
 	podUpdateNotifier channel.Notifier,
 	podInfoStore cnipodcache.CNIPodInfoStore,
+	disableTXChecksumOffload bool,
 ) (*podConfigurator, error) {
-	ifConfigurator, err := newInterfaceConfigurator(ovsDatapathType, isOvsHardwareOffloadEnabled)
+	ifConfigurator, err := newInterfaceConfigurator(ovsDatapathType, isOvsHardwareOffloadEnabled, disableTXChecksumOffload)
 	if err != nil {
 		return nil, err
 	}
@@ -311,6 +314,7 @@ func (pc *podConfigurator) removeInterfaces(containerID string) error {
 	if err := pc.routeClient.DeleteLocalAntreaFlexibleIPAMPodRule(containerConfig.IPs); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -394,7 +398,7 @@ func (pc *podConfigurator) validateOVSInterfaceConfig(containerID string, contai
 	return fmt.Errorf("container %s interface not found from local cache", containerID)
 }
 
-func parsePrevResult(conf *NetworkConfig) error {
+func parsePrevResult(conf *types.NetworkConfig) error {
 	if conf.RawPrevResult == nil {
 		return nil
 	}
@@ -494,7 +498,13 @@ func (pc *podConfigurator) connectInterfaceToOVSCommon(ovsPortName string, conta
 	// Add containerConfig into local cache
 	pc.ifaceStore.AddInterface(containerConfig)
 	// Notify the Pod update event to required components.
-	pc.podUpdateNotifier.Notify(k8s.NamespacedName(containerConfig.PodNamespace, containerConfig.PodName))
+	event := agenttypes.PodUpdate{
+		PodName:      containerConfig.PodName,
+		PodNamespace: containerConfig.PodNamespace,
+		IsAdd:        true,
+		ContainerID:  containerConfig.ContainerID,
+	}
+	pc.podUpdateNotifier.Notify(event)
 	return nil
 }
 
@@ -517,6 +527,13 @@ func (pc *podConfigurator) disconnectInterfaceFromOVS(containerConfig *interface
 	}
 	// Remove container configuration from cache.
 	pc.ifaceStore.DeleteInterface(containerConfig)
+	event := agenttypes.PodUpdate{
+		PodName:      containerConfig.PodName,
+		PodNamespace: containerConfig.PodNamespace,
+		IsAdd:        false,
+		ContainerID:  containerConfig.ContainerID,
+	}
+	pc.podUpdateNotifier.Notify(event)
 	klog.Infof("Removed interfaces for container %s", containerID)
 	return nil
 }

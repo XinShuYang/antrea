@@ -20,9 +20,9 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	v1 "k8s.io/api/core/v1"
 
 	antreae2e "antrea.io/antrea/test/e2e"
+	"antrea.io/antrea/test/e2e/utils"
 )
 
 const (
@@ -33,10 +33,11 @@ const (
 )
 
 var (
-	allPodsPerCluster                      []antreae2e.Pod
-	perNamespacePods, perClusterNamespaces []string
-	podsByNamespace                        map[string][]antreae2e.Pod
-	clusterK8sUtilsMap                     map[string]*antreae2e.KubernetesUtils
+	allPodsPerCluster    []antreae2e.Pod
+	perNamespacePods     []string
+	perClusterNamespaces map[string]string
+	podsByNamespace      map[string][]antreae2e.Pod
+	clusterK8sUtilsMap   map[string]*antreae2e.KubernetesUtils
 )
 
 func failOnError(err error, t *testing.T) {
@@ -52,7 +53,10 @@ func failOnError(err error, t *testing.T) {
 // initializeForPolicyTest creates three Pods in three test Namespaces for each test cluster.
 func initializeForPolicyTest(t *testing.T, data *MCTestData) {
 	perNamespacePods = []string{"a", "b", "c"}
-	perClusterNamespaces = []string{"x", "y", "z"}
+	perClusterNamespaces = make(map[string]string)
+	perClusterNamespaces["x"] = "x"
+	perClusterNamespaces["y"] = "y"
+	perClusterNamespaces["z"] = "z"
 
 	allPodsPerCluster = []antreae2e.Pod{}
 	podsByNamespace = make(map[string][]antreae2e.Pod)
@@ -91,6 +95,8 @@ func (data *MCTestData) testAntreaPolicyCopySpanNSIsolation(t *testing.T) {
 	setup := func() {
 		err := data.deployACNPResourceExport(acnpIsolationResourceExport)
 		failOnError(err, t)
+		// Sleep 5s to wait resource export/import process to finish resource exchange.
+		time.Sleep(5 * time.Second)
 	}
 	teardown := func() {
 		err := data.deleteACNPResourceExport(acnpIsolationResourceExport)
@@ -102,7 +108,7 @@ func (data *MCTestData) testAntreaPolicyCopySpanNSIsolation(t *testing.T) {
 		Name:         "Port 80",
 		Reachability: reachability,
 		Ports:        []int32{80},
-		Protocol:     v1.ProtocolTCP,
+		Protocol:     utils.ProtocolTCP,
 	}
 	testCaseList := []*antreae2e.TestCase{
 		{
@@ -132,7 +138,7 @@ func executeTestsOnAllMemberClusters(t *testing.T, testList []*antreae2e.TestCas
 					}
 					start := time.Now()
 					k8sUtils.Validate(allPodsPerCluster, reachability, step.Ports, step.Protocol)
-					step.Duration = time.Now().Sub(start)
+					step.Duration = time.Since(start)
 					_, wrong, _ := step.Reachability.Summary()
 					if wrong != 0 {
 						t.Errorf("Failure in cluster %s -- %d wrong results", clusterName, wrong)
@@ -146,22 +152,18 @@ func executeTestsOnAllMemberClusters(t *testing.T, testList []*antreae2e.TestCas
 }
 
 func (data *MCTestData) deployACNPResourceExport(reFileName string) error {
-	var rc int
-	var err error
 	log.Infof("Creating ResourceExport %s in the leader cluster", reFileName)
-	rc, _, _, err = provider.RunCommandOnNode(leaderCluster, fmt.Sprintf("kubectl apply -f %s", reFileName))
-	if err != nil || rc != 0 {
-		return fmt.Errorf("error when deploying the ACNP ResourceExport in leader cluster: %v", err)
+	rc, _, stderr, err := provider.RunCommandOnNode(leaderCluster, fmt.Sprintf("kubectl apply -f %s", reFileName))
+	if err != nil || rc != 0 || stderr != "" {
+		return fmt.Errorf("error when deploying the ACNP ResourceExport in leader cluster: %v, stderr: %v", err, stderr)
 	}
 	return nil
 }
 
 func (data *MCTestData) deleteACNPResourceExport(reFileName string) error {
-	var rc int
-	var err error
-	rc, _, _, err = provider.RunCommandOnNode(leaderCluster, fmt.Sprintf("kubectl delete -f %s", reFileName))
-	if err != nil || rc != 0 {
-		return fmt.Errorf("error when deleting the ACNP ResourceExport in leader cluster: %v", err)
+	rc, _, stderr, err := provider.RunCommandOnNode(leaderCluster, fmt.Sprintf("kubectl delete -f %s", reFileName))
+	if err != nil || rc != 0 || stderr != "" {
+		return fmt.Errorf("error when deleting the ACNP ResourceExport in leader cluster: %v, stderr: %v", err, stderr)
 	}
 	return nil
 }

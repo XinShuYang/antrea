@@ -60,16 +60,19 @@ type ResourceImportReconciler struct {
 	Scheme              *runtime.Scheme
 	localClusterClient  client.Client
 	localClusterID      string
+	namespace           string
 	remoteCommonArea    RemoteCommonArea
 	installedResImports cache.Indexer
 }
 
-func NewResourceImportReconciler(client client.Client, scheme *runtime.Scheme, localClusterClient client.Client, localClusterID string, remoteCommonArea RemoteCommonArea) *ResourceImportReconciler {
+func NewResourceImportReconciler(client client.Client, scheme *runtime.Scheme, localClusterClient client.Client,
+	localClusterID string, namespace string, remoteCommonArea RemoteCommonArea) *ResourceImportReconciler {
 	return &ResourceImportReconciler{
 		Client:             client,
 		Scheme:             scheme,
 		localClusterClient: localClusterClient,
 		localClusterID:     localClusterID,
+		namespace:          namespace,
 		remoteCommonArea:   remoteCommonArea,
 		installedResImports: cache.NewIndexer(resImportIndexerKeyFunc, cache.Indexers{
 			resImportIndexer: resImportIndexerFunc,
@@ -137,8 +140,12 @@ func (r *ResourceImportReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return r.handleResImpDeleteForClusterNetworkPolicy(ctx, &resImp)
 		}
 		return r.handleResImpUpdateForClusterNetworkPolicy(ctx, &resImp)
+	case common.ClusterInfoKind:
+		if isDeleted {
+			return r.handleResImpDeleteForClusterInfo(ctx, req, &resImp)
+		}
+		return r.handleResImpUpdateForClusterInfo(ctx, req, &resImp)
 	}
-	// TODO: handle for other ResImport Kinds
 	return ctrl.Result{}, nil
 }
 
@@ -210,7 +217,6 @@ func (r *ResourceImportReconciler) handleResImpUpdateForService(ctx context.Cont
 			klog.ErrorS(err, "Failed to update imported Service", "service", svcName.String())
 			return ctrl.Result{}, err
 		}
-		r.installedResImports.Update(*resImp)
 	}
 
 	if !apiequality.Semantic.DeepEqual(svcImp.Spec, svcImpObj.Spec) {
@@ -221,8 +227,8 @@ func (r *ResourceImportReconciler) handleResImpUpdateForService(ctx context.Cont
 			klog.ErrorS(err, "Failed to update ServiceImport", "serviceimport", svcImpName.String())
 			return ctrl.Result{}, err
 		}
-		r.installedResImports.Update(*resImp)
 	}
+	r.installedResImports.Update(*resImp)
 	return ctrl.Result{}, nil
 }
 
@@ -240,10 +246,7 @@ func (r *ResourceImportReconciler) handleResImpDeleteForService(ctx context.Cont
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 		err = r.localClusterClient.Delete(ctx, svcImp, &client.DeleteOptions{})
-		if err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	svc := &corev1.Service{}
@@ -324,8 +327,8 @@ func (r *ResourceImportReconciler) handleResImpUpdateForEndpoints(ctx context.Co
 			klog.ErrorS(err, "Failed to update MCS Endpoints", "endpoints", epNamespaced.String())
 			return ctrl.Result{}, err
 		}
-		r.installedResImports.Update(*resImp)
 	}
+	r.installedResImports.Update(*resImp)
 	return ctrl.Result{}, nil
 }
 

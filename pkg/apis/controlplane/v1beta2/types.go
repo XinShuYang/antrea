@@ -265,21 +265,30 @@ const (
 	ProtocolUDP Protocol = "UDP"
 	// ProtocolSCTP is the SCTP protocol.
 	ProtocolSCTP Protocol = "SCTP"
+	// ProtocolICMP is the ICMP protocol.
+	ProtocolICMP Protocol = "ICMP"
 )
 
 // Service describes a port to allow traffic on.
 type Service struct {
-	// The protocol (TCP, UDP, or SCTP) which traffic must match. If not specified, this
+	// The protocol (TCP, UDP, SCTP, or ICMP) which traffic must match. If not specified, this
 	// field defaults to TCP.
 	// +optional
 	Protocol *Protocol `json:"protocol,omitempty" protobuf:"bytes,1,opt,name=protocol"`
-	// The port name or number on the given protocol. If not specified, this matches all port numbers.
+	// Port and EndPort can only be specified, when the Protocol is TCP, UDP, or SCTP.
+	// Port defines the port name or number on the given protocol. If not specified
+	// and the Protocol is TCP, UDP, or SCTP, this matches all port numbers.
 	// +optional
 	Port *intstr.IntOrString `json:"port,omitempty" protobuf:"bytes,2,opt,name=port"`
 	// EndPort defines the end of the port range, being the end included within the range.
 	// It can only be specified when a numerical `port` is specified.
 	// +optional
 	EndPort *int32 `json:"endPort,omitempty" protobuf:"bytes,3,opt,name=endPort"`
+	// ICMPType and ICMPCode can only be specified, when the Protocol is ICMP. If they
+	// both are not specified and the Protocol is ICMP, this matches all ICMP traffic.
+	// +optional
+	ICMPType *int32 `json:"icmpType,omitempty" protobuf:"bytes,4,opt,name=icmpType"`
+	ICMPCode *int32 `json:"icmpCode,omitempty" protobuf:"bytes,5,opt,name=icmpCode"`
 }
 
 // NetworkPolicyPeer describes a peer of NetworkPolicyRules.
@@ -333,6 +342,16 @@ type NodeStatsSummary struct {
 	AntreaClusterNetworkPolicies []NetworkPolicyStats `json:"antreaClusterNetworkPolicies,omitempty" protobuf:"bytes,3,rep,name=antreaClusterNetworkPolicies"`
 	// The TrafficStats of Antrea NetworkPolicies collected from the Node.
 	AntreaNetworkPolicies []NetworkPolicyStats `json:"antreaNetworkPolicies,omitempty" protobuf:"bytes,4,rep,name=antreaNetworkPolicies"`
+	// Multicast group information collected from the Node.
+	Multicast []MulticastGroupInfo `json:"multicast,omitempty" protobuf:"bytes,5,rep,name=multicast"`
+}
+
+// MulticastGroupInfo contains the list of Pods that have joined a multicast group, for a given Node.
+type MulticastGroupInfo struct {
+	// Group is the IP of the multicast group.
+	Group string `json:"group,omitempty" protobuf:"bytes,1,opt,name=group"`
+	// Pods is the list of Pods that have joined the multicast group.
+	Pods []PodReference `json:"pods,omitempty" protobuf:"bytes,2,rep,name=pods"`
 }
 
 // NetworkPolicyStats contains the information and traffic stats of a NetworkPolicy.

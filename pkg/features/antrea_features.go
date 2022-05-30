@@ -15,8 +15,10 @@
 package features
 
 import (
-	"k8s.io/apimachinery/pkg/util/runtime"
+	k8sruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/component-base/featuregate"
+
+	"antrea.io/antrea/pkg/util/runtime"
 )
 
 // When editing this file, make sure you edit the documentation as well to keep
@@ -75,7 +77,7 @@ const (
 	NodeIPAM featuregate.Feature = "NodeIPAM"
 
 	// alpha: v1.4
-	// Enable flexible IPAM for Pods.
+	// Enable AntreaIPAM, which is required by bridging mode Pods and secondary network IPAM.
 	AntreaIPAM featuregate.Feature = "AntreaIPAM"
 
 	// alpha: v1.5
@@ -89,6 +91,10 @@ const (
 	// alpha: v1.5
 	// Enable controlling Services with ExternalIP.
 	ServiceExternalIP featuregate.Feature = "ServiceExternalIP"
+
+	// alpha: v1.7
+	// Enable mirroring or redirecting the traffic Pods send or receive.
+	TrafficControl featuregate.Feature = "TrafficControl"
 )
 
 var (
@@ -116,6 +122,7 @@ var (
 		Multicast:          {Default: false, PreRelease: featuregate.Alpha},
 		SecondaryNetwork:   {Default: false, PreRelease: featuregate.Alpha},
 		ServiceExternalIP:  {Default: false, PreRelease: featuregate.Alpha},
+		TrafficControl:     {Default: false, PreRelease: featuregate.Alpha},
 	}
 
 	// UnsupportedFeaturesOnWindows records the features not supported on
@@ -129,7 +136,6 @@ var (
 	// can have different FeatureSpecs between Linux and Windows, we should
 	// still define a separate defaultAntreaFeatureGates map for Windows.
 	unsupportedFeaturesOnWindows = map[featuregate.Feature]struct{}{
-		NodePortLocal:     {},
 		Egress:            {},
 		AntreaIPAM:        {},
 		Multicast:         {},
@@ -139,7 +145,18 @@ var (
 )
 
 func init() {
-	runtime.Must(DefaultMutableFeatureGate.Add(DefaultAntreaFeatureGates))
+	if runtime.IsWindowsPlatform() {
+		for f := range unsupportedFeaturesOnWindows {
+			// A feature which is enabled by default on Linux might not be supported on
+			// Windows. So, override the default value here.
+			fg := DefaultAntreaFeatureGates[f]
+			if fg.Default {
+				fg.Default = false
+				DefaultAntreaFeatureGates[f] = fg
+			}
+		}
+	}
+	k8sruntime.Must(DefaultMutableFeatureGate.Add(DefaultAntreaFeatureGates))
 }
 
 // SupportedOnWindows checks whether a feature is supported on a Windows Node.

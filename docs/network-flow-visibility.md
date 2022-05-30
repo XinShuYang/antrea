@@ -24,16 +24,21 @@
     - [Aggregation of Flow Records](#aggregation-of-flow-records)
   - [Antctl support](#antctl-support)
 - [Quick deployment](#quick-deployment)
+  - [Image-building steps](#image-building-steps)
+  - [Deployment Steps](#deployment-steps)
 - [Flow Collectors](#flow-collectors)
   - [Go-ipfix Collector](#go-ipfix-collector)
-    - [Deployment Steps](#deployment-steps)
+    - [Deployment Steps](#deployment-steps-1)
     - [Output Flow Records](#output-flow-records)
   - [Grafana Flow Collector](#grafana-flow-collector)
     - [Purpose](#purpose)
     - [About Grafana and ClickHouse](#about-grafana-and-clickhouse)
-    - [Deployment Steps](#deployment-steps-1)
+    - [Deployment Steps](#deployment-steps-2)
       - [Credentials Configuration](#credentials-configuration)
-      - [ClickHouse Configuration](#clickhouse-configuration)
+    - [ClickHouse Configuration](#clickhouse-configuration)
+      - [Service Customization](#service-customization)
+      - [Performance Configuration](#performance-configuration)
+      - [Persistent Volumes](#persistent-volumes)
     - [Pre-built Dashboards](#pre-built-dashboards)
       - [Flow Records Dashboard](#flow-records-dashboard)
       - [Pod-to-Pod Flows Dashboard](#pod-to-pod-flows-dashboard)
@@ -42,18 +47,7 @@
       - [Node-to-Node Flows Dashboard](#node-to-node-flows-dashboard)
       - [Network-Policy Flows Dashboard](#network-policy-flows-dashboard)
     - [Dashboards Customization](#dashboards-customization)
-  - [ELK Flow Collector (deprecated)](#elk-flow-collector-deprecated)
-    - [Purpose](#purpose-1)
-    - [About Elastic Stack](#about-elastic-stack)
-    - [Deployment Steps](#deployment-steps-2)
-    - [Pre-built Dashboards](#pre-built-dashboards-1)
-      - [Overview](#overview-1)
-      - [Pod-to-Pod Flows](#pod-to-pod-flows)
-      - [Pod-to-External Flows](#pod-to-external-flows)
-      - [Pod-to-Service Flows](#pod-to-service-flows)
-      - [Flow Records](#flow-records)
-      - [Node Throughput](#node-throughput)
-      - [Network Policy](#network-policy)
+  - [ELK Flow Collector (removed)](#elk-flow-collector-removed)
 <!-- /toc -->
 
 ## Overview
@@ -275,20 +269,13 @@ kubectl apply -f https://raw.githubusercontent.com/antrea-io/antrea/main/build/y
 The following configuration parameters have to be provided through the Flow
 Aggregator ConfigMap. Flow aggregator needs to be configured with at least one
 of the supported [Flow Collectors](#flow-collectors).
-`flowCollector` is mandatory for [go-ipfix collector](#deployment-steps) or
-[ELK flow collector](#deployment-steps-2), and `clickHouse` is mandatory for
-[Grafana Flow Collector](#grafana-flow-collector). We provide an example value
-for this parameter in the following snippet.  
+`flowCollector` is mandatory for [go-ipfix collector](#deployment-steps), and
+`clickHouse` is mandatory for [Grafana Flow Collector](#grafana-flow-collector).
+We provide an example value for this parameter in the following snippet.  
 
 * If you have deployed the [go-ipfix collector](#deployment-steps),
 then please set `flowCollector.enable` to `true` and use the address for
 `flowCollector.address`: `<Ipfix-Collector Cluster IP>:<port>:<tcp|udp>`
-* If you have deployed the [ELK flow collector](#deployment-steps-2), then
-please set `flowCollector.enable` to `true` and use the address for
-`flowCollector.address`:`<Logstash Cluster IP>:4739:<tcp|udp>` for sending
-IPFIX messages, or `<Logstash Cluster IP>:4736:<tcp|udp>` for sending JSON
-format records. Record format is specified with `flowCollector.recordFormat`
-(defaults to IPFIX) and must match the format expected by the collector.
 * If you have deployed the [Grafana Flow Collector](#grafana-flow-collector),
 then please enable the collector by setting `clickHouse.enable` to `true`. If
 it is deployed following the [deployment steps](#deployment-steps-1), the
@@ -486,40 +473,46 @@ about flow record processing. Refer to the
 ## Quick deployment
 
 If you would like to quickly try Network Flow Visibility feature, you can deploy
-Antrea, the Flow Aggregator Service and the ELK Flow Collector on the
-[Vagrant setup](../test/e2e/README.md). You can use the following command:
+Antrea, the Flow Aggregator Service, the Grafana Flow Collector on the
+[Vagrant setup](../test/e2e/README.md).
+
+### Image-building steps
+
+Build required image under antrea by using make command:
 
 ```shell
-./infra/vagrant/provision.sh
-./infra/vagrant/push_antrea.sh --flow-collector ELK
+make
+make flow-aggregator-image
 ```
 
-If you would like to deploy elastic search with high resources, you can change
-the `ES_JAVA_OPTS` in the [ELK Flow Collector configuration](../build/yamls/elk-flow-collector/elk-flow-collector.yml)
-according to the [guide](https://www.elastic.co/guide/en/elasticsearch/reference/7.8/heap-size.html).
-A larger heap size, like `-Xms1g -Xmx2g`, requires the Vagrant Nodes to have
-higher memory than default. In this case, we need to provision the Nodes with
-the `--large` option as with the following command:
+If you would like to use Grafana flow collector, run:
 
 ```shell
-./infra/vagrant/provision.sh --large
-./infra/vagrant/push_antrea.sh --flow-collector ELK
+make flow-visibility-clickhouse-monitor
 ```
 
-Alternatively, given any external IPFIX flow collector, you can deploy Antrea and
-the Flow Aggregator Service on a default Vagrant setup by running the following
-commands:
+### Deployment Steps
+
+Given any external IPFIX flow collector, you can deploy Antrea and the Flow
+Aggregator Service on a default Vagrant setup by running the following commands:
 
 ```shell
 ./infra/vagrant/provision.sh
 ./infra/vagrant/push_antrea.sh --flow-collector <externalFlowCollectorAddress>
 ```
 
+If you would like to deploy the Grafana Flow Collector, you can run the following command:
+
+```shell
+./infra/vagrant/provision.sh
+./infra/vagrant/push_antrea.sh --flow-collector Grafana
+```
+
 ## Flow Collectors
 
-Here we list three choices the external configured flow collector: go-ipfix collector,
-Grafana flow collector and ELK flow collector. For each collector, we introduce how to
-deploy it and how to output or visualize the collected flow records information.
+Here we list two choices the external configured flow collector: go-ipfix collector
+and Grafana flow collector. For each collector, we introduce how to deploy it and
+how to output or visualize the collected flow records information.
 
 ### Go-ipfix Collector
 
@@ -585,7 +578,7 @@ for more information about the ClickHouse Operator. Current checked-in yaml is b
 will install ClickHouse Operator into `kube-system` Namespace.
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/antrea-io/antrea/main/build/yamls/clickhouse-operator-install-bundle.yaml
+kubectl apply -f https://raw.githubusercontent.com/antrea-io/antrea/main/build/yamls/clickhouse-operator-install-bundle.yml
 ```
 
 To deploy a released version of the Grafana Flow Collector, find a deployment manifest
@@ -677,7 +670,7 @@ To stop the Grafana Flow Collector, run the following commands:
 
 ```shell
 kubectl delete -f flow-visibility.yml
-kubectl delete -f https://raw.githubusercontent.com/antrea-io/antrea/main/build/yamls/clickhouse-operator-install-bundle.yaml -n kube-system
+kubectl delete -f https://raw.githubusercontent.com/antrea-io/antrea/main/build/yamls/clickhouse-operator-install-bundle.yml -n kube-system
 ```
 
 ##### Credentials Configuration
@@ -750,7 +743,9 @@ type: Opaque
 We recommend changing all the credentials above if you are going to run the Flow
 Collector in production.
 
-##### ClickHouse Configuration
+#### ClickHouse Configuration
+
+##### Service Customization
 
 The ClickHouse database can be accessed through the Service `clickhouse-clickhouse`.
 The Pod exposes HTTP port at 8123 and TCP port at 9000 by default. The ports are
@@ -800,6 +795,8 @@ metadata:
   namespace: flow-visibility
 ```
 
+##### Performance Configuration
+
 The ClickHouse throughput depends on two factors - the storage size of the ClickHouse
 and the time interval between the batch commits to the ClickHouse. Larger storage
 size and longer commit interval provide higher throughput.
@@ -819,10 +816,120 @@ storage size, please modify the `sizeLimit` in the following section.
   name: clickhouse-storage-volume
 ```
 
+To deploy ClickHouse with Persistent Volumes and limited storage size, please refer
+to [Persistent Volumes](#persistent-volumes).
+
 The time interval between the batch commits to the ClickHouse is specified in the
 [Flow Aggregator Configuration](#configuration-1) as `commitInterval`. The
 ClickHouse throughput grows sightly when the commit interval grows from 1s to 8s.
 A commit interval larger than 8s provides little improvement on the throughput.
+
+##### Persistent Volumes
+
+By default, ClickHouse is deployed in memory. From Antrea v1.7, we support deploying
+ClickHouse with Persistent Volumes.
+
+[PersistentVolume](https://kubernetes.io/docs/concepts/storage/persistent-volumes/)
+(PV) is a piece of storage in the K8s cluster, which requires to be manually
+provisioned by an administrator or dynamically provisioned using Storage Classes.
+A PersistentVolumeClaim (PVC) is a request for storage which consumes PV. As
+ClickHouse is deployed as a StatefulSet, the volume can be claimed using
+`volumeClaimTemplate`.
+
+To generate the manifest automatically with default settings, you can clone the
+repository and run one of the following commands:
+
+```yaml
+# To generate a manifest with Local PV for the ClickHouse
+./hack/generate-manifest-flow-visibility.sh --volume pv --local <local_path> > flow-visibility.yml
+ 
+# To generate a manifest with NFS PV for the ClickHouse
+./hack/generate-manifest-flow-visibility.sh --volume pv --nfs <nfs_server_address>:/<nfs_server_path> > flow-visibility.yml
+ 
+# To generate a manifest with a customized StorageClass for the ClickHouse
+./hack/generate-manifest-flow-visibility.sh --volume pv --storageclass <storageclass_name> > flow-visibility.yml
+```
+
+If you prefer not to clone the repository and prefer to create a customized
+manifest manually, please follow the steps below to deploy the ClickHouse with
+Persistent Volumes:
+
+1. Provision the PersistentVolume. K8s supports a great number of
+[PersistentVolume types](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#types-of-persistent-volumes).
+You can provision your own PersistentVolume per your requirements. Here are
+two simple examples for your reference.
+
+    - Local PV allows you to store the ClickHouse data at a pre-defined path on
+    a specific Node. Refer to [createLocalPv.yml][local_pv_yaml] to create the
+    PV. Please replace `LOCAL_PATH` with the path to store the ClickHouse data
+    and label the Node used to store the ClickHouse data with
+    `antrea.io/clickhouse-data-node=`.
+
+    - NFS PV allows you to store the ClickHouse data on an existing NFS server.
+    Refer to [createNfsPv.yml][nfs_pv_yaml] to create the PV. Please replace
+    `NFS_SERVER_ADDRESS` with the host name of the NFS server and `NFS_SERVER_PATH`
+    with the exported path on the NFS server.
+
+    In both examples, you can set `.spec.capacity.storage` in PersistentVolume
+    to your storage size. This value is for informative purpose as K8s does not
+    enforce the capacity of PVs. If you want to limit the storage usage, you need
+    to ask for your storage system to enforce that. For example, you can create
+    a Local PV on a partition with the limited size. We recommend using a dedicated
+    saving space for the ClickHouse if you are going to run the Flow Collector in
+    production.
+
+    As these examples do not use any dynamic provisioner, the reclaim policy
+    for the PVs is `Retain` by default. After stopping the Grafana Flow Collector,
+    if you no long need the data for future use, you may need to manually clean
+    up the data on the local disk or NFS server.
+
+1. Request the PV for ClickHouse. Please add a `volumeClaimTemplate` section
+under `.spec.templates` for the resource `ClickHouseInstallation` in
+`flow-visibility.yml` as shown in the example below. `storageClassName` should
+be set to your own `StorageClass` name, and `.resources.requests.storage`
+should be set to your storage size.
+
+    ```yaml
+    volumeClaimTemplates:
+    - name: clickhouse-storage-template
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 8Gi
+        storageClassName: clickhouse-storage
+    ```
+
+    Then add this template as `dataVolumeClaimTemplate` to the section below.
+
+    ```yaml
+    defaults:
+      templates:
+        dataVolumeClaimTemplate: clickhouse-storage-template
+        podTemplate: pod-template
+        serviceTemplate: service-template
+    ```
+
+1. Remove the in-memory related deployment options, by removing the appropriate
+`volume` and `volumeMount` for the `ClickHouseInstallation` resource in
+`flow-visibility.yml`.
+
+    The `volumeMounts` entry to be removed is the following one:
+
+    ```yaml
+    - mountPath: /var/lib/clickhouse
+      name: clickhouse-storage-volume
+    ```
+
+    The `volumes` entry to be removed is the following one:
+
+    ```yaml
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi
+      name: clickhouse-storage-volume
+    ```
 
 #### Pre-built Dashboards
 
@@ -830,6 +937,27 @@ The following dashboards are pre-built and are recommended for Antrea flow
 visualization. They can be found in the Home page of Grafana, by clicking
 the Magnifier button on the left menu bar.
 <img src="https://downloads.antrea.io/static/02152022/flow-visibility-grafana-intro-1.png" width="900" alt="Grafana Search Dashboards Guide">
+
+- Note that all pre-built dashboards (except for the "Flow Records Dashboard")
+filter out Pod traffic for which the source or destination Namespace is one of
+`kube-system`, `flow-visibility`, or `flow-aggregator`. The primary motivation
+for this is to avoid showing the connections between the Antrea Agents and the
+Flow Aggregator, between the Flow Aggregator and ClickHouse, and between
+ClickHouse and Grafana.
+
+- Also note that we limit the number of values displayed on panels. For table
+panel on the Flow Records Dashboard, the limit is set to 10000. For Sankey
+diagrams, the limit is 50. For time-series line graphs, the limit is 50. For
+pie charts, the limit is 25. The motivation is, when the input data is very
+large, we want to keep the charts readable and avoid consuming too much time
+and resources to render them.
+
+If you want to stop filtering traffic by Namespace, or edit the panel limit,
+you will need to edit the ClickHouse SQL query for each individual panel. Please
+follow the [dashboards customization](#dashboards-customization) section for
+more information. As a special case, to edit the panel limit for pie charts,
+instead of editing the query, please follow the [doc](https://grafana.com/docs/grafana/latest/visualizations/pie-chart-panel/#limit)
+to edit `Value options - Limit`.
 
 ##### Flow Records Dashboard
 
@@ -946,165 +1074,12 @@ by adding the file in the following section:
 ./hack/generate-manifest-flow-visibility.sh > build/yamls/flow-visibility.yml
 ```
 
-### ELK Flow Collector (deprecated)
+### ELK Flow Collector (removed)
 
-#### Purpose
-
-Antrea supports sending IPFIX flow records through the Flow Exporter feature
-described above. The Elastic Stack (ELK Stack) works as the data collector, data
-storage and visualization tool for flow records and flow-related information. This
-document provides the guidelines for deploying Elastic Stack with support for
-Antrea-specific IPFIX fields in a Kubernetes cluster.
-
-#### About Elastic Stack
-
-[Elastic Stack](https://www.elastic.co) is a group of open source products to
-help collect, store, search, analyze and visualize data in real time. We will
-use Logstash, Elasticsearch and Kibana in Antrea flow visualization.
-[Logstash](https://www.elastic.co/logstash) works as data collector to
-centralize flow records. [Logstash Netflow codec plugin](https://www.elastic.co/guide/en/logstash/current/plugins-codecs-netflow.html)
-supports Netflow v5/v9/v10(IPFIX) protocols for flow data collection.
-The flow exporter feature in Antrea Agent uses the IPFIX (Netflow v10) protocol
-to export flow records.
-
-[Elasticsearch](https://www.elastic.co/elasticsearch/), as a RESTful search
-engine, supports storing, searching and indexing records received.
-[Kibana](https://www.elastic.co/kibana/) is mainly for data visualization and
-exploration.
-
-#### Deployment Steps
-
-If you are looking for steps to deploy the ELK flow collector along with a new Antrea
-cluster and the Flow Aggregator Service, then please refer to the
-[quick deployment](#quick-deployment) section.
-
-The following steps will deploy the ELK flow collector on an existing Kubernetes
-cluster, which uses Antrea as the CNI. First step is to fetch the necessary resources
-from the Antrea repository. You can either clone the entire repo or download the
-particular folder using the subversion(svn) utility. If the deployed version of
-Antrea has a release `<TAG>` (e.g. `v0.10.0`), then you can use the following command:
-
-```shell
-git clone --depth 1 --branch <TAG> https://github.com/antrea-io/antrea.git && cd antrea/build/yamls/
-or
-svn export https://github.com/antrea-io/antrea/tags/<TAG>/build/yamls/elk-flow-collector/
-```
-
-If the deployed version of Antrea is the latest version, i.e., built from the main
-branch, then you can use the following command:
-
-```shell
-git clone --depth 1 --branch main https://github.com/antrea-io/antrea.git && cd antrea/build/yamls/
-or
-svn export https://github.com/antrea-io/antrea/trunk/build/yamls/elk-flow-collector/
-```
-
-To create the required K8s resources in the `elk-flow-collector` folder and get
-everything up-and-running, run following commands:
-
-```shell
-kubectl create namespace elk-flow-collector
-kubectl create configmap logstash-configmap -n elk-flow-collector --from-file=./elk-flow-collector/logstash/
-kubectl apply -f ./elk-flow-collector/elk-flow-collector.yml -n elk-flow-collector
-```
-
-Please refer to the [Flow Aggregator Configuration](#configuration-1) to configure
-external flow collector as Logstash Service Cluster IP.
-
-Kibana dashboard is exposed as a Nodeport Service, which can be accessed via
-`http://[NodeIP]: 30007`. `elk-flow-collector/kibana.ndjson` is an auto-generated
-reusable file containing pre-built objects for visualizing Pod-to-Pod, Pod-to-Service
-and Node-to-Node flow records. To import the dashboards into Kibana, go to
-**Management -> Saved Objects** and import `elk-flow-collector/kibana.ndjson`.
-
-#### Pre-built Dashboards
-
-The following dashboards are pre-built and are recommended for Antrea flow
-visualization.
-
-##### Overview
-
-An overview of Pod-based flow records information is provided.
-
-<img src="https://downloads.antrea.io/static/02052021/flow-visualization-overview.png" width="900" alt="Flow
-Visualization Overview Dashboard">
-
-##### Pod-to-Pod Flows
-
-Pod-to-Pod cumulative Tx and Rx traffic is shown in sankey diagrams. Corresponding
-source or destination Pod throughput is visualized using line graph.
-
-<img src="https://downloads.antrea.io/static/04292021/flow-visualization-pod-to-pod-1.png" width="900" alt="Flow
-Visualization Pod-to-Pod Dashboard">
-
-<img src="https://downloads.antrea.io/static/02052021/flow-visualization-pod-to-pod-2.png" width="900" alt="Flow
-Visualization Pod-to-Pod Dashboard">
-
-<img src="https://downloads.antrea.io/static/02052021/flow-visualization-pod-to-pod-3.png" width="900" alt="Flow
-Visualization Pod-to-Pod Dashboard">
-
-##### Pod-to-External Flows
-
-Pod-to-External cumulative Tx and Rx traffic is shown in sankey diagrams. Corresponding
-source or destination throughput is visualized using line graph.
-
-<img src="https://downloads.antrea.io/static/04292021/flow-visualization-pod-to-external-1.png" width="900" alt="Flow
-Visualization Pod-to-External Dashboard">
-
-<img src="https://downloads.antrea.io/static/04292021/flow-visualization-pod-to-external-2.png" width="900" alt="Flow
-Visualization Pod-to-External Dashboard">
-
-##### Pod-to-Service Flows
-
-Pod-to-Service traffic is presented similar to Pod-to-Pod/External traffic.
-Corresponding source or destination IP addresses is shown in tooltips.
-
-<img src="https://downloads.antrea.io/static/03022021/flow-visualization-pod-to-service-1.png" width="900" alt="Flow
-Visualization Pod-to-Service Dashboard">
-
-Aggregated Tx and Rx traffic based on destination Service is shown in line graph.
-<img src="https://downloads.antrea.io/static/02052021/flow-visualization-pod-to-service-2.png" width="900" alt="Flow
-Visualization Pod-to-Service Dashboard">
-
-<img src="https://downloads.antrea.io/static/02052021/flow-visualization-pod-to-service-3.png" width="900" alt="Flow
-Visualization Pod-to-Service Dashboard">
-
-##### Flow Records
-
-Flow Records dashboard shows the raw flow records over time with support
-for filters.
-
-<img src="https://downloads.antrea.io/static/04292021/flow-visualization-flow-record.png" width="900" alt="Flow
-Visualization Flow Record Dashboard">
-
-##### Node Throughput
-
-Node Throughput dashboard shows the visualization of inter-Node and
-intra-Node traffic by aggregating all the Pod traffic per Node.
-
-<img src="https://downloads.antrea.io/static/03022021/flow-visualization-node-1.png" width="900" alt="Flow
-Visualization Node Throughput Dashboard">
-
-We also present aggregated Tx and Rx Mbps by Node in heatmap to give
-a better overview of Node bandwidth consumption.
-
-<img src="https://downloads.antrea.io/static/03022021/flow-visualization-node-2.png" width="900" alt="Flow
-Visualization Node Throughput Dashboard">
-
-##### Network Policy
-
-Network Policy dashboard provides filters over ingress network policy name and namespace, egress
-network policy name and namespace to view corresponding flow throughput under network policy. Flows
-are grouped by egress network policies (source) and ingress network policies (destination) in the
-sankey diagram. When hovering over the flow, it will show corresponding Pod-to-Pod traffic details
-and network policies.
-
-<img src="https://downloads.antrea.io/static/03022021/flow-visualization-np-1.png" width="900" alt="Flow
-Visualization Network Policy Dashboard">
-
-With filters applied:
-
-<img src="https://downloads.antrea.io/static/03022021/flow-visualization-np-2.png" width="900" alt="Flow
-Visualization Network Policy Dashboard">
+**Starting with Antrea v1.7, support for the ELK Flow Collector has been removed.**
+Please consider using the [Grafana Flow Collector](#grafana-flow-collector)
+instead, which is actively maintained.
 
 [flow_visibility_kustomization_yaml]: ../build/yamls/flow-visibility/base/kustomization.yml
+[local_pv_yaml]: ../build/yamls/flow-visibility/patches/pv/createLocalPv.yml
+[nfs_pv_yaml]: ../build/yamls/flow-visibility/patches/pv/createNfsPv.yml

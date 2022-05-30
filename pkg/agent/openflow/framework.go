@@ -187,6 +187,9 @@ func (f *featurePodConnectivity) getRequiredTables() []*Table {
 			}
 		}
 	}
+	if f.enableTrafficControl {
+		tables = append(tables, TrafficControlTable)
+	}
 
 	return tables
 }
@@ -242,7 +245,8 @@ func (f *featureEgress) getRequiredTables() []*Table {
 
 func (f *featureMulticast) getRequiredTables() []*Table {
 	return []*Table{
-		MulticastTable,
+		MulticastRoutingTable,
+		MulticastOutputTable,
 	}
 }
 

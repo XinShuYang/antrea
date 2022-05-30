@@ -37,7 +37,6 @@ import (
 	crdv1alpha1 "antrea.io/antrea/pkg/apis/crd/v1alpha1"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
 	mocks "antrea.io/antrea/pkg/ovs/openflow/testing"
-	"antrea.io/antrea/pkg/ovs/ovsconfig"
 	ovsctltest "antrea.io/antrea/pkg/ovs/ovsctl/testing"
 	"antrea.io/antrea/pkg/util/ip"
 )
@@ -63,12 +62,15 @@ var (
 	_, podIPv4CIDR, _ = net.ParseCIDR("100.100.100.0/24")
 	_, podIPv6CIDR, _ = net.ParseCIDR("fd12:ab35:34:a001::/64")
 
-	actionAllow = crdv1alpha1.RuleActionAllow
-	actionDrop  = crdv1alpha1.RuleActionDrop
-	port8080    = intstr.FromInt(8080)
-	protocolTCP = v1beta2.ProtocolTCP
-	priority100 = uint16(100)
-	priority200 = uint16(200)
+	actionAllow  = crdv1alpha1.RuleActionAllow
+	actionDrop   = crdv1alpha1.RuleActionDrop
+	port8080     = intstr.FromInt(8080)
+	protocolTCP  = v1beta2.ProtocolTCP
+	protocolICMP = v1beta2.ProtocolICMP
+	priority100  = uint16(100)
+	priority200  = uint16(200)
+	icmpType8    = int32(8)
+	icmpCode0    = int32(0)
 
 	mockFeaturePodConnectivity = featurePodConnectivity{}
 	mockFeatureNetworkPolicy   = featureNetworkPolicy{enableAntreaPolicy: true}
@@ -245,15 +247,15 @@ func TestInstallPolicyRuleFlows(t *testing.T) {
 	port1 := intstr.FromInt(8080)
 	port2 := intstr.FromInt(1000)
 	port3 := int32(1007)
-	tcpProtocol := v1beta2.ProtocolTCP
-	npPort1 := v1beta2.Service{Protocol: &tcpProtocol, Port: &port1}
-	npPort2 := v1beta2.Service{Protocol: &tcpProtocol, Port: &port2, EndPort: &port3}
+	npService1 := v1beta2.Service{Protocol: &protocolTCP, Port: &port1}
+	npService2 := v1beta2.Service{Protocol: &protocolTCP, Port: &port2, EndPort: &port3}
+	npService3 := v1beta2.Service{Protocol: &protocolICMP, ICMPType: &icmpType8, ICMPCode: &icmpCode0}
 	rule3 := &types.PolicyRule{
 		Direction: v1beta2.DirectionOut,
 		From:      parseAddresses([]string{"192.168.1.40", "192.168.1.60"}),
 		To:        parseAddresses([]string{"192.168.2.0/24"}),
 		Action:    &defaultAction,
-		Service:   []v1beta2.Service{npPort1, npPort2},
+		Service:   []v1beta2.Service{npService1, npService2, npService3},
 		FlowID:    ruleID3,
 		TableID:   EgressRuleTable.ofTable.GetID(),
 		PolicyRef: &v1beta2.NetworkPolicyReference{
@@ -274,16 +276,16 @@ func TestInstallPolicyRuleFlows(t *testing.T) {
 	ctxChanges3 := conj3.calculateChangesForRuleCreation(c.featureNetworkPolicy, rule3)
 	matchFlows3, dropFlows3 := getChangedFlows(ctxChanges3)
 	assert.Equal(t, 1, getChangedFlowOPCount(dropFlows3, insertion))
-	assert.Equal(t, 5, getChangedFlowCount(matchFlows3))
-	assert.Equal(t, 4, getChangedFlowOPCount(matchFlows3, insertion))
+	assert.Equal(t, 6, getChangedFlowCount(matchFlows3))
+	assert.Equal(t, 5, getChangedFlowOPCount(matchFlows3, insertion))
 	assert.Equal(t, 1, getChangedFlowOPCount(matchFlows3, modification))
 	err = c.featureNetworkPolicy.applyConjunctiveMatchFlows(ctxChanges3)
 	require.Nil(t, err)
 
 	err = c.InstallPolicyRuleFlows(rule3)
 	require.Nil(t, err, "Failed to invoke InstallPolicyRuleFlows")
-	checkConjunctionConfig(t, ruleID3, 1, 2, 1, 2)
-	assert.Equal(t, 14, len(c.GetNetworkPolicyFlowKeys("np1", "ns1")))
+	checkConjunctionConfig(t, ruleID3, 1, 2, 1, 3)
+	assert.Equal(t, 15, len(c.GetNetworkPolicyFlowKeys("np1", "ns1")))
 
 	ctxChanges4 := conj.calculateChangesForRuleDeletion()
 	matchFlows4, dropFlows4 := getChangedFlows(ctxChanges4)
@@ -300,7 +302,7 @@ func TestInstallPolicyRuleFlows(t *testing.T) {
 	assert.Equal(t, 2, getChangedFlowOPCount(matchFlows5, deletion))
 	assert.Equal(t, 1, getChangedFlowOPCount(matchFlows5, modification))
 	err = c.featureNetworkPolicy.applyConjunctiveMatchFlows(ctxChanges5)
-	assert.Equal(t, 11, len(c.GetNetworkPolicyFlowKeys("np1", "ns1")))
+	assert.Equal(t, 12, len(c.GetNetworkPolicyFlowKeys("np1", "ns1")))
 	require.Nil(t, err)
 }
 
@@ -438,7 +440,7 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 					Action:   &actionDrop,
 					Priority: &priority200,
 					To:       []types.Address{NewOFPortAddress(1)},
-					Service:  []v1beta2.Service{{Protocol: &protocolTCP, Port: &port8080}},
+					Service:  []v1beta2.Service{{Protocol: &protocolTCP, Port: &port8080}, {Protocol: &protocolICMP, ICMPType: &icmpType8, ICMPCode: &icmpCode0}},
 					FlowID:   uint32(12),
 					TableID:  AntreaPolicyIngressRuleTable.GetID(),
 					PolicyRef: &v1beta2.NetworkPolicyReference{
@@ -498,6 +500,9 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority200).Cookie(cookiePolicy).
 						MatchProtocol(binding.ProtocolTCP).MatchDstPort(8080, nil).
 						Action().Conjunction(12, 3, 3).Done(),
+					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority200).Cookie(cookiePolicy).
+						MatchProtocol(binding.ProtocolICMP).MatchICMPType(byte(icmpType8)).MatchICMPCode(byte(icmpCode0)).
+						Action().Conjunction(12, 3, 3).Done(),
 					IngressMetricTable.ofTable.BuildFlow(priorityNormal).Cookie(cookiePolicy).
 						MatchProtocol(binding.ProtocolIP).MatchCTStateNew(true).MatchCTLabelField(0, 10, IngressRuleCTLabel).
 						Action().NextTable().Done(),
@@ -519,7 +524,7 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			mockOperations := oftest.NewMockOFEntryOperations(ctrl)
-			ofClient := NewClient(bridgeName, bridgeMgmtAddr, ovsconfig.OVSDatapathSystem, false, true, false, false, false, false, false)
+			ofClient := NewClient(bridgeName, bridgeMgmtAddr, false, true, false, false, false, false, false, false)
 			c = ofClient.(*client)
 			c.cookieAllocator = cookie.NewAllocator(0)
 			c.ofEntryOperations = mockOperations
@@ -628,6 +633,10 @@ func TestConjMatchFlowContextKeyConflict(t *testing.T) {
 	ruleAction.EXPECT().Conjunction(gomock.Any(), gomock.Any(), gomock.Any()).Return(ruleFlowBuilder).MaxTimes(3)
 
 	ip, ipNet, _ := net.ParseCIDR("192.168.2.30/32")
+	singleMatchPair := matchPair{
+		matchKey:   MatchDstIPNet,
+		matchValue: ipNet,
+	}
 
 	ruleID1 := uint32(11)
 	conj1 := &policyRuleConjunction{
@@ -646,8 +655,7 @@ func TestConjMatchFlowContextKeyConflict(t *testing.T) {
 	flowChange2 := clause2.addAddrFlows(c.featureNetworkPolicy, types.DstAddress, parseAddresses([]string{ipNet.String()}), nil)
 	err = c.featureNetworkPolicy.applyConjunctiveMatchFlows(flowChange2)
 	require.Nil(t, err, "no error expect in applyConjunctiveMatchFlows")
-
-	expectedMatchKey := fmt.Sprintf("table:%d,priority:%s,type:%v,value:%s", EgressRuleTable.ofTable.GetID(), strconv.Itoa(int(priorityNormal)), MatchDstIPNet, ipNet.String())
+	expectedMatchKey := fmt.Sprintf("table:%d,priority:%s,matchPair:%s", EgressRuleTable.GetID(), strconv.Itoa(int(priorityNormal)), singleMatchPair.KeyString())
 	ctx, found := c.featureNetworkPolicy.globalConjMatchFlowCache[expectedMatchKey]
 	assert.True(t, found)
 	assert.Equal(t, 2, len(ctx.actions))
@@ -997,9 +1005,8 @@ func prepareClient(ctrl *gomock.Controller, dualStack bool) *client {
 		ipProtocols = append(ipProtocols, binding.ProtocolIPv6)
 	}
 	c = &client{
-		bridge:          bridge,
-		ovsDatapathType: ovsconfig.OVSDatapathNetdev,
-		ipProtocols:     ipProtocols,
+		bridge:      bridge,
+		ipProtocols: ipProtocols,
 	}
 	c.cookieAllocator = cookie.NewAllocator(0)
 	m := oftest.NewMockOFEntryOperations(ctrl)
