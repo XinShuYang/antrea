@@ -1,0 +1,22 @@
+
+
+第一步：
+
+    0.  获取一个 OAuth2 令牌，你需要在你的 GitHub 账户设置中的 "Developer settings" -> "Personal access tokens" -> "Generate new token" 中创建一个新的令牌。
+        当你创建令牌时，你需要选择这个令牌的权限。对于读取公开仓库的 issue，你需要 "public_repo" 权限。
+        在 issue_clawer 程序中token_config参数里填入你的令牌。
+
+    1.执行命令 python issue_clawer.py （注意：由于网络原因问题，程序可能会中断，直接重新执行命令即可）
+
+
+第二步：
+
+    0. python issue_filter.py  (过滤重复数据)
+
+
+第三步：
+
+    0. python issue_prompt_process.py (处理数据)
+
+
+
