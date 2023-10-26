@@ -1,0 +1,14 @@
+
+
+First Step:
+    0. Obtain an OAuth2 token, you need to create a new token in 'Developer settings' -> 'Personal access tokens' -> 'Generate new token' in your GitHub account settings.
+        When creating the token, you need to select the permissions for this token. For reading issues from public repositories, you need the 'public_repo' permission.
+        Fill your token into the 'token_config' parameter in the 'issue_clawer.py' file.
+
+    1. Run 'python issue_clawer.py' (Note: Due to network reasons, the program may be interrupted, you can directly re-execute the command).
+
+Second Step:
+    0. Run 'python issue_filter.py' (filter out duplicate data).
+
+Third Step:
+    0. Run 'python issue_prompt_process.py' (process data).
