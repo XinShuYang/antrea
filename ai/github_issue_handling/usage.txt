@@ -1,6 +1,6 @@
 
 
-第一步：
+第一步：下载数据。
 
     0.  获取一个 OAuth2 令牌，你需要在你的 GitHub 账户设置中的 "Developer settings" -> "Personal access tokens" -> "Generate new token" 中创建一个新的令牌。
         当你创建令牌时，你需要选择这个令牌的权限。对于读取公开仓库的 issue，你需要 "public_repo" 权限。
@@ -9,14 +9,30 @@
     1.执行命令 python issue_clawer.py （注意：由于网络原因问题，程序可能会中断，直接重新执行命令即可）
 
 
-第二步：
+第二步：过滤重复数据。
 
-    0. python issue_filter.py  (过滤重复数据)
+    0. python issue_filter.py
 
 
-第三步：
+第三步：数据处理成QA格式。
 
-    0. python issue_prompt_process.py (处理数据)
+    issue_prompt_process.py 含有两个参数 '--assign-labels' 和 '--add-labels'.
+    
+        0.--assign-labels : 指定'label'名称，生成只包含指定'label'名称的数据.
+            例子: 生成只包含'bug'和'api'标签的数据.
+                python issue_prompt_process.py --assign-labels bug api 
+                
+        1.--add-labels : 添加额外的label名称，需要指定label的映射关系.
+            例子: 以'github'上'issue'的'label'为例子，添加 "{'triage/duplicate': 'xx',}". 'xx'表示自定义label名称
+                python issue_prompt_process.py --add-labels "{'triage/duplicate': 'xx',}"
+
+        2.也可同时使用两个参数,即添加额外的labels,并使用指定的labels生成数据。
+            例子：python issue_prompt_process.py --assign-labels bug api xx --add-labels "{'triage/duplicate': 'xx',}"
+
+        3.使用所有labels。
+            默认：python issue_prompt_process.py
+
+
 
 
 
