@@ -1,1 +1,0 @@
-The Dockerfile works for both GPU training and prediction. Please build it with the docker version of Nvidia-docker2.
