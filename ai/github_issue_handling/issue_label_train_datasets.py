@@ -6,9 +6,6 @@ import argparse
 from langchain.chat_models import ChatOpenAI
 from langchain.schema import AIMessage, HumanMessage, SystemMessage
 
-openai_key = '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'
-chat_model = ChatOpenAI(openai_api_key=openai_key, model_name='gpt-3.5-turbo-16k', temperature=0.3)
-
 body_prompts = {'body_prompt_1': """This is an issue data from the Antrea project on GitHub. In this data, the content of the first comment mainly includes the error message content when the author runs the project and the explanation content that the author tries to solve based on the error message. It also includes additional content from the author seeking help and expressing gratitude. Now, it is necessary to remove from this comment content that includes the author's requests for help and expressions of gratitude, retaining the error message content when the project is run and the explanation content that the author attempts to solve based on the error message.
                                     Firstly, you need to delete irrelevant content from the comment according to the following rules. The rules are as follows:
                                         a. Delete all words in the content that are composed of '@' followed by any character, such as @uablrek. This represents the author's name. The comment content should not contain the author's name.
@@ -49,29 +46,6 @@ label_prompt = """
                 This is a labeled Issue data from the Antrea project on GitHub. The labels are assigned by manually interpreting the content of the Issue's body to determine its relevant categories. Each Issue can only be tagged with one or more labels from this list: ['bug', 'support', 'feature', 'proposal', 'api', 'arm', 'agent', 'antctl', 'cni', 'octant-plugin', 'flow-visibility', 'monitoring', 'multi-cluster', 'interface', 'network-policy', 'ovs', 'provider', 'proxy', 'test', 'transit', 'security', 'build-release', 'linux', 'windows'].
                 Currently, there is an Issue from the Antrea project on GitHub with known title, body, and label(s). Your task is to analyze the title and body to interpret why this Issue was assigned these specific label(s) and summarize the main information from the analysis results. The output format should be {"result": 'The reason for choosing this label, without including the label word in the reasoning'}. Please think step by step and provide a concise and specific outcome!
                 """
-
-
-def prompt_processing(prompt, source, issue_id):
-    content = None
-    messages = [
-        SystemMessage(
-            content=prompt
-        ),
-        HumanMessage(content=f"{source}"),
-    ]
-
-    for _ in range(5):
-        try:
-            chat = chat_model(messages)
-        except:
-            if _ == 4:
-                print(f"issue id {issue_id} false")
-                content = None
-        else:
-            content = chat.content
-            break
-
-    return content
 
 
 def main(args):
@@ -174,7 +148,31 @@ def main(args):
             label_result = list(set(result_labels))
             body_result = issue['body']
             # enhance
+            def prompt_processing(prompt, source, issue_id):
+                content = None
+                messages = [
+                    SystemMessage(
+                        content=prompt
+                    ),
+                    HumanMessage(content=f"{source}"),
+                ]
+
+                for _ in range(5):
+                    try:
+                        chat = chat_model(messages)
+                    except:
+                        if _ == 4:
+                            print(f"issue id {issue_id} false")
+                            content = None
+                    else:
+                        content = chat.content
+                        break
+
+                return content
+
             if args.body_prompt:
+                chat_model = ChatOpenAI(openai_api_key=args.openai_key, model_name='gpt-3.5-turbo-16k', temperature=0.3)
+
                 try:
                     prompt = body_prompts[args.body_prompt]
                 except:
@@ -218,7 +216,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--assign-labels', nargs='+', default=[], help='Get mutil parameters')
     parser.add_argument('--add-labels', type=str, default=None, help='Dictionary parameter')
-    parser.add_argument('--body-prompt', type=str, default="body_prompt_3",
+    parser.add_argument('--body-prompt', type=str, default=None,
                         help="Issue body prompt,Primarily summarize the body data, by default it is not applied, the V5 training data currently generated uses 'body_prompt_3'.")
+    parser.add_argument('--openai-key', type=str, default=None,
+                        help='When using ChatGPT to process the body, an OpenAI key is required.')
     args = parser.parse_args()
     main(args)

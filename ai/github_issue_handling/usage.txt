@@ -16,7 +16,7 @@
 
 第三步：数据处理成QA格式,数据集分为训练集和验证集。
 
-    1.issue_label_train_datasets.py 主要生成训练数据集，其含有三个参数 '--assign-labels' 和 '--add-labels' 和 '--body-prompt'.
+    1.issue_label_train_datasets.py 主要生成训练数据集，其含有四个参数 '--assign-labels' 、'--add-labels' 、'--body-prompt' 、 '--openai-key'.
 
         a.--assign-labels : 表示指定'label'名称，生成只包含指定'label'名称的数据.
             例子: 生成只包含'bug'和'api'标签的数据.
@@ -33,7 +33,7 @@
             例子：python issue_label_train_datasets.py
 
         e.--body-prompt : 表示是否需要对body部分数据使用chatgpt进行简要的信息概括，程序中给定了三种prompt:['body_prompt_1','body_prompt_2','body_prompt_3']。
-            例子：python issue_label_train_datasets.py 其他参数 --body-prompt body_prompt_3
+            例子：python issue_label_train_datasets.py 其他参数 --body-prompt body_prompt_3 --openai-key 'you openai key'
 
         最终生成的训练数据集文件名称为：issue_train_datasets.json，无标签的数据集文件名称为：issue_datasets_no_label.json
 

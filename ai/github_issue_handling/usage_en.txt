@@ -14,7 +14,7 @@ Step 2: Filter duplicate data.
 
 Step 3: Process the data into QA format, dividing the dataset into training set and validation set.
 
-    1. issue_label_train_datasets.py is mainly used to generate the training dataset, which has three parameters '--assign-labels', '--add-labels', and '--body-prompt'.
+    1. issue_label_train_datasets.py is mainly used to generate the training dataset, which has four parameters '--assign-labels', '--add-labels', '--body-prompt', '--openai-key'.
 
         a.--assign-labels: This represents specifying the 'label' names, creating data that only includes the specified 'label' names.
             Example: Generate data that only contains 'bug' and 'api' labels.
@@ -31,7 +31,7 @@ Step 3: Process the data into QA format, dividing the dataset into training set 
             Example: python issue_label_train_datasets.py
 
         e.--body-prompt: This represents whether there is a need to use chatgpt to provide a brief summary of the body part data. The program provides three prompts:['body_prompt_1','body_prompt_2','body_prompt_3'].
-            Example: python issue_label_train_datasets.py 'other parameter' --body-prompt body_prompt_3
+            Example: python issue_label_train_datasets.py 'other parameter' --body-prompt body_prompt_3 --openai-key 'you openai key'
 
         The final generated training dataset file name is: issue_train_datasets.json, and the file name of the dataset without labels is: issue_datasets_no_label.json
 
