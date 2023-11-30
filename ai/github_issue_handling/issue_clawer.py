@@ -4,46 +4,14 @@ import os
 import re
 import json
 import requests
-
-
-def get_response_data(url, timeout=None, links=False):
-    """
-    Request data via GET.
-    In order to use the GitHub API and increase the request limit, you need to generate a personal access token.
-        op: log in to GitHub account ->Settings->Developer settings->Personal access tokens->Generate new token.
-        example:
-            headers = {"Authorization": "Bearer ghp_1Ir70BGA3qpM3gneMTNaCnH5xcODVn0Qck1b"}
-    """
-    params = {"state": "closed", "type": "issue", "per_page": 50}
-    headers = {"Authorization": f"Bearer {token_config['token']}"}
-
-    try:
-        response = requests.get(url, params=params, headers=headers, timeout=timeout)
-        if response and response.status_code == 200:
-            if links:
-                # Filter out 'pull request' type of issue data, only get issue data.
-                useful_issue = [issue for issue in response.json() if "pull_request" not in issue]
-                return useful_issue, response.links
-            else:
-                return response.json()
-        else:
-            print("Request failed !!!")
-            if links:
-                return None, None
-            else:
-                return None
-    except:
-        print("Request failed !!!")
-        if links:
-            return None, None
-        else:
-            return None
+import argparse
 
 
 class Issue():
-    def __init__(self, url, timeout=20):
+    def __init__(self, url, tokens, timeout=20):
         self.issue_n = 0
         self.url = url
+        self.tokens = tokens
         self.timeout = timeout
         self.result_data = []
         self.comment_filter = ('/skip', '/test')
@@ -63,7 +31,7 @@ class Issue():
                     url_check = json.load(f)
                     url = url_check[0]
                     self.issue_n = url_check[1]
-        issues = get_response_data(url, timeout, links=True)
+        issues = self.get_response_data(url, timeout, links=True)
         return issues
 
     def remove_tag(self, text):
@@ -82,7 +50,7 @@ class Issue():
 
     def get_commnents(self, url):
         result_comment = []
-        comments = get_response_data(url, self.timeout)
+        comments = self.get_response_data(url, self.timeout)
         for comment in comments:
             body = comment.get('body', '').strip().strip('\r').strip('\n').strip('\r').strip()
             if body and not body.startswith(self.comment_filter):
@@ -91,12 +59,12 @@ class Issue():
 
     def get_commitid(self, id, url):
         commmit_id = []
-        events = get_response_data(url, self.timeout)
+        events = self.get_response_data(url, self.timeout)
         for event in events:
             commit_url = event['commit_url']
             if commit_url:
                 # print(commit_url)
-                commit = get_response_data(commit_url, self.timeout)
+                commit = self.get_response_data(commit_url, self.timeout)
                 message = commit['commit']['message']
                 # print(message)
                 if message:
@@ -172,18 +140,56 @@ class Issue():
                 json.dump(data, fp)
                 fp.write('\n')
 
+    def get_response_data(self, url, timeout=None, links=False):
+        """
+        Request data via GET.
+        In order to use the GitHub API and increase the request limit, you need to generate a personal access token.
+            op: log in to GitHub account ->Settings->Developer settings->Personal access tokens->Generate new token.
+            example:
+                headers = {"Authorization": "Bearer ghp_1Ir70BGA3qpM3gneMTNaCnH5xcODVn0Qck1b"}
+        """
+        params = {"state": "closed", "type": "issue", "per_page": 50}
+        headers = {"Authorization": f"Bearer {self.tokens}"}
 
-if __name__ == "__main__":
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=timeout)
+            if response and response.status_code == 200:
+                if links:
+                    # Filter out 'pull request' type of issue data, only get issue data.
+                    useful_issue = [issue for issue in response.json() if "pull_request" not in issue]
+                    return useful_issue, response.links
+                else:
+                    return response.json()
+            else:
+                print("Request failed !!!")
+                if links:
+                    return None, None
+                else:
+                    return None
+        except:
+            print("Request failed !!!")
+            if links:
+                return None, None
+            else:
+                return None
+
+
+def main(args):
     """
-    This script is used to crawl issue data from Antrea. If network problems cause the script to stop executing and 
+    This script is used to crawl issue data from Antrea. If network problems cause the script to stop executing and
     output 'error', all you need to do is rerun the script.
     """
-    # config
-    # token_config = {"token": "Your GitHub account's Personal Access Token."}
-    token_config = {"token": "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"}
     # init
-    issue = Issue('https://api.github.com/repos/antrea-io/antrea/issues')
+    issue = Issue('https://api.github.com/repos/antrea-io/antrea/issues', tokens=args.github_token)
     # get issue
     issue.get_issue_data()
     # save data as JSON
     issue.save_data()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--github-token', default=None, required=True,
+                        help="Your GitHub account's Personal Access Token.")
+    args = parser.parse_args()
+    main(args)
