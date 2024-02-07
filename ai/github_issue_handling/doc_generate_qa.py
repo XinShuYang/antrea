@@ -11,8 +11,6 @@ from tqdm.auto import tqdm
 from langchain.chat_models import ChatOpenAI
 from langchain.schema import AIMessage, HumanMessage, SystemMessage
 
-openai_key = ''
-chat_model = ChatOpenAI(openai_api_key=openai_key, model_name='gpt-4-0613', temperature=0.9)
 tokenizer = tiktoken.encoding_for_model("gpt-4-0613")
 
 sys_prompt = "You are an assistant with a very strong logical ability and information analysis capability, especially adept at extracting high-quality question-and-answer pairs from articles. Please answer the questions as well as you can!"
@@ -279,6 +277,8 @@ def get_block_data(doc_contexts, drop_len=1):
 
 
 def main(args):
+    chat_model = ChatOpenAI(openai_api_key=args.openai_key, model_name='gpt-4-0613', temperature=0.9)
+
     if isinstance(args.docs_dir, str):
         all_path = glob.glob(f'{args.docs_dir}/*.md')
     else:
@@ -357,8 +357,10 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--docs-dir', default=None, required=True, help='the folder where the document is located')
+    parser.add_argument('--docs-dir', default=None, required=True,
+                        help="the folder where the document is located,example  docs_dir = './base_docs'")
+    parser.add_argument('--openai-key', default=None, required=True, help='OpenAI key for GPT-4')
     parser.add_argument('--output', default=None, required=True, help='qa path')
     args = parser.parse_args()
-    # docs_dir = './base_docs')
+    # docs_dir = './base_docs'
     main(args)
