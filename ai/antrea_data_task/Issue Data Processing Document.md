@@ -18,7 +18,7 @@ First of all, you need to change to the working directory of **github_issue_hand
 repository:
 
 ```plain
-cd ./antrea/ai/github_issue_handling
+cd ./antrea/ai/antrea_data_task
 ```
 
 You need to obtain an OAuth2 token, which can increase the amount of ISSUE data downloaded from public repositories. You
@@ -95,4 +95,10 @@ python doc_genratre_qa.py --docs-dir 'path to the document's folder' --openai-ke
 The document is segmented and questions are generated using headings:
 ```plain
 python doc_genratre_qa.py --docs-dir 'path to the document's folder' --openai-key 'openai key' --mode title
+```
+
+## Summary of conversation data regarding the Issue
+Upstream Data Summary:
+```plain
+python issue_summary_dataset.py --OAuth2-token 'Personal GitHub Access Token: Please refer to step 1.' --openai-key 'openai key' --data-type public --public-data-dir issue.json --use-model-type GPT
 ```

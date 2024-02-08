@@ -253,9 +253,9 @@ def main(args):
                     else:
                         continue
                 else:
-                    comments_result = chat_generate(source=comments_data, prompt=comments_prompt_jude)
+                    comments_result = chat_generate(gpt_model, source=comments_data, prompt=comments_prompt_jude)
                     if comments_result:
-                        body_result = chat_generate(source=data['body'], prompt=body_prompt_jude)
+                        body_result = chat_generate(gpt_model, source=data['body'], prompt=body_prompt_jude)
                         if body_result:
                             pass
                         else:
@@ -314,13 +314,13 @@ if __name__ == '__main__':
     parser.add_argument('--local-api-base', default='http://8.217.24.14:8001/v1',
                         help="example:'http://ip:port/v1',For details, please refer to the Langchain documentation.")
 
-    parser.add_argument('--data_type', default='public',
+    parser.add_argument('--data-type', default='public',
                         help="Select the type of data processing, open-source data 'public', and private data 'private'.")
     parser.add_argument('--public-data-dir', default=None, required=True,
                         help="Open-source data path")
     parser.add_argument('--private-data-dir', default=None,
                         help="Private-source data path")
-    parser.add_argument('--use_model_type', default='GPT',
+    parser.add_argument('--use-model-type', default='GPT',
                         help="There are two models for processing data: using the online model 'GPT', and using the local model 'vicuna'")
     args = parser.parse_args()
     main(args)
