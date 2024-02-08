@@ -84,3 +84,15 @@ python issue_label_evaluate_datasets.py --openai-key 'You openai key' --job-id '
 ```
 
 The final generated validation dataset file name is: **issue_evaluate_datasets.json**
+
+## 关于文档生成QA问答对
+The script for generating QA pairs from the document is doc_generate_qa.py. The --docs-dir argument specifies the path to the folder containing the documents.
+
+Document is segmented to generate detailed QA pairs:
+```plain
+python doc_genratre_qa.py --docs-dir 'path to the document's folder' --openai-key 'openai key' --mode all
+```
+The document is segmented and questions are generated using headings:
+```plain
+python doc_genratre_qa.py --docs-dir 'path to the document's folder' --openai-key 'openai key' --mode title
+```
