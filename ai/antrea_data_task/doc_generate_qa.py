@@ -51,7 +51,7 @@ title_prompt = "It is known that the Antrea project has a markdown document rela
 title_prompt_3 = "It is known that the Antrea project has a markdown document related to the introduction and application of '{fn}'. I will give you a title from this document or two related titles with a clear hierarchy, along with a segment of body text. Please distill the information from the body text to refine the title(s), and then create just one concise question sentence. The output format should be: '''{{'Question': one succinct question sentence}}'''，Please strictly adhere to the output format!"
 
 
-def chat_generate(chat_model, prompt, source):
+def chat_title_generate(chat_model, prompt, source):
     content = None
     messages = [
         SystemMessage(
@@ -65,6 +65,31 @@ def chat_generate(chat_model, prompt, source):
             chat = chat_model(messages)
             content = eval(chat.content)['Question']
             # content = chat.content
+        except:
+            if _ == 4:
+                print(f"block is false")
+                content = None
+        else:
+            content = content
+            break
+
+    return content
+
+
+def chat_all_generate(chat_model, prompt, source):
+    content = None
+    messages = [
+        SystemMessage(
+            content=prompt
+        ),
+        HumanMessage(
+            content=f"{source}"),
+    ]
+
+    for _ in range(5):
+        try:
+            chat = chat_model(messages)
+            content = eval(chat.content)
         except:
             if _ == 4:
                 print(f"block is false")
@@ -131,7 +156,7 @@ def get_q_format(idx, in_dox, q_txt, a_txt):
     return idx, qa_format
 
 
-def get_block_data(doc_contexts, drop_len=1):
+def get_title_block_data(doc_contexts, drop_len=1):
     block_dict_data = {}
     block_data = []
     block_context = ['## ' + context if idx != 0 else context for idx, context in
@@ -276,7 +301,181 @@ def get_block_data(doc_contexts, drop_len=1):
     return block_dict_data
 
 
-def main(args):
+def get_all_block_data(doc_contexts, drop_len=20):
+    block_data = []
+    block_context = ['## ' + context if idx != 0 else context for idx, context in
+                     enumerate(doc_contexts.split('\n## ')) if
+                     '<!-- toc -->' not in context and '<!-- TOC -->' not in context]
+    for i, block in enumerate(block_context):
+        if i == 0 and len(block_context) > 1:
+            continue
+
+        if i == 0 and len(block_context) == 1:
+            block_data.append(block)
+            continue
+
+        if len(re.findall('\n### ', block)) >= 2:
+            two_level_context = [context if idx == 0 else '### ' + context for idx, context in
+                                 enumerate(block.split('\n### '))]
+            block_data.append(block_context[0] + two_level_context[0])
+
+            for j, two_level_block in enumerate(two_level_context):
+                if j == 0: continue
+
+                if len(re.findall('\n#### ', two_level_block)) >= 2:
+                    three_level_context = [context if idx == 0 else '#### ' + context for idx, context in
+                                           enumerate(two_level_block.split('\n#### '))]
+
+                    block_data.append(two_level_context[0] + three_level_context[0])
+                    for m, three_level_block in enumerate(three_level_context):
+                        if m == 0: continue
+
+                        if len(re.findall('\n##### ', three_level_block)) >= 2:
+
+                            four_level_context = [context if idx == 0 else '##### ' + context for idx, context in
+                                                  enumerate(three_level_block.split('\n##### '))]
+
+                            block_data.append(three_level_context[0] + four_level_context[0])
+                            for n, four_level_block in enumerate(four_level_context):
+                                if n == 0: continue
+
+                                if len(re.findall('\n###### ', four_level_block)) >= 2:
+                                    pass
+                                elif len(re.findall('\n###### ', four_level_block)) == 1:
+                                    block_data.append(four_level_block)
+                                else:
+                                    if len(four_level_block.split(' ')) >= drop_len:
+                                        block_data.append(four_level_context[0] + four_level_block)
+                                    elif len(
+                                            four_level_context[0].split(' ')) <= drop_len and '```' in four_level_block:
+                                        block_data.append(
+                                            three_level_context[0] + four_level_context[0] + four_level_block)
+                                    else:
+                                        pass
+
+                        elif len(re.findall('\n##### ', three_level_block)) == 1:
+                            block_data.append(three_level_block)
+                        else:
+                            if len(three_level_block.split(' ')) >= drop_len:
+                                block_data.append(three_level_context[0] + three_level_block)
+                            elif len(three_level_context[0].split(' ')) <= drop_len and '```' in three_level_block:
+                                block_data.append(two_level_context[0] + three_level_context[0] + three_level_block)
+                            else:
+                                pass
+                elif len(re.findall('\n#### ', two_level_block)) == 1:
+                    block_data.append(two_level_block)
+                else:
+                    if len(two_level_block.split(' ')) >= drop_len:
+                        block_data.append(two_level_context[0] + two_level_block)
+                    elif len(two_level_context[0].split(' ')) <= drop_len and '```' in two_level_block:
+                        block_data.append(block_context[0] + two_level_context[0] + two_level_block)
+                    else:
+                        pass
+
+
+        elif len(re.findall('\n### ', block)) == 1:
+            block_data.append(block)
+        else:
+            block_data.append(block_context[0] + block)
+
+    return block_data
+
+
+def sliding_window(sequence, window_size, step_size):
+    num_windows = int(str(len(sequence))[0]) + 1
+    windows = []
+    for i in range(num_windows):
+        start = i * step_size
+        end = start + window_size
+        # 确保我们不会超出列表的长度
+        if len(sequence[end:]) < 250:
+            windows.append(sequence[start:])
+            break
+        windows.append(sequence[start:end])
+    return windows
+
+
+def get_value(v):
+    if 0 <= v < 50:
+        return 3
+    elif 50 <= v < 200:
+        return 4
+    elif 200 <= v < 400:
+        return 6
+    elif 400 <= v < 500:
+        return 7
+    elif 500 <= v < 600:
+        return 8
+    elif 600 <= v < 800:
+        return 12
+    elif 800 <= v < 1000:
+        return 15
+    elif 1000 <= v < 1500:
+        return 13
+    elif v >= 1500:
+        return 13
+    else:
+        raise 'ERROR'
+
+
+def all_main(args):
+    chat_model = ChatOpenAI(openai_api_key=args.openai_key, model_name='gpt-4-0613', temperature=0.9)
+
+    if isinstance(args.docs_dir, str):
+        all_path = glob.glob(f'{args.docs_dir}/*.md')
+    else:
+        raise 'args.docs_dir is error'
+    for idx, path in enumerate(all_path):
+        print(f'Processing {path}')
+        print(f'--------')
+        num = 0
+        data = []
+        data_result = []
+        with open(path, 'r', encoding='utf-8') as fp:
+            doc_context = fp.read()
+
+        hash_sequences = re.findall(r'#+', doc_context)
+        longest_sequence = max(hash_sequences, key=len)
+        if len(longest_sequence) >= 5: print(len(longest_sequence))
+
+        data = get_all_block_data(doc_contexts=doc_context)
+
+        # 数据规范处理
+        filter_data = [cn for cn in data if len(tokenizer.encode(cn)) >= 30 and len(tokenizer.encode(cn)) <= 1700]
+        for sl in data:
+            s_token = tokenizer.encode(sl)
+            if len(s_token) >= 1700:
+                filter_data += [tokenizer.decode(sw) for sw in
+                                sliding_window(sequence=s_token, window_size=1250, step_size=1000)]
+
+        data = filter_data
+        # # chat generate
+        progress_bar = tqdm(range(len(data)))
+        for idc, data_pro in enumerate(data):
+            progress_bar.update(1)
+
+            source = hum_prompt.format(fn=os.path.basename(path).split('.')[0],
+                                       qa_num=get_value(len(tokenizer.encode(data_pro)))) + data_pro
+            qa_result = chat_all_generate(chat_model, prompt=sys_prompt, source=source)
+            if qa_result:
+                re_num, data_result = get_qa_format(idx=num, inputs=qa_result, outputs=data_result)
+                num = re_num
+            #
+            # refined_qa_num = len(re.findall("```", data_pro)) // 2
+            # if refined_qa_num > 0:
+            #     re_source = refined_hum_prompt.format(fn=os.path.basename(path).split('.')[0]) + data_pro
+            #
+            #     qa_result = chat_all_generate(chat_model, prompt=sys_prompt, source=re_source)
+            #     if qa_result:
+            #         re_num, data_result = get_qa_format(idx=num, inputs=qa_result, outputs=data_result)
+            #         num = re_num
+        if len(data_result) > 0:
+            name = os.path.basename(path).split('.')[0]
+            with open(f'{name}.json', 'w', encoding='utf-8') as f:
+                json.dump(data_result, f, indent=4)
+
+
+def title_main(args):
     chat_model = ChatOpenAI(openai_api_key=args.openai_key, model_name='gpt-4-0613', temperature=0.9)
 
     if isinstance(args.docs_dir, str):
@@ -288,7 +487,6 @@ def main(args):
     data = {}
     data_result = []
     for idx, path in enumerate(all_path):
-
         doc_name = os.path.basename(path).split('.')[0]
         data[doc_name] = {}
         with open(path, 'r', encoding='utf-8') as fp:
@@ -297,7 +495,7 @@ def main(args):
         hash_sequences = re.findall(r'#+', doc_context)
         longest_sequence = max(hash_sequences, key=len)
         if len(longest_sequence) >= 5: print(len(longest_sequence))
-        data[doc_name].update(get_block_data(doc_contexts=doc_context))
+        data[doc_name].update(get_title_block_data(doc_contexts=doc_context))
 
     for _, (doc, bz_block) in enumerate(data.items()):
         for idc, (title, block) in enumerate(bz_block.items()):
@@ -326,7 +524,7 @@ def main(args):
                         ## source = 'title context:' + title + '\n' + 'explanatory text:' + block
                         sys_prompt = title_prompt_3.format(fn=doc_name)
                         source = 'title context:' + title + '\n' + 'body text:' + block
-                    q_result = chat_generate(chat_model, prompt=sys_prompt, source=source)
+                    q_result = chat_title_generate(chat_model, prompt=sys_prompt, source=source)
                     if q_result:
                         re_num, qa_format = get_q_format(idx=num, in_dox=doc, q_txt=q_result, a_txt=block)
                         data_result.append(qa_format)
@@ -342,7 +540,7 @@ def main(args):
                     ## source = 'title context:' + title + '\n' + 'explanatory text:' + block
                     sys_prompt = title_prompt_3.format(fn=doc_name)
                     source = 'title context:' + title + '\n' + 'body text:' + block
-                q_result = chat_generate(chat_model, prompt=sys_prompt, source=source)
+                q_result = chat_title_generate(chat_model, prompt=sys_prompt, source=source)
                 if q_result:
                     re_num, qa_format = get_q_format(idx=num, in_dox=doc, q_txt=q_result, a_txt=block)
                     data_result.append(qa_format)
@@ -351,16 +549,22 @@ def main(args):
             print(f'{title}')
 
     if len(data_result) > 0:
-        with open(f'{args.output}', 'w', encoding='utf-8') as f:
+        with open(f'doc_title_dataset.json', 'w', encoding='utf-8') as f:
             json.dump(data_result, f, indent=4)
+
+
+def main(args):
+    if args.mode == 'all':
+        all_main(args)
+    else:
+        title_main(args)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--docs-dir', default=None, required=True,
-                        help="the folder where the document is located,example  docs_dir = './base_docs'")
+    parser.add_argument('--docs-dir', default=None, required=True, help='the folder where the document is located')
     parser.add_argument('--openai-key', default=None, required=True, help='OpenAI key for GPT-4')
-    parser.add_argument('--output', default=None, required=True, help='qa path')
+    parser.add_argument('--mode', default='all', required=True)
     args = parser.parse_args()
-    # docs_dir = './base_docs'
+    # example: docs_dir = './base_docs')
     main(args)
