@@ -112,10 +112,23 @@ The final generated validation dataset file name is: **issue_evaluate_datasets.j
 
 The issue_summary_dataset.py program is primarily designed to summarize review data.The **--use-prompt-type** parameter
 specifies the type of 'prompt' used to guide the model in summarization. There are three types available: **simple**、**COT**、**TOT**, with the default being **simple**.
+
+If you need to summarize the comment data under private issue data, please first convert the private data in CGI file format to JSON format for storage:
+
+```plain
+python private_data_extraction.py --private-cgi-file 'The folder path where the CGI file resides'
+```
+
 Summarize several comment texts under open source issue data and generate fine-tunable question-answer pair data:
 
 ```plain
 python issue_summary_dataset.py --OAuth2-token 'Personal GitHub Access Token: Please refer to step 1.' --openai-key 'openai key' --data-type public --public-data-dir issue.json --use-prompt-type simple --use-model-type GPT
+```
+
+Summarize several comment texts under private issue data and generate fine-tunable question-answer pair data:
+
+```plain
+python issue_summary_dataset.py --local-api-key None --local-model-name None --local-api-base None --data-type private --private-data-dir xxx.json --use-prompt-type simple --use-model-type 'Arbitrary Name'
 ```
 
 ### Additional Attention

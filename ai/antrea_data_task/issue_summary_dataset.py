@@ -275,9 +275,22 @@ def main(args):
 
             # local model
             else:
-                source = f"""Conversation List: {input_cont}"""
-                content = chat_generate(local_model, source=source, prompt=sample_prompt_summary,
-                                        model_type=use_model_type)
+
+                if args.use_prompt_type == 'simple':
+                    source = f"""Conversation List: {input_cont['comments']}"""
+                    content = chat_generate(local_model, source=source, prompt=sample_prompt_summary)
+
+                elif args.use_prompt_type == 'COT':
+                    source = hum_summary_prompt.format(info=input_cont['comments'], pr_info=None)
+                    content = chat_generate(local_model, source=source, prompt=sys_summary_prompt)
+
+                elif args.use_prompt_type == 'TOT':
+                    source = input_cont['comments']
+                    ptm = Thought_T_Prompt + sample_prompt_summary
+                    content = chat_generate(local_model, source=source, prompt=ptm)
+                else:
+                    raise 'Prompt type error!'
+
 
             if content != '':
                 qa_format = {
