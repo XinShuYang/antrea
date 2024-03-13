@@ -15,13 +15,17 @@ tokenizer = tiktoken.encoding_for_model("gpt-4-0314")
 ## GPT4
 body_prompt_jude = "Given the main text of a problem data, please analyze that content and determine whether it describes an error message. If it does, please output True; if not, please output False. The required output format is {'result': (True or False)}. Think step by step and provide the result. Main text content:"
 comments_prompt_jude = "I have a list of conversations that contain multiple dialogues. Please analyze whether these conversations include specific solutions or clear instructions for operational steps. If so, output as True; otherwise, output as False. The output format should be {'result': True or False}. Let's proceed step by step."
-# 1.
+
+# simple.
+sample_prompt_summary = "Given a list of conversation data that primarily discusses and attempts to solve a particular issue, please summarize the specific solutions or approaches to solving this problem from the content of the conversations. Ensure complete retention of the original dialogue content that includes operational instructions, code changes, and specific parameter configurations, while ignoring other content. At the end, from the perspective of an advisor, articulate the summarized content in the second person, avoiding the use of pronouns. Aim for sentences that are as long as possible, proceeding step by step."
+
+# cot.
 sys_summary_prompt = "You are an experienced data analysis engineer, particularly skilled at analyzing and extracting key information from multiple conversations and integrating it into a coherent text. Please answer the questions as well as you can!"
 hum_summary_prompt = """There is an issue data from the Antrea project, where only the dialogue content from multiple commenters under the Issue data is taken and provided to you. Now you need to analyze these dialogue contents and extract the key information to merge into a smooth text.
                         Important hints:
                             1.The key information should be specific, explicit, and clear in its description of the solution.
-                            2.After extracting the key information, compose it into a text passage. This should be from the perspective of the proposer, using the first-person narrative to rephrase the information. Moreover, the tone of the text should reflect that it is being considered from the standpoint of proposing solutions and presenting outcomes.
-                            3.If information about a PR submission is provided outside the context of the conversation, then this PR is certainly a solution to the current problem. The text information should include the names of the files involved, the names of the functions within these files, and detailed changes within the code of these functions. Display the code changes using Markdown format. At the end of the text information, declare that the issue has been resolved and provide the specific date, accurate to the day.
+                            2. After extracting the key information, compose it into a text passage. It should be rephrased in the second person perspective, as if you were standing as an advisor, and the tone of the text should reflect that you are thinking from the standpoint of proposing solutions and providing results.
+                            3.If information about a PR submission is provided outside the context of the conversation, then this PR is certainly a solution to the current problem. The text information should include the names of the files involved, the names of the functions within these files, and detailed changes within the code of these functions. Display the code changes using Markdown format. At the end of the text message, state that the issue has been resolved and to please install the latest version.
                             4.The text information should avoid including expressions that reveal twists or interpretative statements based on new findings or results that emerged later.
                         Exact requirements:
                             1.The text information must not contain words composed of '@' followed by any characters, such as @uablrek.
@@ -32,16 +36,9 @@ hum_summary_prompt = """There is an issue data from the Antrea project, where on
                         Issue comments: {info}
                         PR information: {pr_info}
                      """
-# 2.
-sample_prompt_summary = "You have a list of dialogues that mainly discuss and attempt to solve a certain problem. Information on the solutions should include specific methods or clear operation instructions, along with detailed parameter configurations. Please summarize the main solutions from these dialogues, making sure to retain the complete commands and parameter settings. Finally, from the perspective of the advisor, use the second person to express the solution methods. Avoid using pronouns, and the longer the sentences, the better. Take it step by step."
 
-##local model
-sample_prompt_summary = "I have a list of dialogues; please summarize the dialogue text. The summary should involve specific solutions or clear directive operations, without any pronouns. Lastly, express the entire text in the first person, and the longer the sentences, the better. step by step!"
-
-
-# sample_prompt_summary = "You have a list of dialogues that mainly discuss and attempt to solve a certain problem. Information on the solutions should include specific methods or clear operation instructions, along with detailed parameter configurations. Please summarize the main solutions from these dialogues, making sure to retain the complete commands and parameter settings. Finally, from the perspective of the advisor, use the second person to express the solution methods. Avoid using pronouns, and the longer the sentences, the better. Take it step by step."
-# sample_prompt_summary = "Given a list of dialogues, you need to extract key information from the conversational data. The key information should involve specific solutions or clear operational instructions, as well as detailed parameter configurations. Then, integrate them into a single sentence. Retain the complete commands and parameter configurations, do not include pronominal references, avoid suggestions for modifying documents, and finally, express the entire sentence from the perspective of the advisor using the second person. The longer the sentence, the better. Take it step by step."
-# sample_prompt_summary = local_summary_prompt
+# tot
+Thought_T_Prompt = "Imagine three different experts are answering this question. All experts will write down 1 step of their thinking, then share it with the group. Then all experts will go on to the next step, etc. If any expert realises they're wrong at any point then they leave. The question: "
 
 
 def chat_generate(chat_model, source, prompt, model_type='GPT'):
@@ -75,20 +72,16 @@ def get_pull_request(auth, issue_id):
 
     issue = repo.get_issue(number=int(issue_id))
     data = None
-    # 通过时间线事件查找相关的提交
     for event in issue.get_timeline():
-        # 检查事件类型
-        # print(event.event)
+
         if event.event == "referenced":
             try:
-                # 获取事件相关的提交SHA
                 commit_sha = event.commit_id
-                # 获取提交对象
                 commit = repo.get_commit(sha=commit_sha)
             except:
                 return []
             pr_str = f"PR submission information:{{'commit_message':{commit.commit.message},'commit_date':{commit.commit.author.date}}}。"
-            # 获取文件更改信息
+            # file change info
             for file in commit.files:
                 pr_str += f"Filename and changes made to the file:{{'filename':{file.filename},'diff':{file.patch}}}"
             data = pr_str
@@ -241,7 +234,6 @@ def main(args):
                 comments_data = f"""Conversation List: {input_cont['comments']}"""
 
                 if body_len < comments_len:
-                    # 判断是否是一个错误信息的描述
                     body_result = chat_generate(gpt_model, source=data['body'], prompt=body_prompt_jude)
                     if body_result:
                         # 判断对话内容中是否是有提供明确的解决方法
@@ -265,14 +257,21 @@ def main(args):
 
                 if body_result and comments_result:
                     PR = get_pull_request(auth, data['issue_id'])
-                    # source = hum_summary_prompt.format(info=input_cont, pr_info=pr if pr else None)
-                    # content = chat_generate(gpt_model,source=source, prompt=sys_summary_prompt)
 
-                    input_cont['comments'].append(PR)
-                    if len(tokenizer.encode(f"{input_cont['comments']}")) > 6000:
-                        continue
-                    source = f"""Conversation List: {input_cont['comments']}"""
-                    content = chat_generate(gpt_model, source=source, prompt=sample_prompt_summary)
+                    if args.use_prompt_type == 'simple':
+                        source = f"""Conversation List: {input_cont['comments']}"""
+                        content = chat_generate(gpt_model, source=source, prompt=sample_prompt_summary)
+
+                    elif args.use_prompt_type == 'COT':
+                        source = hum_summary_prompt.format(info=input_cont['comments'], pr_info=PR if PR else None)
+                        content = chat_generate(gpt_model, source=source, prompt=sys_summary_prompt)
+
+                    elif args.use_prompt_type == 'TOT':
+                        source = input_cont['comments']
+                        ptm = Thought_T_Prompt + sample_prompt_summary
+                        content = chat_generate(gpt_model, source=source, prompt=ptm)
+                    else:
+                        raise 'Prompt type error!'
 
             # local model
             else:
@@ -320,6 +319,8 @@ if __name__ == '__main__':
                         help="Open-source data path")
     parser.add_argument('--private-data-dir', default=None,
                         help="Private-source data path")
+    parser.add_argument('--use-prompt-type', default='simple', choices=['simple', 'COT', 'TOT'],
+                        help="prompt was used to summarize the review data")
     parser.add_argument('--use-model-type', default='GPT',
                         help="There are two models for processing data: using the online model 'GPT', and using the local model 'vicuna'")
     args = parser.parse_args()
