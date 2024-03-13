@@ -1,0 +1,33 @@
+
+
+Step 1: Download the data.
+
+    0. Obtain an OAuth2 token. You need to create a new token in the "Developer settings" -> "Personal access tokens" -> "Generate new token" section of your GitHub account settings.
+       When creating the token, you need to choose the permissions for this token. For reading the issues of public repositories, you need the "public_repo" permission.
+       Fill in your token in the token_config parameter of the issue_clawer program.
+
+    1. Run python issue_clawer.py (Note: The program may be interrupted due to network reasons, just re-run the command).
+
+Step 2: Filter duplicate data.
+
+    0. Run python issue_filter.py
+
+Step 3: Process the data into QA format.
+
+    The issue_prompt_process.py has two parameters: '--assign-labels' and '--add-labels'.
+
+        0.--assign-labels : Specify the 'label' name to generate data that only includes the specified 'label' name.
+            Example: Generate data that only includes the 'bug' and 'api' tags.
+                Run python issue_prompt_process.py --assign-labels bug api
+
+        1.--add-labels : Add additional label names, you need to specify the mapping relationship of the label.
+            Example: Take the 'label' of the 'issue' on GitHub as an example, add "{'triage/duplicate': 'xx',}". 'xx' represents the custom label name.
+                Run python issue_prompt_process.py --add-labels "{'triage/duplicate': 'xx',}"
+
+        2.You can also use both parameters at the same time, that is, add additional labels and use the specified labels to generate data.
+            Example:
+                Run python issue_prompt_process.py --assign-labels bug api xx --add-labels "{'triage/duplicate': 'xx',}"
+
+        3.Default: use all labels.
+            Example:
+                Run python issue_prompt_process.py
