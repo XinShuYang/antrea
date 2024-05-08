@@ -37,6 +37,7 @@ import (
 	"k8s.io/component-base/metrics/legacyregistry"
 
 	"antrea.io/antrea/pkg/agent/config"
+	"antrea.io/antrea/pkg/agent/controller/networkpolicy/l7engine"
 	"antrea.io/antrea/pkg/agent/metrics"
 	"antrea.io/antrea/pkg/agent/openflow"
 	proxytypes "antrea.io/antrea/pkg/agent/proxy/types"
@@ -47,6 +48,7 @@ import (
 	"antrea.io/antrea/pkg/client/clientset/versioned/fake"
 	"antrea.io/antrea/pkg/querier"
 	"antrea.io/antrea/pkg/util/channel"
+	"antrea.io/antrea/pkg/util/wait"
 )
 
 const testNamespace = "ns1"
@@ -76,9 +78,36 @@ func newTestController() (*Controller, *fake.Clientset, *mockReconciler) {
 	groupIDAllocator := openflow.NewGroupAllocator()
 	groupCounters := []proxytypes.GroupCounter{proxytypes.NewGroupCounter(groupIDAllocator, ch2)}
 	fs := afero.NewMemMapFs()
-	controller, _ := NewNetworkPolicyController(&antreaClientGetter{clientset}, nil, nil, fs, "node1", podUpdateChannel, nil, groupCounters, ch2, true, true, true, true, false, nil, testAsyncDeleteInterval, "8.8.8.8:53", config.K8sNode, true, false, config.HostGatewayOFPort, config.DefaultTunOFPort, &config.NodeConfig{})
+	l7reconciler := l7engine.NewReconciler()
+	controller, _ := NewNetworkPolicyController(&antreaClientGetter{clientset},
+		nil,
+		nil,
+		nil,
+		fs,
+		"node1",
+		podUpdateChannel,
+		nil,
+		groupCounters,
+		ch2,
+		true,
+		true,
+		false,
+		true,
+		true,
+		false,
+		nil,
+		testAsyncDeleteInterval,
+		"8.8.8.8:53",
+		config.K8sNode,
+		true,
+		false,
+		config.DefaultHostGatewayOFPort,
+		config.DefaultTunOFPort,
+		&config.NodeConfig{},
+		wait.NewGroup(),
+		l7reconciler)
 	reconciler := newMockReconciler()
-	controller.reconciler = reconciler
+	controller.podReconciler = reconciler
 	controller.auditLogger = nil
 	return controller, clientset, reconciler
 }

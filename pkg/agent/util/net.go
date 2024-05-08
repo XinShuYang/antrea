@@ -72,15 +72,15 @@ func generateInterfaceName(key string, name string, useHead bool) string {
 }
 
 // GenerateContainerInterfaceKey generates a unique string for a Pod's
-// interface as: container/<Container-ID>.
+// interface as: "c/<Container-ID>/<IFDev-Name>".
 // We must use ContainerID instead of PodNamespace + PodName because there could
 // be more than one container associated with the same Pod at some point.
 // For example, when deleting a StatefulSet Pod with 0 second grace period, the
 // Pod will be removed from the Kubernetes API very quickly and a new Pod will
 // be created immediately, and kubelet may process the deletion of the previous
 // Pod and the addition of the new Pod simultaneously.
-func GenerateContainerInterfaceKey(containerID string) string {
-	return fmt.Sprintf("container/%s", containerID)
+func GenerateContainerInterfaceKey(containerID, ifDev string) string {
+	return fmt.Sprintf("c/%s/%s", containerID, ifDev)
 }
 
 // GenerateNodeTunnelInterfaceKey generates a unique string for a Node's
@@ -133,10 +133,6 @@ func newLinkNotFoundError(name string) LinkNotFound {
 
 func listenUnix(address string) (net.Listener, error) {
 	return net.Listen("unix", address)
-}
-
-func dialUnix(address string) (net.Conn, error) {
-	return net.Dial("unix", address)
 }
 
 // GetIPNetDeviceFromIP returns local IPs/masks and associated device from IP, and ignores the interfaces which have
@@ -445,7 +441,7 @@ func GetIPNetsByLink(link *net.Interface) ([]*net.IPNet, error) {
 	}
 	var addrs []*net.IPNet
 	for _, a := range addrList {
-		if ipNet, ok := a.(*net.IPNet); ok {
+		if ipNet, ok := a.(*net.IPNet); ok && !ipNet.IP.IsLinkLocalUnicast() {
 			addrs = append(addrs, ipNet)
 		}
 	}

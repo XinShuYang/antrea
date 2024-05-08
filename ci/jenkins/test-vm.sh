@@ -20,7 +20,7 @@ function echoerr {
     >&2 echo "$@"
 }
 
-DOCKER_REGISTRY="projects.registry.vmware.com"
+DOCKER_REGISTRY=$(head -n1 "${WORKSPACE}/ci/docker-registry")
 DEFAULT_WORKDIR="/var/lib/jenkins"
 ANTREA_AGENT_KUBECONFIG="antrea-agent.kubeconfig"
 ANTREA_AGENT_ANTREA_KUBECONFIG="antrea-agent.antrea.kubeconfig"
@@ -142,7 +142,7 @@ function apply_antrea {
         fi
     fi
     TEMP_ANTREA_TAR="antrea-image.tar"
-    docker save antrea/antrea-ubuntu:latest -o $TEMP_ANTREA_TAR
+    docker save antrea/antrea-agent-ubuntu:latest antrea/antrea-controller-ubuntu:latest -o $TEMP_ANTREA_TAR
     ctr -n k8s.io image import $TEMP_ANTREA_TAR
     rm $TEMP_ANTREA_TAR
     echo "====== Applying Antrea yaml ======"

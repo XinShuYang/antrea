@@ -47,7 +47,8 @@ MOCKGEN_TARGETS=(
   "pkg/agent/types McastNetworkPolicyController testing"
   "pkg/agent/nodeportlocal/portcache LocalPortOpener testing"
   "pkg/agent/nodeportlocal/rules PodPortRules testing"
-  "pkg/agent/openflow Client,OFEntryOperations testing"
+  "pkg/agent/openflow Client testing"
+  "pkg/agent/openflow/operations OFEntryOperations testing"
   "pkg/agent/proxy Proxier testing"
   "pkg/agent/querier AgentQuerier testing"
   "pkg/agent/route Interface testing"
@@ -59,7 +60,7 @@ MOCKGEN_TARGETS=(
   "pkg/agent/util/netlink Interface testing mock_netlink_linux.go"
   "pkg/agent/wireguard Interface testing mock_wireguard.go"
   "pkg/antctl AntctlClient ."
-  "pkg/controller/networkpolicy EndpointQuerier testing"
+  "pkg/controller/networkpolicy EndpointQuerier,PolicyRuleQuerier testing"
   "pkg/controller/querier ControllerQuerier testing"
   "pkg/flowaggregator/exporter Interface testing"
   "pkg/ipfix IPFIXExportingProcess,IPFIXRegistry,IPFIXCollectingProcess,IPFIXAggregationProcess testing"
@@ -84,7 +85,7 @@ fi
 
 function generate_antrea_client_code {
   # Generate protobuf code for CNI gRPC service with protoc.
-  protoc --go_out=plugins=grpc:. pkg/apis/cni/v1beta1/cni.proto
+  protoc --go_out=. --go-grpc_out=. pkg/apis/cni/v1beta1/cni.proto
 
   # Generate clientset and apis code with K8s codegen tools.
   $GOPATH/bin/client-gen \
@@ -94,7 +95,6 @@ function generate_antrea_client_code {
     --input "system/v1beta1" \
     --input "crd/v1alpha1" \
     --input "crd/v1alpha2" \
-    --input "crd/v1alpha3" \
     --input "crd/v1beta1" \
     --input "stats/v1alpha1" \
     --output-package "${ANTREA_PKG}/pkg/client/clientset" \
@@ -109,7 +109,6 @@ function generate_antrea_client_code {
   $GOPATH/bin/lister-gen \
     --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1alpha1" \
     --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1alpha2" \
-    --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1alpha3" \
     --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1beta1" \
     --output-package "${ANTREA_PKG}/pkg/client/listers" \
     --go-header-file hack/boilerplate/license_header.go.txt
@@ -118,7 +117,6 @@ function generate_antrea_client_code {
   $GOPATH/bin/informer-gen \
     --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1alpha1" \
     --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1alpha2" \
-    --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1alpha3" \
     --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1beta1" \
     --versioned-clientset-package "${ANTREA_PKG}/pkg/client/clientset/versioned" \
     --listers-package "${ANTREA_PKG}/pkg/client/listers" \
@@ -131,7 +129,6 @@ function generate_antrea_client_code {
     --input-dirs "${ANTREA_PKG}/pkg/apis/system/v1beta1" \
     --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1alpha1" \
     --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1alpha2" \
-    --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1alpha3" \
     --input-dirs "${ANTREA_PKG}/pkg/apis/crd/v1beta1" \
     --input-dirs "${ANTREA_PKG}/pkg/apis/stats" \
     --input-dirs "${ANTREA_PKG}/pkg/apis/stats/v1alpha1" \

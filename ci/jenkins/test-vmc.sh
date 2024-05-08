@@ -189,10 +189,10 @@ function release_static_ip() {
 function setup_cluster() {
     export KUBECONFIG=$KUBECONFIG_PATH
     if [ -z $K8S_VERSION ]; then
-      export K8S_VERSION=v1.28.0
+      export K8S_VERSION=v1.29.0
     fi
     if [ -z $TEST_OS ]; then
-      export TEST_OS=ubuntu-2004
+      export TEST_OS=ubuntu-2204
     fi
     export OVA_TEMPLATE_NAME=${TEST_OS}-kube-${K8S_VERSION}
     rm -rf ${GIT_CHECKOUT_DIR}/jenkins || true
@@ -350,11 +350,12 @@ function deliver_antrea {
 
     # The cleanup and stats are best-effort.
     set +e
-    docker images | grep "${JOB_NAME}" | awk '{print $3}' | uniq | xargs -r docker rmi -f > /dev/null
+    docker images --format "{{.Repository}}:{{.Tag}}" | grep "${JOB_NAME}" | xargs -r docker rmi -f > /dev/null
     # Clean up dangling and unused images generated in previous builds. Recent ones must be excluded
     # because they might be being used in other builds running simultaneously.
     docker image prune -af --filter "until=1h" > /dev/null
     docker system df -v
+    check_and_cleanup_docker_build_cache
     set -e
 
     cd $GIT_CHECKOUT_DIR
@@ -411,7 +412,7 @@ function deliver_antrea {
             OLD_ANTREA_VERSION="$(cd $GIT_CHECKOUT_DIR | git tag | sort -Vr | head -n 1)"
         fi
         # Let antrea controller use new Antrea image
-        sed -i "0,/antrea-ubuntu:latest/{s/antrea-ubuntu:latest/antrea-ubuntu:$DOCKER_IMG_VERSION/}" ${GIT_CHECKOUT_DIR}/build/yamls/$antrea_yml
+        sed -i "0,/antrea-controller-ubuntu:latest/{s/antrea-controller-ubuntu:latest/antrea-controller-ubuntu:$DOCKER_IMG_VERSION/}" ${GIT_CHECKOUT_DIR}/build/yamls/$antrea_yml
     fi
 
     sed -i "s|#serviceCIDR: 10.96.0.0/12|serviceCIDR: 100.64.0.0/13|g" $GIT_CHECKOUT_DIR/build/yamls/$antrea_yml
@@ -424,10 +425,12 @@ function deliver_antrea {
     export KUBECONFIG=${GIT_CHECKOUT_DIR}/jenkins/out/kubeconfig
 
     if [[ "$COVERAGE" == true ]]; then
-        docker save -o antrea-ubuntu-coverage.tar antrea/antrea-ubuntu-coverage:${DOCKER_IMG_VERSION}
+        docker save -o antrea-agent-ubuntu-coverage.tar antrea/antrea-agent-ubuntu-coverage:${DOCKER_IMG_VERSION}
+        docker save -o antrea-controller-ubuntu-coverage.tar antrea/antrea-controller-ubuntu-coverage:${DOCKER_IMG_VERSION}
         docker save -o flow-aggregator-coverage.tar antrea/flow-aggregator-coverage:${DOCKER_IMG_VERSION}
     else
-        docker save -o antrea-ubuntu.tar antrea/antrea-ubuntu:${DOCKER_IMG_VERSION}
+        docker save -o antrea-agent-ubuntu.tar antrea/antrea-agent-ubuntu:${DOCKER_IMG_VERSION}
+        docker save -o antrea-controller-ubuntu.tar antrea/antrea-controller-ubuntu:${DOCKER_IMG_VERSION}
         docker save -o flow-aggregator.tar antrea/flow-aggregator:${DOCKER_IMG_VERSION}
     fi
 
@@ -439,10 +442,12 @@ function deliver_antrea {
     do
         ssh-keygen -f "/var/lib/jenkins/.ssh/known_hosts" -R ${IPs[$i]}
         if [[ "$COVERAGE" == true ]]; then
-            copy_image antrea-ubuntu-coverage.tar docker.io/antrea/antrea-ubuntu-coverage ${IPs[$i]} ${DOCKER_IMG_VERSION} true
+            copy_image antrea-agent-ubuntu-coverage.tar docker.io/antrea/antrea-agent-ubuntu-coverage ${IPs[$i]} ${DOCKER_IMG_VERSION} true
+            copy_image antrea-controller-ubuntu-coverage.tar docker.io/antrea/antrea-controller-ubuntu-coverage ${IPs[$i]} ${DOCKER_IMG_VERSION} true
             copy_image flow-aggregator-coverage.tar docker.io/antrea/flow-aggregator-coverage ${IPs[$i]} ${DOCKER_IMG_VERSION} true
         else
-            copy_image antrea-ubuntu.tar docker.io/antrea/antrea-ubuntu ${IPs[$i]} ${DOCKER_IMG_VERSION} true
+            copy_image antrea-agent-ubuntu.tar docker.io/antrea/antrea-agent-ubuntu ${IPs[$i]} ${DOCKER_IMG_VERSION} true
+            copy_image antrea-controller-ubuntu.tar docker.io/antrea/antrea-controller-ubuntu ${IPs[$i]} ${DOCKER_IMG_VERSION} true
             copy_image flow-aggregator.tar docker.io/antrea/flow-aggregator ${IPs[$i]} ${DOCKER_IMG_VERSION} true
         fi
     done
@@ -452,22 +457,35 @@ function deliver_antrea {
     fi
 
     echo "====== Pulling old Antrea images ======"
-    if [[ ${DOCKER_REGISTRY} != "" ]]; then
-        docker pull ${DOCKER_REGISTRY}/antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+    # Old Antrea versions can either use a unified image (pre v1.15) or split images.
+    local old_agent_image=""
+    if version_lt "$OLD_ANTREA_VERSION" v1.15; then
+        if [[ ${DOCKER_REGISTRY} != "" ]]; then
+            docker pull ${DOCKER_REGISTRY}/antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+            docker tag ${DOCKER_REGISTRY}/antrea/antrea-ubuntu:$OLD_ANTREA_VERSION antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+        else
+            docker pull antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+        fi
+        old_agent_image="antrea/antrea-ubuntu:$OLD_ANTREA_VERSION"
     else
-        docker pull antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+        if [[ ${DOCKER_REGISTRY} != "" ]]; then
+            docker pull ${DOCKER_REGISTRY}/antrea/antrea-agent-ubuntu:$OLD_ANTREA_VERSION
+            docker tag ${DOCKER_REGISTRY}/antrea/antrea-agent-ubuntu:$OLD_ANTREA_VERSION antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+        else
+            docker pull antrea/antrea-agent-ubuntu:$OLD_ANTREA_VERSION
+        fi
+        old_agent_image="antrea/antrea-agent-ubuntu:$OLD_ANTREA_VERSION"
     fi
 
     echo "====== Delivering old Antrea images to all the Nodes ======"
-    docker save -o antrea-ubuntu-old.tar antrea/antrea-ubuntu:$OLD_ANTREA_VERSION
+    docker save -o antrea-ubuntu-old.tar $old_agent_image
     node_num=$(kubectl get nodes --no-headers=true | wc -l)
-    antrea_image="antrea-ubuntu"
     for i in "${!IPs[@]}"
     do
         # We want old-versioned Antrea agents to be more than half in cluster
         if [[ $i -ge $((${node_num}/2)) ]]; then
             # Tag old image to latest if we want Antrea agent to be old-versioned
-            copy_image antrea-ubuntu-old.tar docker.io/antrea/antrea-ubuntu ${IPs[$i]} $OLD_ANTREA_VERSION false
+            copy_image antrea-ubuntu-old.tar docker.io/antrea/antrea-agent-ubuntu ${IPs[$i]} $OLD_ANTREA_VERSION false
         fi
     done
 }

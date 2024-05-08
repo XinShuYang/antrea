@@ -28,9 +28,6 @@ import (
 	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
 
@@ -207,25 +204,6 @@ func (t *hnsTestUtil) createHnsEndpoint(request *hcsshim.HNSEndpoint) (*hcsshim.
 	return request, t.hnsEndpointCreatErr
 }
 
-func (t *hnsTestUtil) getNamespaceEndpointIDs(namespace string) ([]string, error) {
-	if t.isAttached {
-		t.addHostInterface()
-		return []string{t.endpointID}, nil
-	}
-	return []string{}, nil
-}
-
-func (t *hnsTestUtil) hotAttachEndpoint(containerID string, epID string) error {
-	if t.endpointAttachErr == nil {
-		hostIfaces.Store(t.hostIfaceName, false)
-	}
-	return t.endpointAttachErr
-}
-
-func (t *hnsTestUtil) isContainerAttachOnEndpoint(ep *hcsshim.HNSEndpoint, containerID string) (bool, error) {
-	return t.isAttached, nil
-}
-
 func (t *hnsTestUtil) getHcnEndpointByID(epID string) (*hcn.HostComputeEndpoint, error) {
 	return t.hcnEndpoint, nil
 }
@@ -249,10 +227,7 @@ func (t *hnsTestUtil) removeEndpointFromNamespace(namespace string, epID string)
 func (t *hnsTestUtil) setFunctions() {
 	listHnsEndpointFunc = t.listHnsEndpointFunc
 	createHnsEndpointFunc = t.createHnsEndpoint
-	getNamespaceEndpointIDsFunc = t.getNamespaceEndpointIDs
-	hotAttachEndpointFunc = t.hotAttachEndpoint
 	attachEndpointInNamespaceFunc = t.attachEndpointInNamespace
-	isContainerAttachOnEndpointFunc = t.isContainerAttachOnEndpoint
 	getHcnEndpointByIDFunc = t.getHcnEndpointByID
 	deleteHnsEndpointFunc = t.deleteHnsEndpoint
 	removeEndpointFromNamespaceFunc = t.removeEndpointFromNamespace
@@ -261,10 +236,7 @@ func (t *hnsTestUtil) setFunctions() {
 func (t *hnsTestUtil) restore() {
 	listHnsEndpointFunc = hcsshim.HNSListEndpointRequest
 	createHnsEndpointFunc = createHnsEndpoint
-	getNamespaceEndpointIDsFunc = hcn.GetNamespaceEndpointIds
-	hotAttachEndpointFunc = hcsshim.HotAttachEndpoint
 	attachEndpointInNamespaceFunc = attachEndpointInNamespace
-	isContainerAttachOnEndpointFunc = isContainerAttachOnEndpoint
 	getHcnEndpointByIDFunc = hcn.GetEndpointByID
 	deleteHnsEndpointFunc = deleteHnsEndpoint
 	removeEndpointFromNamespaceFunc = hcn.RemoveNamespaceEndpoint
@@ -293,7 +265,7 @@ func newMockCNIServer(t *testing.T, controller *gomock.Controller, podUpdateNoti
 	gwMAC, _ := net.ParseMAC("00:00:11:11:11:11")
 	gateway := &config.GatewayConfig{Name: "", IPv4: gwIPv4, MAC: gwMAC}
 	cniServer.nodeConfig = &config.NodeConfig{Name: "node1", PodIPv4CIDR: nodePodCIDRv4, GatewayConfig: gateway}
-	cniServer.podConfigurator, _ = newPodConfigurator(mockOVSBridgeClient, mockOFClient, mockRoute, ifaceStore, gwMAC, "system", false, false, podUpdateNotifier, nil)
+	cniServer.podConfigurator, _ = newPodConfigurator(mockOVSBridgeClient, mockOFClient, mockRoute, ifaceStore, gwMAC, "system", false, false, podUpdateNotifier)
 	return cniServer
 }
 
@@ -324,10 +296,7 @@ func TestCmdAdd(t *testing.T) {
 	oriIPAMResult := &ipam.IPAMResult{Result: *ipamResult}
 	ctx := context.TODO()
 
-	dockerInfraContainer := "261a1970-5b6c-11ed-8caf-000c294e5d03"
-	dockerWorkContainer := "261e579a-5b6c-11ed-8caf-000c294e5d03"
-	unknownInfraContainer := generateUUID(t)
-	containerdInfraContainer := generateUUID(t)
+	containerdInfraContainer := generateUUID()
 
 	defer mockHostInterfaceExists()()
 	defer mockGetHnsNetworkByName()()
@@ -355,102 +324,11 @@ func TestCmdAdd(t *testing.T) {
 		expectedErr          error
 	}{
 		{
-			name:                 "docker-infra-create-failure",
-			podName:              "pod0",
-			containerID:          dockerInfraContainer,
-			infraContainerID:     dockerInfraContainer,
-			netns:                "none",
-			ipamAdd:              true,
-			ipamDel:              true,
-			hnsEndpointCreateErr: fmt.Errorf("unable to create HnsEndpoint"),
-			errResponse: &cnipb.CniCmdResponse{
-				Error: &cnipb.Error{
-					Code:    cnipb.ErrorCode_CONFIG_INTERFACE_FAILURE,
-					Message: "unable to create HnsEndpoint",
-				},
-			},
-		}, {
-			name:              "docker-infra-attach-failure",
-			podName:           "pod1",
-			containerID:       dockerInfraContainer,
-			infraContainerID:  dockerInfraContainer,
-			netns:             "none",
-			ipamAdd:           true,
-			ipamDel:           true,
-			endpointAttachErr: fmt.Errorf("unable to attach HnsEndpoint"),
-			errResponse: &cnipb.CniCmdResponse{
-				Error: &cnipb.Error{
-					Code:    cnipb.ErrorCode_CONFIG_INTERFACE_FAILURE,
-					Message: "failed to configure container IP: unable to attach HnsEndpoint",
-				},
-			},
-		}, {
-			name:                "docker-infra-success",
-			podName:             "pod2",
-			containerID:         dockerInfraContainer,
-			infraContainerID:    dockerInfraContainer,
-			netns:               "none",
-			ipamAdd:             true,
-			connectOVS:          true,
-			containerIfaceExist: true,
-		}, {
-			name:             "docker-workload-allocate-ip-failure",
-			podName:          "pod3",
-			containerID:      dockerWorkContainer,
-			infraContainerID: unknownInfraContainer,
-			netns:            fmt.Sprintf("container:%s", unknownInfraContainer),
-			expectedErr:      fmt.Errorf("allocated IP address not found"),
-		}, {
-			name:             "docker-workload-no-endpoint",
-			podName:          "pod4",
-			containerID:      dockerWorkContainer,
-			infraContainerID: dockerInfraContainer,
-			netns:            fmt.Sprintf("container:%s", dockerInfraContainer),
-			oriIPAMResult:    oriIPAMResult,
-			errResponse: &cnipb.CniCmdResponse{
-				Error: &cnipb.Error{
-					Code:    cnipb.ErrorCode_CONFIG_INTERFACE_FAILURE,
-					Message: "failed to find HNSEndpoint: pod4-6631b7",
-				},
-			},
-		}, {
-			name:              "docker-workload-attach-failure",
-			podName:           "pod5",
-			containerID:       dockerWorkContainer,
-			infraContainerID:  dockerInfraContainer,
-			netns:             fmt.Sprintf("container:%s", dockerInfraContainer),
-			oriIPAMResult:     oriIPAMResult,
-			endpointAttachErr: fmt.Errorf("unable to attach HnsEndpoint"),
-			endpointExists:    true,
-			errResponse: &cnipb.CniCmdResponse{
-				Error: &cnipb.Error{
-					Code:    cnipb.ErrorCode_CONFIG_INTERFACE_FAILURE,
-					Message: "failed to configure container IP: unable to attach HnsEndpoint",
-				},
-			},
-		}, {
-			name:             "docker-workload-success",
-			podName:          "pod6",
-			containerID:      dockerWorkContainer,
-			infraContainerID: dockerInfraContainer,
-			netns:            fmt.Sprintf("container:%s", dockerInfraContainer),
-			oriIPAMResult:    oriIPAMResult,
-			endpointExists:   true,
-		}, {
-			name:             "docker-workload-already-attached",
-			podName:          "pod7",
-			containerID:      dockerWorkContainer,
-			infraContainerID: dockerInfraContainer,
-			netns:            fmt.Sprintf("container:%s", dockerInfraContainer),
-			isAttached:       true,
-			endpointExists:   true,
-			oriIPAMResult:    oriIPAMResult,
-		}, {
 			name:                "containerd-success",
 			podName:             "pod8",
 			containerID:         containerdInfraContainer,
 			infraContainerID:    containerdInfraContainer,
-			netns:               generateUUID(t),
+			netns:               generateUUID(),
 			ipamAdd:             true,
 			connectOVS:          true,
 			containerIfaceExist: true,
@@ -459,7 +337,7 @@ func TestCmdAdd(t *testing.T) {
 			podName:             "pod9",
 			containerID:         containerdInfraContainer,
 			infraContainerID:    containerdInfraContainer,
-			netns:               generateUUID(t),
+			netns:               generateUUID(),
 			oriIPAMResult:       oriIPAMResult,
 			connectOVS:          true,
 			containerIfaceExist: true,
@@ -469,7 +347,7 @@ func TestCmdAdd(t *testing.T) {
 			podName:           "pod10",
 			containerID:       containerdInfraContainer,
 			infraContainerID:  containerdInfraContainer,
-			netns:             generateUUID(t),
+			netns:             generateUUID(),
 			ipamDel:           true,
 			oriIPAMResult:     oriIPAMResult,
 			endpointAttachErr: fmt.Errorf("unable to attach HnsEndpoint"),
@@ -483,14 +361,14 @@ func TestCmdAdd(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isDocker := isDockerContainer(tc.netns)
-			testUtil := newHnsTestUtil(generateUUID(t), tc.existingHnsEndpoints, isDocker, tc.isAttached, tc.hnsEndpointCreateErr, tc.endpointAttachErr)
+			testUtil := newHnsTestUtil(generateUUID(), tc.existingHnsEndpoints, isDocker, tc.isAttached, tc.hnsEndpointCreateErr, tc.endpointAttachErr)
 			testUtil.setFunctions()
 			defer testUtil.restore()
 			waiter := newAsyncWaiter(tc.podName, tc.infraContainerID)
 			server := newMockCNIServer(t, controller, waiter.notifier)
 			requestMsg, ovsPortName := prepareSetup(t, ipamType, tc.podName, tc.containerID, tc.infraContainerID, tc.netns, nil)
 			if tc.endpointExists {
-				server.podConfigurator.ifConfigurator.(*ifConfigurator).addEndpoint(getHnsEndpoint(generateUUID(t), ovsPortName))
+				server.podConfigurator.ifConfigurator.(*ifConfigurator).addEndpoint(getHnsEndpoint(generateUUID(), ovsPortName))
 			}
 			if tc.oriIPAMResult != nil {
 				ipam.AddIPAMResult(tc.infraContainerID, tc.oriIPAMResult)
@@ -501,16 +379,11 @@ func TestCmdAdd(t *testing.T) {
 			if tc.ipamDel {
 				ipamMock.EXPECT().Del(gomock.Any(), gomock.Any(), gomock.Any()).Return(true, nil).Times(1)
 			}
-			ovsPortID := generateUUID(t)
+			ovsPortID := generateUUID()
 			if tc.connectOVS {
-				if isDocker {
-					mockOVSBridgeClient.EXPECT().CreateInternalPort(ovsPortName, int32(0), gomock.Any(), gomock.Any()).Return(ovsPortID, nil).Times(1)
-					mockOVSBridgeClient.EXPECT().GetOFPort(ovsPortName, false).Return(int32(100), nil).Times(1)
-				} else {
-					mockOVSBridgeClient.EXPECT().CreatePort(ovsPortName, ovsPortName, gomock.Any()).Return(ovsPortID, nil).Times(1)
-					mockOVSBridgeClient.EXPECT().SetInterfaceType(ovsPortName, "internal").Return(nil).Times(1)
-					mockOVSBridgeClient.EXPECT().GetOFPort(ovsPortName, true).Return(int32(100), nil).Times(1)
-				}
+				mockOVSBridgeClient.EXPECT().CreatePort(ovsPortName, ovsPortName, gomock.Any()).Return(ovsPortID, nil).Times(1)
+				mockOVSBridgeClient.EXPECT().SetInterfaceType(ovsPortName, "internal").Return(nil).Times(1)
+				mockOVSBridgeClient.EXPECT().GetOFPort(ovsPortName, true).Return(int32(100), nil).Times(1)
 				mockOFClient.EXPECT().InstallPodFlows(ovsPortName, gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 				mockRoute.EXPECT().AddLocalAntreaFlexibleIPAMPodRule(gomock.Any()).Return(nil).Times(1)
 			}
@@ -543,13 +416,14 @@ func TestCmdAdd(t *testing.T) {
 				waiter.wait()
 				// Wait for the completion of async function "setInterfaceMTUFunc", otherwise it may lead to the
 				// race condition failure.
-				wait.PollImmediate(time.Millisecond*10, time.Second, func() (done bool, err error) {
-					mtuSet, exist := hostIfaces.Load(ovsPortName)
-					if !exist {
-						return false, nil
-					}
-					return mtuSet.(bool), nil
-				})
+				wait.PollUntilContextTimeout(context.Background(), time.Millisecond*10, time.Second, true,
+					func(ctx context.Context) (done bool, err error) {
+						mtuSet, exist := hostIfaces.Load(ovsPortName)
+						if !exist {
+							return false, nil
+						}
+						return mtuSet.(bool), nil
+					})
 			}
 			waiter.close()
 		})
@@ -572,8 +446,6 @@ func TestCmdDel(t *testing.T) {
 
 	for _, tc := range []struct {
 		name           string
-		podName        string
-		containerID    string
 		netns          string
 		ipamDel        bool
 		ipamError      error
@@ -583,27 +455,18 @@ func TestCmdDel(t *testing.T) {
 		errResponse    *cnipb.CniCmdResponse
 	}{
 		{
-			name:           "docker-infra-success",
-			podName:        "pod0",
-			containerID:    containerID,
-			netns:          "none",
+			name:    "interface-not-exist",
+			netns:   generateUUID(),
+			ipamDel: true,
+		},
+		{
+			name:           "ipam-delete-failure",
+			netns:          generateUUID(),
 			ipamDel:        true,
+			ipamError:      fmt.Errorf("unable to delete IP"),
 			disconnectOVS:  true,
 			endpointExists: true,
 			ifaceExists:    true,
-		}, {
-			name:        "interface-not-exist",
-			podName:     "pod1",
-			containerID: containerID,
-			netns:       "none",
-			ipamDel:     true,
-		}, {
-			name:        "ipam-delete-failure",
-			podName:     "pod2",
-			containerID: containerID,
-			netns:       "none",
-			ipamDel:     true,
-			ipamError:   fmt.Errorf("unable to delete IP"),
 			errResponse: &cnipb.CniCmdResponse{
 				Error: &cnipb.Error{
 					Code:    cnipb.ErrorCode_IPAM_FAILURE,
@@ -614,8 +477,8 @@ func TestCmdDel(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isDocker := isDockerContainer(tc.netns)
-			requestMsg, ovsPortName := prepareSetup(t, ipamType, tc.podName, tc.containerID, tc.containerID, tc.netns, nil)
-			hnsEndpoint := getHnsEndpoint(generateUUID(t), ovsPortName)
+			requestMsg, ovsPortName := prepareSetup(t, ipamType, testPodNameA, containerID, containerID, tc.netns, nil)
+			hnsEndpoint := getHnsEndpoint(generateUUID(), ovsPortName)
 			var existingHnsEndpoints []hcsshim.HNSEndpoint
 			if tc.endpointExists {
 				existingHnsEndpoints = append(existingHnsEndpoints, *hnsEndpoint)
@@ -623,14 +486,14 @@ func TestCmdDel(t *testing.T) {
 			testUtil := newHnsTestUtil(hnsEndpoint.Id, existingHnsEndpoints, isDocker, true, nil, nil)
 			testUtil.setFunctions()
 			defer testUtil.restore()
-			waiter := newAsyncWaiter(tc.podName, tc.containerID)
+			waiter := newAsyncWaiter(testPodNameA, containerID)
 			server := newMockCNIServer(t, controller, waiter.notifier)
-			ovsPortID := generateUUID(t)
+			ovsPortID := generateUUID()
 			if tc.endpointExists {
 				server.podConfigurator.ifConfigurator.(*ifConfigurator).addEndpoint(hnsEndpoint)
 			}
 			if tc.ifaceExists {
-				containerIface := interfacestore.NewContainerInterface(ovsPortName, tc.containerID, tc.podName, testPodNamespace, containerMAC, []net.IP{net.ParseIP("10.1.2.100")}, 0)
+				containerIface := interfacestore.NewContainerInterface(ovsPortName, containerID, testPodNameA, testPodNamespace, "", containerMAC, []net.IP{net.ParseIP("10.1.2.100")}, 0)
 				containerIface.OVSPortConfig = &interfacestore.OVSPortConfig{
 					OFPort:   100,
 					PortUUID: ovsPortID,
@@ -652,7 +515,7 @@ func TestCmdDel(t *testing.T) {
 			} else {
 				assert.Equal(t, emptyResponse, resp)
 			}
-			_, exists := ifaceStore.GetContainerInterface(tc.containerID)
+			_, exists := ifaceStore.GetContainerInterface(containerID)
 			assert.False(t, exists)
 			if tc.endpointExists {
 				_, exists = server.podConfigurator.ifConfigurator.(*ifConfigurator).getEndpoint(ovsPortName)
@@ -673,6 +536,7 @@ func TestCmdCheck(t *testing.T) {
 	ipam.ResetIPAMDriver(ipamType, ipamMock)
 	ctx := context.TODO()
 
+	containerNetns := generateUUID()
 	containerID := "261a1970-5b6c-11ed-8caf-000c294e5d03"
 	mac, _ := net.ParseMAC("11:22:33:44:33:22")
 	containerIP, containerIPNet, _ := net.ParseCIDR("10.1.2.100/24")
@@ -683,7 +547,7 @@ func TestCmdCheck(t *testing.T) {
 	defer mockSetInterfaceMTU(nil)()
 	defer mockListHnsEndpoint(nil, nil)()
 	defer mockGetNetInterfaceAddrs(containerIPNet, nil)()
-	defer mockGetHnsEndpointByName(generateUUID(t), mac)()
+	defer mockGetHnsEndpointByName(generateUUID(), mac)()
 
 	wrapperIPAMResult := func(ipamResult current.Result, interfaces []*current.Interface) *current.Result {
 		result := ipamResult
@@ -693,7 +557,7 @@ func TestCmdCheck(t *testing.T) {
 		return &result
 	}
 	wrapperContainerInterface := func(ifaceName, containerID, podName, ovsPortID string, mac net.HardwareAddr, containerIP net.IP) *interfacestore.InterfaceConfig {
-		containerIface := interfacestore.NewContainerInterface(ifaceName, containerID, podName, testPodNamespace, mac, []net.IP{containerIP}, 0)
+		containerIface := interfacestore.NewContainerInterface(ifaceName, containerID, podName, testPodNamespace, "", mac, []net.IP{containerIP}, 0)
 		containerIface.OVSPortConfig = &interfacestore.OVSPortConfig{
 			PortUUID: ovsPortID,
 			OFPort:   10,
@@ -715,13 +579,13 @@ func TestCmdCheck(t *testing.T) {
 		{
 			name:        "check-success",
 			podName:     "pod0",
-			netns:       "none",
+			netns:       containerNetns,
 			containerID: containerID,
 			prevResult: wrapperIPAMResult(*ipamResult, []*current.Interface{
 				{Name: "pod0-6631b7", Mac: "11:22:33:44:33:22", Sandbox: ""},
-				{Name: "pod0-6631b7_eth0", Mac: "11:22:33:44:33:22", Sandbox: "none"},
+				{Name: "pod0-6631b7_eth0", Mac: "11:22:33:44:33:22", Sandbox: containerNetns},
 			}),
-			existingIface: wrapperContainerInterface("pod0-6631b7", containerID, "pod0", generateUUID(t), mac, containerIP),
+			existingIface: wrapperContainerInterface("pod0-6631b7", containerID, "pod0", generateUUID(), mac, containerIP),
 			netInterface: &net.Interface{
 				Name:         "vEthernet (pod0-6631b7)",
 				HardwareAddr: mac,
@@ -731,13 +595,13 @@ func TestCmdCheck(t *testing.T) {
 		}, {
 			name:        "pod-namespace-mismatch",
 			podName:     "pod1",
-			netns:       "none",
+			netns:       containerNetns,
 			containerID: containerID,
 			prevResult: wrapperIPAMResult(*ipamResult, []*current.Interface{
 				{Name: "pod1-6631b7", Mac: "11:22:33:44:33:22", Sandbox: ""},
 				{Name: "pod1-6631b7_eth0", Mac: "11:22:33:44:33:22", Sandbox: "invalid-namespace"},
 			}),
-			existingIface: wrapperContainerInterface("pod1-6631b7", containerID, "pod1", generateUUID(t), mac, containerIP),
+			existingIface: wrapperContainerInterface("pod1-6631b7", containerID, "pod1", generateUUID(), mac, containerIP),
 			netInterface: &net.Interface{
 				Name:         "vEthernet (pod1-6631b7)",
 				HardwareAddr: mac,
@@ -747,19 +611,19 @@ func TestCmdCheck(t *testing.T) {
 			errResponse: &cnipb.CniCmdResponse{
 				Error: &cnipb.Error{
 					Code:    cnipb.ErrorCode_CHECK_INTERFACE_FAILURE,
-					Message: "sandbox in prevResult invalid-namespace doesn't match configured netns: none",
+					Message: fmt.Sprintf("sandbox in prevResult invalid-namespace doesn't match configured netns: %s", containerNetns),
 				},
 			},
 		}, {
 			name:        "container-host-names-mismatch",
 			podName:     "pod2",
-			netns:       "none",
+			netns:       containerNetns,
 			containerID: containerID,
 			prevResult: wrapperIPAMResult(*ipamResult, []*current.Interface{
 				{Name: "pod2-6631b7", Mac: "11:22:33:44:33:22", Sandbox: ""},
-				{Name: "eth0", Mac: "11:22:33:44:33:22", Sandbox: "none"},
+				{Name: "eth0", Mac: "11:22:33:44:33:22", Sandbox: containerNetns},
 			}),
-			existingIface: wrapperContainerInterface("pod2-6631b7", containerID, "pod2", generateUUID(t), mac, containerIP),
+			existingIface: wrapperContainerInterface("pod2-6631b7", containerID, "pod2", generateUUID(), mac, containerIP),
 			netInterface: &net.Interface{
 				Name:         "vEthernet (pod2-6631b7)",
 				HardwareAddr: mac,
@@ -775,13 +639,13 @@ func TestCmdCheck(t *testing.T) {
 		}, {
 			name:        "container-host-MAC-mismatch",
 			podName:     "pod3",
-			netns:       "none",
+			netns:       containerNetns,
 			containerID: containerID,
 			prevResult: wrapperIPAMResult(*ipamResult, []*current.Interface{
 				{Name: "pod3-6631b7", Mac: "11:22:33:44:33:22", Sandbox: ""},
-				{Name: "pod3-6631b7_eth0", Mac: "11:22:33:44:33:33", Sandbox: "none"},
+				{Name: "pod3-6631b7_eth0", Mac: "11:22:33:44:33:33", Sandbox: containerNetns},
 			}),
-			existingIface: wrapperContainerInterface("pod3-6631b7", containerID, "pod3", generateUUID(t), mac, containerIP),
+			existingIface: wrapperContainerInterface("pod3-6631b7", containerID, "pod3", generateUUID(), mac, containerIP),
 			netInterface: &net.Interface{
 				Name:         "vEthernet (pod3-6631b7)",
 				HardwareAddr: mac,
@@ -856,10 +720,10 @@ func TestReconcile(t *testing.T) {
 	mockOFClient = openflowtest.NewMockClient(controller)
 	ifaceStore = interfacestore.NewInterfaceStore()
 	mockRoute = routetest.NewMockInterface(controller)
-	nodeName := "node1"
+
 	defer mockHostInterfaceExists()()
 	defer mockGetHnsNetworkByName()()
-	missingEndpoint := getHnsEndpoint(generateUUID(t), "iface4")
+	missingEndpoint := getHnsEndpoint(generateUUID(), "iface4")
 	testUtil := newHnsTestUtil(missingEndpoint.Id, []hcsshim.HNSEndpoint{*missingEndpoint}, false, true, nil, nil)
 	testUtil.createHnsEndpoint(missingEndpoint)
 	testUtil.setFunctions()
@@ -867,105 +731,45 @@ func TestReconcile(t *testing.T) {
 
 	cniServer := newCNIServer(t)
 	cniServer.routeClient = mockRoute
-	gwMAC, _ := net.ParseMAC("00:00:11:11:11:11")
-	pods := []runtime.Object{
-		&v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "p1",
-				Namespace: testPodNamespace,
-			},
-			Spec: v1.PodSpec{
-				NodeName: nodeName,
-			},
-		},
-		&v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "p2",
-				Namespace: testPodNamespace,
-			},
-			Spec: v1.PodSpec{
-				NodeName:    nodeName,
-				HostNetwork: true,
-			},
-		},
-		&v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "p4",
-				Namespace: testPodNamespace,
-			},
-			Spec: v1.PodSpec{
-				NodeName: nodeName,
-			},
-		},
-	}
-	kubeClient := fakeclientset.NewSimpleClientset(pods...)
+	kubeClient := fakeclientset.NewSimpleClientset(pod1, pod2, pod3)
 	cniServer.kubeClient = kubeClient
-	containerIfaces := map[string]*interfacestore.InterfaceConfig{
-		"iface1": {
-			InterfaceName: "iface1",
-			Type:          interfacestore.ContainerInterface,
-			OVSPortConfig: &interfacestore.OVSPortConfig{
-				PortUUID: generateUUID(t),
-				OFPort:   int32(3),
-			},
-			ContainerInterfaceConfig: &interfacestore.ContainerInterfaceConfig{
-				PodName:      "p1",
-				PodNamespace: testPodNamespace,
-				ContainerID:  generateUUID(t),
-			},
-		},
-		"iface3": {
-			InterfaceName: "iface3",
-			Type:          interfacestore.ContainerInterface,
-			OVSPortConfig: &interfacestore.OVSPortConfig{
-				PortUUID: generateUUID(t),
-				OFPort:   int32(4),
-			},
-			ContainerInterfaceConfig: &interfacestore.ContainerInterfaceConfig{
-				PodName:      "p3",
-				PodNamespace: testPodNamespace,
-				ContainerID:  generateUUID(t),
-			},
-		},
-		"iface4": {
-			InterfaceName: "iface4",
-			Type:          interfacestore.ContainerInterface,
-			OVSPortConfig: &interfacestore.OVSPortConfig{
-				PortUUID: generateUUID(t),
-				OFPort:   int32(-1),
-			},
-			ContainerInterfaceConfig: &interfacestore.ContainerInterfaceConfig{
-				PodName:      "p4",
-				PodNamespace: testPodNamespace,
-				ContainerID:  generateUUID(t),
-			},
-		},
-	}
-	for _, containerIface := range containerIfaces {
+	for _, containerIface := range []*interfacestore.InterfaceConfig{normalInterface, staleInterface, unconnectedInterface} {
 		ifaceStore.AddInterface(containerIface)
 	}
-	pod4IfaceName := "iface4"
-	pod4Iface := containerIfaces["iface4"]
-	waiter := newAsyncWaiter(pod4Iface.PodName, pod4Iface.ContainerID)
-	cniServer.podConfigurator, _ = newPodConfigurator(mockOVSBridgeClient, mockOFClient, mockRoute, ifaceStore, gwMAC, "system", false, false, waiter.notifier, nil)
+	waiter := newAsyncWaiter(unconnectedInterface.PodName, unconnectedInterface.ContainerID)
+	cniServer.podConfigurator, _ = newPodConfigurator(mockOVSBridgeClient, mockOFClient, mockRoute, ifaceStore, gwMAC, "system", false, false, waiter.notifier)
 	cniServer.nodeConfig = &config.NodeConfig{Name: nodeName}
 
 	// Re-install Pod1 flows
-	mockOFClient.EXPECT().InstallPodFlows("iface1", gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
+	podFlowsInstalled := make(chan string, 2)
+	mockOFClient.EXPECT().InstallPodFlows(normalInterface.InterfaceName, normalInterface.IPs, normalInterface.MAC, uint32(normalInterface.OFPort), uint16(0), nil).
+		Do(func(interfaceName string, _ []net.IP, _ net.HardwareAddr, _ uint32, _ uint16, _ *uint32) {
+			podFlowsInstalled <- interfaceName
+		}).Times(1)
 	// Uninstall Pod3 flows which is deleted.
-	iface := containerIfaces["iface3"]
-	mockOFClient.EXPECT().UninstallPodFlows("iface3").Return(nil).Times(1)
-	mockOVSBridgeClient.EXPECT().DeletePort(iface.PortUUID).Return(nil).Times(1)
+	mockOFClient.EXPECT().UninstallPodFlows(staleInterface.InterfaceName).Return(nil).Times(1)
+	mockOVSBridgeClient.EXPECT().DeletePort(staleInterface.PortUUID).Return(nil).Times(1)
 	mockRoute.EXPECT().DeleteLocalAntreaFlexibleIPAMPodRule(gomock.Any()).Return(nil).Times(1)
 	// Re-connect to Pod4
-	hostIfaces.Store(fmt.Sprintf("vEthernet (%s)", pod4IfaceName), true)
-	mockOVSBridgeClient.EXPECT().SetInterfaceType(pod4IfaceName, "internal").Return(nil).Times(1)
-	mockOVSBridgeClient.EXPECT().GetOFPort(pod4IfaceName, true).Return(int32(5), nil).Times(1)
-	mockOFClient.EXPECT().InstallPodFlows(pod4IfaceName, gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
+	hostIfaces.Store(fmt.Sprintf("vEthernet (%s)", unconnectedInterface.InterfaceName), true)
+	mockOVSBridgeClient.EXPECT().SetInterfaceType(unconnectedInterface.InterfaceName, "internal").Return(nil).Times(1)
+	mockOVSBridgeClient.EXPECT().GetOFPort(unconnectedInterface.InterfaceName, true).Return(int32(5), nil).Times(1)
+	mockOFClient.EXPECT().InstallPodFlows(unconnectedInterface.InterfaceName, unconnectedInterface.IPs, unconnectedInterface.MAC, uint32(5), uint16(0), nil).
+		Do(func(interfaceName string, _ []net.IP, _ net.HardwareAddr, _ uint32, _ uint16, _ *uint32) {
+			podFlowsInstalled <- interfaceName
+		}).Times(1)
 	err := cniServer.reconcile()
 	assert.NoError(t, err)
 	_, exists := ifaceStore.GetInterfaceByName("iface3")
 	assert.False(t, exists)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-podFlowsInstalled:
+		case <-time.After(500 * time.Millisecond):
+			t.Errorf("InstallPodFlows should be called 2 times but was only called %d times", i)
+			break
+		}
+	}
 	waiter.wait()
 	waiter.close()
 }

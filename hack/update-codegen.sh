@@ -18,7 +18,7 @@ set -o errexit
 set -o pipefail
 
 ANTREA_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/../" && pwd )"
-IMAGE_NAME="antrea/codegen:kubernetes-1.26.4-build.1"
+IMAGE_NAME="antrea/codegen:kubernetes-1.29.2-build.1"
 
 # Recent versions of Git will not access .git directories which are owned by
 # another user (as a security measure), unless the directories are explicitly
@@ -37,6 +37,8 @@ function docker_run() {
   ANTREA_PATH="/go/src/antrea.io/antrea"
   docker run --rm \
 		-e GOPROXY=${GOPROXY} \
+		-e HTTP_PROXY=${HTTP_PROXY} \
+		-e HTTPS_PROXY=${HTTPS_PROXY} \
 		-w ${ANTREA_PATH} \
 		-v ${ANTREA_ROOT}:${ANTREA_PATH} \
 		"${IMAGE_NAME}" bash -c "git config --global --add safe.directory ${ANTREA_PATH} && $@"

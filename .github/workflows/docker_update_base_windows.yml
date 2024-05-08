@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       antrea-repository:
-        description: 'The Antrea repository to check-out'
+        description: 'The Antrea repository to check-out; it will typically be a personal Antrea fork such as "<your-github-user>/antrea"'
         required: true
         type: string
       antrea-ref:
-        description: 'The Git ref to use when checking-out the Antrea repository'
+        description: 'The Git ref to use when checking-out the Antrea repository, usually a branch or tag name'
         required: true
         type: string
       push:
@@ -27,8 +27,8 @@ jobs:
     - name: Check-out code
       uses: actions/checkout@v4
       with:
-        repository: ${{ github.event.inputs.antrea-repository }}
-        ref: ${{ github.event.inputs.antrea-ref }}
+        repository: ${{ inputs.antrea-repository }}
+        ref: ${{ inputs.antrea-ref }}
         show-progress: false
     - name: Login to DockerHub
       uses: docker/login-action@v3
@@ -36,12 +36,12 @@ jobs:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
     - name: Build and push Docker images
-      if: ${{ github.event.inputs.push }}
+      if: ${{ inputs.push }}
       run: |
         ./hack/build-antrea-windows-all.sh --pull --push-base-images
       shell: bash
     - name: Build Docker images without pushing
-      if: ${{ !github.event.inputs.push }}
+      if: ${{ !inputs.push }}
       run: |
         ./hack/build-antrea-windows-all.sh --pull
       shell: bash

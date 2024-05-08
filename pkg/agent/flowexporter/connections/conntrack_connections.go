@@ -16,6 +16,7 @@ package connections
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -45,7 +46,12 @@ type ConntrackConnectionStore struct {
 	networkPolicyQuerier  querier.AgentNetworkPolicyInfoQuerier
 	pollInterval          time.Duration
 	connectUplinkToBridge bool
+	l7EventMapGetter      L7EventMapGetter
 	connectionStore
+}
+
+type L7EventMapGetter interface {
+	ConsumeL7EventMap() map[flowexporter.ConnectionKey]L7ProtocolFields
 }
 
 func NewConntrackConnectionStore(
@@ -55,6 +61,7 @@ func NewConntrackConnectionStore(
 	npQuerier querier.AgentNetworkPolicyInfoQuerier,
 	podStore podstore.Interface,
 	proxier proxy.Proxier,
+	l7EventMapGetterFunc L7EventMapGetter,
 	o *flowexporter.FlowExporterOptions,
 ) *ConntrackConnectionStore {
 	return &ConntrackConnectionStore{
@@ -65,6 +72,7 @@ func NewConntrackConnectionStore(
 		pollInterval:          o.PollInterval,
 		connectionStore:       NewConnectionStore(podStore, proxier, o),
 		connectUplinkToBridge: o.ConnectUplinkToBridge,
+		l7EventMapGetter:      l7EventMapGetterFunc,
 	}
 }
 
@@ -96,6 +104,12 @@ func (cs *ConntrackConnectionStore) Run(stopCh <-chan struct{}) {
 // TODO: As optimization, only poll invalid/closed connections during every poll, and poll the established connections right before the export.
 func (cs *ConntrackConnectionStore) Poll() ([]int, error) {
 	klog.V(2).Infof("Polling conntrack")
+	// DeepCopy the L7EventMap before polling the conntrack table to match corresponding L4 connection with L7 events
+	// and avoid missing the L7 events for corresponding L4 connection
+	var l7EventMap map[flowexporter.ConnectionKey]L7ProtocolFields
+	if cs.l7EventMapGetter != nil {
+		l7EventMap = cs.l7EventMapGetter.ConsumeL7EventMap()
+	}
 
 	var zones []uint16
 	var connsLens []int
@@ -162,6 +176,9 @@ func (cs *ConntrackConnectionStore) Poll() ([]int, error) {
 	// Update only the Connection store. IPFIX records are generated based on Connection store.
 	for _, conn := range filteredConnsList {
 		cs.AddOrUpdateConn(conn)
+	}
+	if len(l7EventMap) != 0 {
+		cs.fillL7EventInfo(l7EventMap)
 	}
 
 	cs.ReleaseConnStoreLock()
@@ -324,4 +341,28 @@ func (cs *ConntrackConnectionStore) deleteConnWithoutLock(connKey flowexporter.C
 
 func (cs *ConntrackConnectionStore) GetPriorityQueue() *priorityqueue.ExpirePriorityQueue {
 	return cs.connectionStore.expirePriorityQueue
+}
+
+func (cs *ConntrackConnectionStore) fillL7EventInfo(l7EventMap map[flowexporter.Tuple]L7ProtocolFields) {
+	// In case the L7 event is received after the connection is removed from the cs.connections store
+	// we will discard such event
+	for connKey, conn := range cs.connections {
+		l7event, ok := l7EventMap[connKey]
+		if ok {
+			if len(l7event.http) > 0 {
+				jsonBytes, err := json.Marshal(l7event.http)
+				if err != nil {
+					klog.ErrorS(err, "Converting l7Event http failed")
+				}
+				conn.HttpVals += string(jsonBytes)
+				conn.AppProtocolName = "http"
+			}
+			// In case L7 event is received after the last planned export of the TCP connection, add
+			// the event back to the queue to be exported in next export cycle
+			_, exists := cs.expirePriorityQueue.KeyToItem[connKey]
+			if !exists {
+				cs.expirePriorityQueue.WriteItemToQueue(connKey, conn)
+			}
+		}
+	}
 }

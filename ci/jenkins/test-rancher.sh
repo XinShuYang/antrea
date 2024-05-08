@@ -138,6 +138,7 @@ function deliver_antrea {
     git show --numstat
     make clean
     ${CLEAN_STALE_IMAGES}
+    check_and_upgrade_golang
     chmod -R g-w build/images/ovs
     chmod -R g-w build/images/base
     DOCKER_REGISTRY="${DOCKER_REGISTRY}" ./hack/build-antrea-linux-all.sh --pull
@@ -155,7 +156,7 @@ function deliver_antrea {
     scp -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -i "${WORKDIR}/.ssh/id_rsa" build/yamls/*.yml ubuntu@[${control_plane_ip}]:~/
 
     echo "====== Delivering Antrea to all the Nodes ======"
-    docker save -o antrea-ubuntu.tar antrea/antrea-ubuntu:latest
+    docker save -o antrea-ubuntu.tar antrea/antrea-agent-ubuntu:latest antrea/antrea-controller-ubuntu:latest
     docker save -o flow-aggregator.tar antrea/flow-aggregator:latest
     kubectl get nodes -o wide --no-headers=true | awk '{print $6}' | while read IP; do
         rsync -avr --progress --inplace -e "ssh -o StrictHostKeyChecking=no" antrea-ubuntu.tar ubuntu@[${IP}]:~/antrea-ubuntu.tar

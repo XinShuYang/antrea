@@ -663,7 +663,7 @@ func runSendFlowRecordTests(t *testing.T, flowExp *FlowExporter, isIPv6 bool) {
 				IdleFlowTimeout:        testIdleFlowTimeout,
 				StaleConnectionTimeout: 1,
 				PollInterval:           1}
-			flowExp.conntrackConnStore = connections.NewConntrackConnectionStore(mockConnDumper, !isIPv6, isIPv6, nil, nil, nil, o)
+			flowExp.conntrackConnStore = connections.NewConntrackConnectionStore(mockConnDumper, !isIPv6, isIPv6, nil, nil, nil, nil, o)
 			flowExp.denyConnStore = connections.NewDenyConnectionStore(nil, nil, o)
 			flowExp.conntrackPriorityQueue = flowExp.conntrackConnStore.GetPriorityQueue()
 			flowExp.denyPriorityQueue = flowExp.denyConnStore.GetPriorityQueue()
@@ -806,26 +806,29 @@ func TestFlowExporter_findFlowType(t *testing.T) {
 func TestFlowExporter_fillEgressInfo(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	testCases := []struct {
-		name               string
-		sourcePodNamespace string
-		sourcePodName      string
-		expectedEgressName string
-		expectedEgressIP   string
-		expectedErr        string
+		name                   string
+		sourcePodNamespace     string
+		sourcePodName          string
+		expectedEgressName     string
+		expectedEgressIP       string
+		expectedEgressNodeName string
+		expectedErr            string
 	}{
 		{
-			name:               "Both EgressName and EgressIP filled",
-			sourcePodNamespace: "namespaceA",
-			sourcePodName:      "podA",
-			expectedEgressName: "test-egress",
-			expectedEgressIP:   "172.18.0.1",
+			name:                   "EgressName, EgressIP and EgressNodeName filled",
+			sourcePodNamespace:     "namespaceA",
+			sourcePodName:          "podA",
+			expectedEgressName:     "test-egress",
+			expectedEgressIP:       "172.18.0.1",
+			expectedEgressNodeName: "test-egress-node",
 		},
 		{
-			name:               "No Egress Information filled",
-			sourcePodNamespace: "namespaceA",
-			sourcePodName:      "podC",
-			expectedEgressName: "",
-			expectedEgressIP:   "",
+			name:                   "No Egress Information filled",
+			sourcePodNamespace:     "namespaceA",
+			sourcePodName:          "podC",
+			expectedEgressName:     "",
+			expectedEgressIP:       "",
+			expectedEgressNodeName: "",
 		},
 	}
 
@@ -841,13 +844,14 @@ func TestFlowExporter_fillEgressInfo(t *testing.T) {
 				SourcePodName:      tc.sourcePodName,
 			}
 			if tc.expectedEgressName != "" {
-				egressQuerier.EXPECT().GetEgress(conn.SourcePodNamespace, conn.SourcePodName).Return(tc.expectedEgressName, tc.expectedEgressIP, nil)
+				egressQuerier.EXPECT().GetEgress(conn.SourcePodNamespace, conn.SourcePodName).Return(tc.expectedEgressName, tc.expectedEgressIP, tc.expectedEgressNodeName, nil)
 			} else {
-				egressQuerier.EXPECT().GetEgress(conn.SourcePodNamespace, conn.SourcePodName).Return("", "", fmt.Errorf("no Egress applied to Pod %s", conn.SourcePodName))
+				egressQuerier.EXPECT().GetEgress(conn.SourcePodNamespace, conn.SourcePodName).Return("", "", "", fmt.Errorf("no Egress applied to Pod %s", conn.SourcePodName))
 			}
 			exp.fillEgressInfo(&conn)
 			assert.Equal(t, tc.expectedEgressName, conn.EgressName)
 			assert.Equal(t, tc.expectedEgressIP, conn.EgressIP)
+			assert.Equal(t, tc.expectedEgressNodeName, conn.EgressNodeName)
 		})
 	}
 }

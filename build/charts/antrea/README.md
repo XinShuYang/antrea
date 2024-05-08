@@ -1,6 +1,6 @@
 # antrea
 
-![Version: 1.15.0-dev](https://img.shields.io/badge/Version-1.15.0--dev-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: latest](https://img.shields.io/badge/AppVersion-latest-informational?style=flat-square)
+![Version: 2.1.0-dev](https://img.shields.io/badge/Version-2.1.0--dev-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: latest](https://img.shields.io/badge/AppVersion-latest-informational?style=flat-square)
 
 Kubernetes networking based on Open vSwitch
 
@@ -39,7 +39,7 @@ Kubernetes: `>= 1.16.0-0`
 | agent.antreaOVS.securityContext.privileged | bool | `false` | Run the antrea-ovs container as privileged. |
 | agent.apiPort | int | `10350` | Port for the antrea-agent APIServer to serve on. |
 | agent.dnsPolicy | string | `""` | DNS Policy for the antrea-agent Pods. If empty, the Kubernetes default will be used. |
-| agent.dontLoadKernelModules | bool | `false` | Do not try to load any of the required Kernel modules (e.g., openvswitch) during initialization of the antrea-agent. Most users should never need to set this to true, but it may be required with some specific distributions. |
+| agent.dontLoadKernelModules | bool | `false` | Do not try to load any of the required Kernel modules (e.g., openvswitch) during initialization of the antrea-agent. Most users should never need to set this to true, but it may be required with some specific distributions. Note that we will never try to load a module if we can detect that it is "built-in", regardless of this value. |
 | agent.enablePrometheusMetrics | bool | `true` | Enable metrics exposure via Prometheus. |
 | agent.extraVolumes | list | `[]` | Additional volumes for antrea-agent Pods. |
 | agent.installCNI.extraEnv | object | `{}` | Extra environment variables to be injected into install-cni. |
@@ -52,6 +52,7 @@ Kubernetes: `>= 1.16.0-0`
 | agent.priorityClassName | string | `"system-node-critical"` | Prority class to use for the antrea-agent Pods. |
 | agent.tolerations | list | `[{"key":"CriticalAddonsOnly","operator":"Exists"},{"effect":"NoSchedule","operator":"Exists"},{"effect":"NoExecute","operator":"Exists"}]` | Tolerations for the antrea-agent Pods. |
 | agent.updateStrategy | object | `{"type":"RollingUpdate"}` | Update strategy for the antrea-agent DaemonSet. |
+| agentImage | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-agent-ubuntu","tag":""}` | Container image to use for the antrea-agent component. |
 | antreaProxy.defaultLoadBalancerMode | string | `"nat"` | Determines how external traffic is processed when it's load balanced across Nodes by default. It must be one of "nat" or "dsr". |
 | antreaProxy.enable | bool | `true` | To disable AntreaProxy, set this to false. |
 | antreaProxy.nodePortAddresses | list | `[]` | String array of values which specifies the host IPv4/IPv6 addresses for NodePort. By default, all host addresses are used. |
@@ -72,7 +73,7 @@ Kubernetes: `>= 1.16.0-0`
 | controller.antreaController.extraEnv | object | `{}` | Extra environment variables to be injected into antrea-controller. |
 | controller.antreaController.logFileMaxNum | int | `4` | Max number of log files. |
 | controller.antreaController.logFileMaxSize | int | `100` | Max size in MBs of any single log file. |
-| controller.antreaController.resources | object | `{"requests":{"cpu":"200m"}}` | Resource requests and limits for the antrea-controller container. |
+| controller.antreaController.resources | object | `{"requests":{"cpu":"200m","memory":"100Mi"}}` | Resource requests and limits for the antrea-controller container. |
 | controller.apiNodePort | int | `0` | NodePort for the antrea-controller APIServer to server on. |
 | controller.apiPort | int | `10349` | Port for the antrea-controller APIServer to serve on. |
 | controller.enablePrometheusMetrics | bool | `true` | Enable metrics exposure via Prometheus. |
@@ -82,6 +83,7 @@ Kubernetes: `>= 1.16.0-0`
 | controller.priorityClassName | string | `"system-cluster-critical"` | Prority class to use for the antrea-controller Pod. |
 | controller.selfSignedCert | bool | `true` | Indicates whether to use auto-generated self-signed TLS certificates. If false, a Secret named "antrea-controller-tls" must be provided with the following keys: ca.crt, tls.crt, tls.key. |
 | controller.tolerations | list | `[{"key":"CriticalAddonsOnly","operator":"Exists"},{"effect":"NoSchedule","key":"node-role.kubernetes.io/master"},{"effect":"NoSchedule","key":"node-role.kubernetes.io/control-plane"},{"effect":"NoExecute","key":"node.kubernetes.io/unreachable","operator":"Exists","tolerationSeconds":0}]` | Tolerations for the antrea-controller Pod. |
+| controllerImage | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-controller-ubuntu","tag":""}` | Container image to use for the antrea-controller component. |
 | defaultMTU | int | `0` | Default MTU to use for the host gateway interface and the network interface of each Pod. By default, antrea-agent will discover the MTU of the Node's primary interface and adjust it to accommodate for tunnel encapsulation overhead if applicable. |
 | disableTXChecksumOffload | bool | `false` | Disable TX checksum offloading for container network interfaces. It's supposed to be set to true when the datapath doesn't support TX checksum offloading, which causes packets to be dropped due to bad checksum. It affects Pods running on Linux Nodes only. |
 | dnsServerOverride | string | `""` | Address of DNS server, to override the kube-dns Service. It's used to resolve hostnames in a FQDN policy. |
@@ -95,7 +97,7 @@ Kubernetes: `>= 1.16.0-0`
 | flowExporter.flowPollInterval | string | `"5s"` | Determines how often the flow exporter polls for new connections. |
 | flowExporter.idleFlowExportTimeout | string | `"15s"` | timeout after which a flow record is sent to the collector for idle flows. |
 | hostGateway | string | `"antrea-gw0"` | Name of the interface antrea-agent will create and use for host <-> Pod communication. |
-| image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ubuntu","tag":""}` | Container image to use for Antrea components. |
+| image | object | `{}` | Container image to use for Antrea components. DEPRECATED: use agentImage and controllerImage instead. |
 | ipsec.authenticationMode | string | `"psk"` | The authentication mode to use for IPsec. Must be one of "psk" or "cert". |
 | ipsec.csrSigner.autoApprove | bool | `true` | Enable auto approval of Antrea signer for IPsec certificates. |
 | ipsec.csrSigner.selfSignedCA | bool | `true` | Whether or not to use auto-generated self-signed CA. |
@@ -106,11 +108,11 @@ Kubernetes: `>= 1.16.0-0`
 | multicast.igmpQueryInterval | string | `"125s"` | The interval at which the antrea-agent sends IGMP queries to Pods. Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h". |
 | multicast.igmpQueryVersions | list | `[1,2,3]` | The versions of IGMP queries antrea-agent sends to Pods. Valid versions are 1, 2 and 3. |
 | multicast.multicastInterfaces | list | `[]` | Names of the interfaces on Nodes that are used to forward multicast traffic. |
-| multicluster.enableGateway | bool | `false` | Enable Antrea Multi-cluster Gateway to support cross-cluster traffic. This feature is supported only with encap mode. |
+| multicluster.enableGateway | bool | `false` | Enable Antrea Multi-cluster Gateway to support cross-cluster traffic. |
 | multicluster.enablePodToPodConnectivity | bool | `false` | Enable Multi-cluster Pod to Pod connectivity. |
 | multicluster.enableStretchedNetworkPolicy | bool | `false` | Enable Multi-cluster NetworkPolicy. Multi-cluster Gateway must be enabled to enable StretchedNetworkPolicy. |
 | multicluster.namespace | string | `""` | The Namespace where Antrea Multi-cluster Controller is running. The default is antrea-agent's Namespace. |
-| multicluster.trafficEncryptionMode | string | `"none"` | Determines how cross-cluster traffic is encrypted. It has the following options: - none (default):  Cross-cluster traffic will not be encrypted. - wireGuard:       Enable WireGuard for tunnel traffic encryption. |
+| multicluster.trafficEncryptionMode | string | `"none"` | Determines how cross-cluster traffic is encrypted. It can be one of "none" (default) or "wireGuard". When set to "none", cross-cluster traffic will not be encrypted. When set to "wireGuard", cross-cluster traffic will be sent over encrypted WireGuard tunnels. "wireGuard" requires Multi-cluster Gateway to be enabled. Note that when using WireGuard for cross-cluster traffic, encryption is no longer supported for in-cluster traffic. |
 | multicluster.wireGuard.port | int | `51821` | WireGuard tunnel port for cross-cluster traffic. |
 | noSNAT | bool | `false` | Whether or not to SNAT (using the Node IP) the egress traffic from a Pod to the external network. |
 | nodeIPAM.clusterCIDRs | list | `[]` | CIDR ranges to use when allocating Pod IP addresses. |

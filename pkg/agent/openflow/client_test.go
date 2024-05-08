@@ -34,7 +34,7 @@ import (
 	"antrea.io/antrea/pkg/agent/config"
 	nodeiptest "antrea.io/antrea/pkg/agent/nodeip/testing"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
-	oftest "antrea.io/antrea/pkg/agent/openflow/testing"
+	opstest "antrea.io/antrea/pkg/agent/openflow/operations/testing"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/apis/crd/v1alpha2"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
@@ -93,6 +93,8 @@ type clientOptions struct {
 	enableTrafficControl       bool
 	enableMulticluster         bool
 	enableL7NetworkPolicy      bool
+	enableL7FlowExporter       bool
+	trafficEncryptionMode      config.TrafficEncryptionModeType
 }
 
 type clientOptionsFn func(*clientOptions)
@@ -166,6 +168,12 @@ func enableMulticluster(o *clientOptions) {
 	o.enableMulticluster = true
 }
 
+func setTrafficEncryptionMode(trafficEncryptionMode config.TrafficEncryptionModeType) clientOptionsFn {
+	return func(o *clientOptions) {
+		o.trafficEncryptionMode = trafficEncryptionMode
+	}
+}
+
 func installNodeFlows(ofClient Client, cacheKey string) (int, error) {
 	gwIP, ipNet, _ := net.ParseCIDR("10.10.0.1/24")
 	hostName := cacheKey
@@ -228,7 +236,7 @@ func TestIdempotentFlowInstallation(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 			fc := newFakeClient(m, true, false, config.K8sNode, config.TrafficEncapModeEncap)
 			defer resetPipelines()
 
@@ -252,7 +260,7 @@ func TestIdempotentFlowInstallation(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 			fc := newFakeClient(m, true, false, config.K8sNode, config.TrafficEncapModeEncap)
 			defer resetPipelines()
 
@@ -288,7 +296,7 @@ func TestFlowInstallationFailed(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 			fc := newFakeClient(m, true, false, config.K8sNode, config.TrafficEncapModeEncap)
 			defer resetPipelines()
 
@@ -318,7 +326,7 @@ func TestConcurrentFlowInstallation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 			fc := newFakeClient(m, true, false, config.K8sNode, config.TrafficEncapModeEncap)
 			defer resetPipelines()
 
@@ -364,7 +372,7 @@ func TestConcurrentFlowInstallation(t *testing.T) {
 }
 
 func newFakeClient(
-	mockOFEntryOperations *oftest.MockOFEntryOperations,
+	mockOFEntryOperations *opstest.MockOFEntryOperations,
 	enableIPv4,
 	enableIPv6 bool,
 	nodeType config.NodeType,
@@ -375,7 +383,7 @@ func newFakeClient(
 }
 
 func newFakeClientWithBridge(
-	mockOFEntryOperations *oftest.MockOFEntryOperations,
+	mockOFEntryOperations *opstest.MockOFEntryOperations,
 	enableIPv4,
 	enableIPv6 bool,
 	nodeType config.NodeType,
@@ -407,6 +415,7 @@ func newFakeClientWithBridge(
 		o.connectUplinkToBridge,
 		o.enableMulticast,
 		o.enableTrafficControl,
+		o.enableL7FlowExporter,
 		o.enableMulticluster,
 		NewGroupAllocator(),
 		false,
@@ -453,11 +462,21 @@ func newFakeClientWithBridge(
 		IPv4:   fakeGatewayIPv4,
 		IPv6:   fakeGatewayIPv6,
 		MAC:    fakeGatewayMAC,
-		OFPort: uint32(2),
+		OFPort: config.DefaultHostGatewayOFPort,
+	}
+	networkConfig := &config.NetworkConfig{
+		IPv4Enabled:           enableIPv4,
+		IPv6Enabled:           enableIPv6,
+		TrafficEncapMode:      trafficEncapMode,
+		TrafficEncryptionMode: o.trafficEncryptionMode,
+	}
+	tunnelOFPort := uint32(0)
+	if networkConfig.NeedsTunnelInterface() {
+		tunnelOFPort = config.DefaultTunOFPort
 	}
 	nodeConfig := &config.NodeConfig{
 		GatewayConfig:         gatewayConfig,
-		TunnelOFPort:          uint32(1),
+		TunnelOFPort:          tunnelOFPort,
 		WireGuardConfig:       &config.WireGuardConfig{},
 		PodIPv4CIDR:           fakePodIPv4CIDR,
 		PodIPv6CIDR:           fakePodIPv6CIDR,
@@ -466,16 +485,11 @@ func newFakeClientWithBridge(
 		NodeTransportIPv4Addr: fakeNodeIPv4Addr,
 		NodeTransportIPv6Addr: fakeNodeIPv6Addr,
 		Type:                  nodeType,
-		HostInterfaceOFPort:   uint32(4294967294),
+		HostInterfaceOFPort:   ovsconfig.BridgeOFPort,
 		UplinkNetConfig: &config.AdapterNetConfig{
 			MAC:    fakeUplinkMAC,
-			OFPort: uint32(4),
+			OFPort: uint32(config.DefaultUplinkOFPort),
 		},
-	}
-	networkConfig := &config.NetworkConfig{
-		IPv4Enabled:      enableIPv4,
-		IPv6Enabled:      enableIPv6,
-		TrafficEncapMode: trafficEncapMode,
 	}
 	egressConfig := &config.EgressConfig{
 		ExceptCIDRs: egressExceptCIDRs,
@@ -675,7 +689,7 @@ func Test_client_InstallNodeFlows(t *testing.T) {
 			skipTest(t, tc.skipLinux, tc.skipWindows)
 
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, tc.enableIPv4, tc.enableIPv6, config.K8sNode, tc.trafficEncapMode, tc.clientOptions...)
 			defer resetPipelines()
@@ -720,7 +734,7 @@ func Test_client_InstallPodFlows(t *testing.T) {
 			podInterfaceIPs: []net.IP{podIPv4},
 			expectedFlows: []string{
 				"cookie=0x1010000000000, table=ARPSpoofGuard, priority=200,arp,in_port=100,arp_spa=10.10.0.66,arp_sha=00:00:10:10:00:66 actions=goto_table:ARPResponder",
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ip,in_port=100,dl_src=00:00:10:10:00:66,nw_src=10.10.0.66 actions=goto_table:UnSNAT",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg0=0x200/0x200,nw_dst=10.10.0.66 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L2ForwardingCalc, priority=200,dl_dst=00:00:10:10:00:66 actions=set_field:0x64->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier",
@@ -734,7 +748,7 @@ func Test_client_InstallPodFlows(t *testing.T) {
 			expectedFlows: []string{
 				"cookie=0x1010000000000, table=ARPSpoofGuard, priority=200,arp,in_port=100,arp_spa=10.10.0.66,arp_sha=00:00:10:10:00:66 actions=goto_table:ARPResponder",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ip,in_port=100,dl_src=00:00:10:10:00:66,nw_src=10.10.0.66 actions=goto_table:PipelineIPClassifier",
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg0=0x200/0x200,nw_dst=10.10.0.66 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L2ForwardingCalc, priority=200,dl_dst=00:00:10:10:00:66 actions=set_field:0x64->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier",
 				"cookie=0x1050000000000, table=MulticastEgressPodMetric, priority=200,ip,nw_src=10.10.0.66 actions=goto_table:MulticastRouting",
@@ -746,7 +760,7 @@ func Test_client_InstallPodFlows(t *testing.T) {
 			enableIPv6:      true,
 			podInterfaceIPs: []net.IP{podIPv6},
 			expectedFlows: []string{
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ipv6,in_port=100,dl_src=00:00:10:10:00:66,ipv6_src=fec0:10:10::66 actions=goto_table:IPv6",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ipv6,reg0=0x200/0x200,ipv6_dst=fec0:10:10::66 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L2ForwardingCalc, priority=200,dl_dst=00:00:10:10:00:66 actions=set_field:0x64->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier",
@@ -759,7 +773,7 @@ func Test_client_InstallPodFlows(t *testing.T) {
 			podInterfaceIPs: []net.IP{podIPv4, podIPv6},
 			expectedFlows: []string{
 				"cookie=0x1010000000000, table=ARPSpoofGuard, priority=200,arp,in_port=100,arp_spa=10.10.0.66,arp_sha=00:00:10:10:00:66 actions=goto_table:ARPResponder",
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ip,in_port=100,dl_src=00:00:10:10:00:66,nw_src=10.10.0.66 actions=goto_table:UnSNAT",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ipv6,in_port=100,dl_src=00:00:10:10:00:66,ipv6_src=fec0:10:10::66 actions=goto_table:IPv6",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg0=0x200/0x200,nw_dst=10.10.0.66 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
@@ -774,7 +788,7 @@ func Test_client_InstallPodFlows(t *testing.T) {
 			trafficEncapMode: config.TrafficEncapModeNetworkPolicyOnly,
 			expectedFlows: []string{
 				"cookie=0x1010000000000, table=ARPSpoofGuard, priority=200,arp,in_port=100,arp_spa=10.10.0.66,arp_sha=00:00:10:10:00:66 actions=goto_table:ARPResponder",
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ip,in_port=100,dl_src=00:00:10:10:00:66,nw_src=10.10.0.66 actions=goto_table:UnSNAT",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg0=0x200/0x200,nw_dst=10.10.0.66 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,nw_dst=10.10.0.66 actions=set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
@@ -787,7 +801,7 @@ func Test_client_InstallPodFlows(t *testing.T) {
 			podInterfaceIPs:  []net.IP{podIPv6},
 			trafficEncapMode: config.TrafficEncapModeNetworkPolicyOnly,
 			expectedFlows: []string{
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ipv6,in_port=100,dl_src=00:00:10:10:00:66,ipv6_src=fec0:10:10::66 actions=goto_table:IPv6",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ipv6,reg0=0x200/0x200,ipv6_dst=fec0:10:10::66 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ipv6,ipv6_dst=fec0:10:10::66 actions=set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
@@ -802,7 +816,7 @@ func Test_client_InstallPodFlows(t *testing.T) {
 			trafficEncapMode: config.TrafficEncapModeNetworkPolicyOnly,
 			expectedFlows: []string{
 				"cookie=0x1010000000000, table=ARPSpoofGuard, priority=200,arp,in_port=100,arp_spa=10.10.0.66,arp_sha=00:00:10:10:00:66 actions=goto_table:ARPResponder",
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ipv6,in_port=100,dl_src=00:00:10:10:00:66,ipv6_src=fec0:10:10::66 actions=goto_table:IPv6",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ip,in_port=100,dl_src=00:00:10:10:00:66,nw_src=10.10.0.66 actions=goto_table:UnSNAT",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ipv6,reg0=0x200/0x200,ipv6_dst=fec0:10:10::66 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
@@ -820,9 +834,9 @@ func Test_client_InstallPodFlows(t *testing.T) {
 			trafficEncapMode: config.TrafficEncapModeNoEncap,
 			expectedFlows: []string{
 				"cookie=0x1010000000000, table=ARPSpoofGuard, priority=200,arp,in_port=100,arp_spa=192.168.77.200,arp_sha=00:00:10:10:00:66 actions=goto_table:ARPResponder",
-				"cookie=0x1010000000000, table=Classifier, priority=210,ip,in_port=4,vlan_tci=0x0000/0x1000,dl_dst=00:00:10:10:00:66 actions=set_field:0x1000/0xf000->reg8,set_field:0x4/0xf->reg0,set_field:0x0/0xfff->reg8,goto_table:UnSNAT",
+				"cookie=0x1010000000000, table=Classifier, priority=210,ip,in_port=32770,vlan_tci=0x0000/0x1000,dl_dst=00:00:10:10:00:66 actions=set_field:0x1000/0xf000->reg8,set_field:0x4/0xf->reg0,set_field:0x0/0xfff->reg8,goto_table:UnSNAT",
 				"cookie=0x1010000000000, table=Classifier, priority=210,ip,in_port=4294967294,vlan_tci=0x0000/0x1000,dl_dst=00:00:10:10:00:66 actions=set_field:0x1000/0xf000->reg8,set_field:0x5/0xf->reg0,goto_table:UnSNAT",
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x100000/0x100000->reg4,set_field:0x200/0x200->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,set_field:0x100000/0x100000->reg4,set_field:0x200/0x200->reg0,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ip,in_port=100,dl_src=00:00:10:10:00:66,nw_src=192.168.77.200 actions=set_field:0x1000/0xf000->reg8,set_field:0x0/0xfff->reg8,goto_table:UnSNAT",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg8=0x0/0xfff,nw_dst=192.168.77.200 actions=set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L2ForwardingCalc, priority=200,dl_dst=00:00:10:10:00:66 actions=set_field:0x64->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier",
@@ -837,12 +851,12 @@ func Test_client_InstallPodFlows(t *testing.T) {
 			trafficEncapMode: config.TrafficEncapModeNoEncap,
 			expectedFlows: []string{
 				"cookie=0x1010000000000, table=ARPSpoofGuard, priority=200,arp,in_port=100,arp_spa=192.168.77.200,arp_sha=00:00:10:10:00:66 actions=goto_table:ARPResponder",
-				"cookie=0x1010000000000, table=Classifier, priority=210,ip,in_port=4,dl_vlan=1,dl_dst=00:00:10:10:00:66 actions=set_field:0x1000/0xf000->reg8,set_field:0x4/0xf->reg0,set_field:0x1/0xfff->reg8,goto_table:UnSNAT",
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x100000/0x100000->reg4,set_field:0x200/0x200->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=210,ip,in_port=32770,dl_vlan=1,dl_dst=00:00:10:10:00:66 actions=set_field:0x1000/0xf000->reg8,set_field:0x4/0xf->reg0,set_field:0x1/0xfff->reg8,goto_table:UnSNAT",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,set_field:0x100000/0x100000->reg4,set_field:0x200/0x200->reg0,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ip,in_port=100,dl_src=00:00:10:10:00:66,nw_src=192.168.77.200 actions=set_field:0x1000/0xf000->reg8,set_field:0x1/0xfff->reg8,goto_table:UnSNAT",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg8=0x1/0xfff,nw_dst=192.168.77.200 actions=set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L2ForwardingCalc, priority=200,dl_dst=00:00:10:10:00:66 actions=set_field:0x64->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier",
-				"cookie=0x1010000000000, table=VLAN, priority=190,reg1=0x4,in_port=100 actions=push_vlan:0x8100,set_field:4097->vlan_vid,goto_table:Output",
+				"cookie=0x1010000000000, table=VLAN, priority=190,reg1=0x8002,in_port=100 actions=push_vlan:0x8100,set_field:4097->vlan_vid,goto_table:Output",
 			},
 		},
 	}
@@ -850,7 +864,7 @@ func Test_client_InstallPodFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, tc.enableIPv4, tc.enableIPv6, config.K8sNode, tc.trafficEncapMode, tc.clientOptions...)
 			defer resetPipelines()
@@ -913,14 +927,14 @@ func Test_client_UpdatePodFlows(t *testing.T) {
 			podUpdatedInterfaceIPs: []net.IP{podIPv4Updated},
 			expectedFlows: []string{
 				"cookie=0x1010000000000, table=ARPSpoofGuard, priority=200,arp,in_port=100,arp_spa=10.10.0.66,arp_sha=00:00:10:10:00:66 actions=goto_table:ARPResponder",
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ip,in_port=100,dl_src=00:00:10:10:00:66,nw_src=10.10.0.66 actions=goto_table:UnSNAT",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg0=0x200/0x200,nw_dst=10.10.0.66 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L2ForwardingCalc, priority=200,dl_dst=00:00:10:10:00:66 actions=set_field:0x64->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier",
 			},
 			expectedNewFlows: []string{
 				"cookie=0x1010000000000, table=ARPSpoofGuard, priority=200,arp,in_port=100,arp_spa=10.10.0.88,arp_sha=00:00:10:10:00:66 actions=goto_table:ARPResponder",
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ip,in_port=100,dl_src=00:00:10:10:00:66,nw_src=10.10.0.88 actions=goto_table:UnSNAT",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg0=0x200/0x200,nw_dst=10.10.0.88 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L2ForwardingCalc, priority=200,dl_dst=00:00:10:10:00:66 actions=set_field:0x64->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier",
@@ -932,13 +946,13 @@ func Test_client_UpdatePodFlows(t *testing.T) {
 			podInterfaceIPs:        []net.IP{podIPv6},
 			podUpdatedInterfaceIPs: []net.IP{podIPv6Updated},
 			expectedFlows: []string{
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ipv6,in_port=100,dl_src=00:00:10:10:00:66,ipv6_src=fec0:10:10::66 actions=goto_table:IPv6",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ipv6,reg0=0x200/0x200,ipv6_dst=fec0:10:10::66 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L2ForwardingCalc, priority=200,dl_dst=00:00:10:10:00:66 actions=set_field:0x64->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier",
 			},
 			expectedNewFlows: []string{
-				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,goto_table:SpoofGuard",
+				"cookie=0x1010000000000, table=Classifier, priority=190,in_port=100 actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 				"cookie=0x1010000000000, table=SpoofGuard, priority=200,ipv6,in_port=100,dl_src=00:00:10:10:00:66,ipv6_src=fec0:10:10::88 actions=goto_table:IPv6",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ipv6,reg0=0x200/0x200,ipv6_dst=fec0:10:10::88 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:00:00:10:10:00:66->eth_dst,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L2ForwardingCalc, priority=200,dl_dst=00:00:10:10:00:66 actions=set_field:0x64->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier",
@@ -948,7 +962,7 @@ func Test_client_UpdatePodFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, tc.enableIPv4, tc.enableIPv6, config.K8sNode, tc.trafficEncapMode, tc.clientOptions...)
 			defer resetPipelines()
@@ -986,7 +1000,7 @@ func Test_client_UpdatePodFlows(t *testing.T) {
 
 func Test_client_GetPodFlowKeys(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	m := oftest.NewMockOFEntryOperations(ctrl)
+	m := opstest.NewMockOFEntryOperations(ctrl)
 
 	fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap)
 	defer resetPipelines()
@@ -1083,7 +1097,7 @@ func Test_client_InstallServiceGroup(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap)
 			defer resetPipelines()
@@ -1202,7 +1216,7 @@ func Test_client_InstallEndpointFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap)
 			defer resetPipelines()
@@ -1343,7 +1357,7 @@ func Test_client_InstallServiceFlows(t *testing.T) {
 			isNodePort:         true,
 			trafficPolicyLocal: true,
 			expectedFlows: []string{
-				"cookie=0x1030000000000, table=ServiceLB, priority=210,udp,reg4=0x90000/0xf0000,nw_src=10.10.0.0/24,tp_dst=80 actions=set_field:0x200/0x200->reg0,set_field:0x30000/0x70000->reg4,set_field:0x200000/0x200000->reg4,set_field:0x64->reg7,group:100",
+				"cookie=0x1030000000000, table=ServiceLB, priority=210,udp,reg4=0x10090000/0x100f0000,tp_dst=80 actions=set_field:0x200/0x200->reg0,set_field:0x30000/0x70000->reg4,set_field:0x200000/0x200000->reg4,set_field:0x64->reg7,group:100",
 				"cookie=0x1030000000000, table=ServiceLB, priority=200,udp,reg4=0x90000/0xf0000,tp_dst=80 actions=set_field:0x200/0x200->reg0,set_field:0x30000/0x70000->reg4,set_field:0x200000/0x200000->reg4,set_field:0x65->reg7,group:101",
 				"cookie=0x1030000000065, table=ServiceLB, priority=190,udp,reg4=0xb0000/0xf0000,tp_dst=80 actions=learn(table=SessionAffinity,hard_timeout=100,priority=200,delete_learned,cookie=0x1030000000065,eth_type=0x800,nw_proto=0x11,OXM_OF_UDP_DST[],NXM_OF_IP_DST[],NXM_OF_IP_SRC[],load:NXM_NX_REG4[0..15]->NXM_NX_REG4[0..15],load:NXM_NX_REG4[26]->NXM_NX_REG4[26],load:NXM_NX_REG3[]->NXM_NX_REG3[],load:0x2->NXM_NX_REG4[16..18],load:0x1->NXM_NX_REG0[9],load:0x1->NXM_NX_REG4[21]),set_field:0x20000/0x70000->reg4,goto_table:EndpointDNAT",
 			},
@@ -1378,7 +1392,7 @@ func Test_client_InstallServiceFlows(t *testing.T) {
 			isExternal:         true,
 			trafficPolicyLocal: true,
 			expectedFlows: []string{
-				"cookie=0x1030000000000, table=ServiceLB, priority=210,sctp,reg4=0x10000/0x70000,nw_src=10.10.0.0/24,nw_dst=10.96.0.100,tp_dst=80 actions=set_field:0x200/0x200->reg0,set_field:0x30000/0x70000->reg4,set_field:0x200000/0x200000->reg4,set_field:0x64->reg7,group:100",
+				"cookie=0x1030000000000, table=ServiceLB, priority=210,sctp,reg4=0x10010000/0x10070000,nw_dst=10.96.0.100,tp_dst=80 actions=set_field:0x200/0x200->reg0,set_field:0x30000/0x70000->reg4,set_field:0x200000/0x200000->reg4,set_field:0x64->reg7,group:100",
 				"cookie=0x1030000000000, table=ServiceLB, priority=200,sctp,reg4=0x10000/0x70000,nw_dst=10.96.0.100,tp_dst=80 actions=set_field:0x200/0x200->reg0,set_field:0x30000/0x70000->reg4,set_field:0x200000/0x200000->reg4,set_field:0x65->reg7,group:101",
 				"cookie=0x1030000000065, table=ServiceLB, priority=190,sctp,reg4=0x30000/0x70000,nw_dst=10.96.0.100,tp_dst=80 actions=learn(table=SessionAffinity,hard_timeout=100,priority=200,delete_learned,cookie=0x1030000000065,eth_type=0x800,nw_proto=0x84,OXM_OF_SCTP_DST[],NXM_OF_IP_DST[],NXM_OF_IP_SRC[],load:NXM_NX_REG4[0..15]->NXM_NX_REG4[0..15],load:NXM_NX_REG4[26]->NXM_NX_REG4[26],load:NXM_NX_REG3[]->NXM_NX_REG3[],load:0x2->NXM_NX_REG4[16..18],load:0x1->NXM_NX_REG0[9],load:0x1->NXM_NX_REG4[21]),set_field:0x20000/0x70000->reg4,goto_table:EndpointDNAT",
 			},
@@ -1439,7 +1453,7 @@ func Test_client_InstallServiceFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			var options []clientOptionsFn
 			if tc.isDSR {
@@ -1482,7 +1496,7 @@ func Test_client_InstallServiceFlows(t *testing.T) {
 
 func Test_client_GetServiceFlowKeys(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	m := oftest.NewMockOFEntryOperations(ctrl)
+	m := opstest.NewMockOFEntryOperations(ctrl)
 
 	fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap)
 	defer resetPipelines()
@@ -1583,7 +1597,7 @@ func Test_client_InstallSNATBypassServiceFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap)
 			defer resetPipelines()
@@ -1617,7 +1631,7 @@ func Test_client_InstallSNATMarkFlows(t *testing.T) {
 			snatIP:                net.ParseIP("192.168.77.100"),
 			trafficShapingEnabled: false,
 			expectedFlows: []string{
-				"cookie=0x1040000000000, table=EgressMark, priority=200,ct_state=+new+trk,ip,tun_dst=192.168.77.100 actions=set_field:0x64/0xff->pkt_mark,set_field:0x20/0xf0->reg0,goto_table:L2ForwardingCalc",
+				"cookie=0x1040000000000, table=EgressMark, priority=200,ct_state=+trk,ip,tun_dst=192.168.77.100 actions=set_field:0x64/0xff->pkt_mark,set_field:0x20/0xf0->reg0,goto_table:L2ForwardingCalc",
 			},
 		},
 		{
@@ -1625,7 +1639,7 @@ func Test_client_InstallSNATMarkFlows(t *testing.T) {
 			snatIP:                net.ParseIP("fec0:192:168:77::100"),
 			trafficShapingEnabled: false,
 			expectedFlows: []string{
-				"cookie=0x1040000000000, table=EgressMark, priority=200,ct_state=+new+trk,ipv6,tun_ipv6_dst=fec0:192:168:77::100 actions=set_field:0x64/0xff->pkt_mark,set_field:0x20/0xf0->reg0,goto_table:L2ForwardingCalc",
+				"cookie=0x1040000000000, table=EgressMark, priority=200,ct_state=+trk,ipv6,tun_ipv6_dst=fec0:192:168:77::100 actions=set_field:0x64/0xff->pkt_mark,set_field:0x20/0xf0->reg0,goto_table:L2ForwardingCalc",
 			},
 		},
 		{
@@ -1648,7 +1662,7 @@ func Test_client_InstallSNATMarkFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap, setEnableEgressTrafficShaping(tc.trafficShapingEnabled))
 			defer resetPipelines()
 
@@ -1683,7 +1697,7 @@ func Test_client_InstallPodSNATFlows(t *testing.T) {
 			trafficShapingEnabled: false,
 			snatMark:              uint32(100),
 			expectedFlows: []string{
-				"cookie=0x1040000000000, table=EgressMark, priority=200,ct_state=+new+trk,ip,in_port=100 actions=set_field:0x64/0xff->pkt_mark,set_field:0x20/0xf0->reg0,goto_table:L2ForwardingCalc",
+				"cookie=0x1040000000000, table=EgressMark, priority=200,ct_state=+trk,ip,in_port=100 actions=set_field:0x64/0xff->pkt_mark,set_field:0x20/0xf0->reg0,goto_table:L2ForwardingCalc",
 			},
 		},
 		{
@@ -1706,7 +1720,7 @@ func Test_client_InstallPodSNATFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap, setEnableEgressTrafficShaping(tc.trafficShapingEnabled))
 			defer resetPipelines()
 
@@ -1733,7 +1747,7 @@ func Test_client_InstallEgressQoS(t *testing.T) {
 	expectedFlows := []string{"cookie=0x1040000000000, table=EgressQoS, priority=200,pkt_mark=0x64/0xff actions=meter:100,goto_table:L2ForwardingCalc"}
 
 	ctrl := gomock.NewController(t)
-	m := oftest.NewMockOFEntryOperations(ctrl)
+	m := opstest.NewMockOFEntryOperations(ctrl)
 	bridge := ovsoftest.NewMockBridge(ctrl)
 	fc := newFakeClientWithBridge(m, true, true, config.K8sNode, config.TrafficEncapModeEncap, bridge, enableEgressTrafficShaping)
 	defer resetPipelines()
@@ -1905,7 +1919,7 @@ func Test_client_SendTraceflowPacket(t *testing.T) {
 }
 
 func prepareTraceflowFlow(ctrl *gomock.Controller) *client {
-	m := oftest.NewMockOFEntryOperations(ctrl)
+	m := opstest.NewMockOFEntryOperations(ctrl)
 	fc := newFakeClientWithBridge(m, true, false, config.K8sNode, config.TrafficEncapModeEncap, ovsoftest.NewMockBridge(ctrl))
 	defer resetPipelines()
 
@@ -2017,7 +2031,7 @@ func Test_client_setBasePacketOutBuilder(t *testing.T) {
 }
 
 func prepareSetBasePacketOutBuilder(ctrl *gomock.Controller, success bool) *client {
-	ofClient := NewClient(bridgeName, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, true, false, false, false, false, false, false, false, false, false, false, nil, false, defaultPacketInRate)
+	ofClient := NewClient(bridgeName, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, true, false, false, false, false, false, false, false, false, false, false, false, nil, false, defaultPacketInRate)
 	m := ovsoftest.NewMockBridge(ctrl)
 	ofClient.bridge = m
 	bridge := binding.OFBridge{}
@@ -2256,7 +2270,7 @@ func Test_client_InstallMulticastFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap, enableMulticast)
 			defer resetPipelines()
@@ -2279,14 +2293,14 @@ func Test_client_InstallMulticastFlows(t *testing.T) {
 
 func Test_client_InstallMulticastRemoteReportFlows(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	m := oftest.NewMockOFEntryOperations(ctrl)
+	m := opstest.NewMockOFEntryOperations(ctrl)
 
 	fc := newFakeClient(m, true, false, config.K8sNode, config.TrafficEncapModeEncap, enableMulticast)
 	defer resetPipelines()
 
 	groupID := binding.GroupIDType(102)
 	expectedFlows := []string{
-		"cookie=0x1050000000000, table=Classifier, priority=210,ip,in_port=1,nw_dst=224.0.0.0/4 actions=set_field:0x1/0xf->reg0,goto_table:MulticastEgressRule",
+		"cookie=0x1050000000000, table=Classifier, priority=210,ip,in_port=32768,nw_dst=224.0.0.0/4 actions=set_field:0x1/0xf->reg0,goto_table:MulticastEgressRule",
 		"cookie=0x1050000000000, table=MulticastRouting, priority=210,igmp,in_port=4294967293 actions=group:102",
 		"cookie=0x1050000000000, table=Classifier, priority=200,in_port=4294967293 actions=goto_table:PipelineIPClassifier",
 	}
@@ -2296,6 +2310,28 @@ func Test_client_InstallMulticastRemoteReportFlows(t *testing.T) {
 	cacheKey := "multicast_encap"
 
 	assert.NoError(t, fc.InstallMulticastRemoteReportFlows(groupID))
+	fCacheI, ok := fc.featureMulticast.cachedFlows.Load(cacheKey)
+	require.True(t, ok)
+	assert.ElementsMatch(t, expectedFlows, getFlowStrings(fCacheI))
+}
+
+func Test_client_InstallMulticasFlexibleIPAMFlows(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := opstest.NewMockOFEntryOperations(ctrl)
+	fc := newFakeClient(m, true, false, config.K8sNode, config.TrafficEncapModeNoEncap, enableMulticast, enableConnectUplinkToBridge, disableEgress)
+	defer resetPipelines()
+
+	expectedFlows := []string{
+		"cookie=0x1050000000000, table=Classifier, priority=210,ip,in_port=32770,nw_dst=224.0.0.0/4 actions=goto_table:MulticastEgressRule",
+		"cookie=0x1050000000000, table=Classifier, priority=210,ip,in_port=4294967294,nw_dst=224.0.0.0/4 actions=goto_table:MulticastEgressRule",
+	}
+
+	m.EXPECT().AddAll(gomock.Any()).Return(nil).Times(1)
+
+	cacheKey := "multicast_flexible_ipam"
+
+	assert.NoError(t, fc.InstallMulticastFlexibleIPAMFlows())
 	fCacheI, ok := fc.featureMulticast.cachedFlows.Load(cacheKey)
 	require.True(t, ok)
 	assert.ElementsMatch(t, expectedFlows, getFlowStrings(fCacheI))
@@ -2415,7 +2451,7 @@ func Test_client_InstallTrafficControlMarkFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap, enableTrafficControl)
 			defer resetPipelines()
@@ -2425,7 +2461,7 @@ func Test_client_InstallTrafficControlMarkFlows(t *testing.T) {
 
 			cacheKey := fmt.Sprintf("tc_%s", tcName)
 
-			assert.NoError(t, fc.InstallTrafficControlMarkFlows(tcName, sourceOFPorts, targetOFPort, tc.direction, tc.action))
+			assert.NoError(t, fc.InstallTrafficControlMarkFlows(tcName, sourceOFPorts, targetOFPort, tc.direction, tc.action, types.TrafficControlFlowPriorityMedium))
 			fCacheI, ok := fc.featurePodConnectivity.tcCachedFlows.Load(cacheKey)
 			require.True(t, ok)
 			assert.ElementsMatch(t, tc.expectedFlows, getFlowStrings(fCacheI))
@@ -2439,7 +2475,7 @@ func Test_client_InstallTrafficControlMarkFlows(t *testing.T) {
 
 func Test_client_InstallTrafficControlReturnPortFlow(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	m := oftest.NewMockOFEntryOperations(ctrl)
+	m := opstest.NewMockOFEntryOperations(ctrl)
 
 	fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap, enableTrafficControl)
 	defer resetPipelines()
@@ -2486,8 +2522,8 @@ func Test_client_InstallMulticastGroup(t *testing.T) {
 			name:                "Remote Node Receivers",
 			remoteNodeReceivers: remoteNodeReceivers,
 			expectedGroup: "group_id=101,type=all," +
-				"bucket=bucket_id:0,actions=set_field:0x200000/0x600000->reg0,set_field:0x1->reg1,set_field:192.168.77.101->tun_dst,resubmit:MulticastOutput," +
-				"bucket=bucket_id:1,actions=set_field:0x200000/0x600000->reg0,set_field:0x1->reg1,set_field:192.168.77.102->tun_dst,resubmit:MulticastOutput",
+				"bucket=bucket_id:0,actions=set_field:0x200000/0x600000->reg0,set_field:0x8000->reg1,set_field:192.168.77.101->tun_dst,resubmit:MulticastOutput," +
+				"bucket=bucket_id:1,actions=set_field:0x200000/0x600000->reg0,set_field:0x8000->reg1,set_field:192.168.77.102->tun_dst,resubmit:MulticastOutput",
 		},
 		{
 			name:                "Local and Remote Node Receivers",
@@ -2496,8 +2532,8 @@ func Test_client_InstallMulticastGroup(t *testing.T) {
 			expectedGroup: "group_id=101,type=all," +
 				"bucket=bucket_id:0,actions=set_field:0x200000/0x600000->reg0,set_field:0x32->reg1,resubmit:MulticastIngressRule," +
 				"bucket=bucket_id:1,actions=set_field:0x200000/0x600000->reg0,set_field:0x64->reg1,resubmit:MulticastIngressRule," +
-				"bucket=bucket_id:2,actions=set_field:0x200000/0x600000->reg0,set_field:0x1->reg1,set_field:192.168.77.101->tun_dst,resubmit:MulticastOutput," +
-				"bucket=bucket_id:3,actions=set_field:0x200000/0x600000->reg0,set_field:0x1->reg1,set_field:192.168.77.102->tun_dst,resubmit:MulticastOutput",
+				"bucket=bucket_id:2,actions=set_field:0x200000/0x600000->reg0,set_field:0x8000->reg1,set_field:192.168.77.101->tun_dst,resubmit:MulticastOutput," +
+				"bucket=bucket_id:3,actions=set_field:0x200000/0x600000->reg0,set_field:0x8000->reg1,set_field:192.168.77.102->tun_dst,resubmit:MulticastOutput",
 		},
 		{
 			name:           "DeleteOFEntries Failed",
@@ -2511,7 +2547,7 @@ func Test_client_InstallMulticastGroup(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap, enableMulticast)
 			defer resetPipelines()
@@ -2564,7 +2600,7 @@ func Test_client_InstallMulticlusterNodeFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap, enableMulticluster)
 			defer resetPipelines()
@@ -2617,7 +2653,7 @@ func Test_client_InstallMulticlusterGatewayFlows(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			m := oftest.NewMockOFEntryOperations(ctrl)
+			m := opstest.NewMockOFEntryOperations(ctrl)
 
 			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap, enableMulticluster)
 			defer resetPipelines()
@@ -2641,7 +2677,7 @@ func Test_client_InstallMulticlusterGatewayFlows(t *testing.T) {
 
 func Test_client_InstallMulticlusterClassifierFlows(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	m := oftest.NewMockOFEntryOperations(ctrl)
+	m := opstest.NewMockOFEntryOperations(ctrl)
 
 	fc := newFakeClient(m, true, false, config.K8sNode, config.TrafficEncapModeEncap, enableMulticluster)
 	defer resetPipelines()
@@ -2675,7 +2711,7 @@ func Test_client_RegisterPacketInHandler(t *testing.T) {
 func Test_client_ReplayFlows(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-	m := oftest.NewMockOFEntryOperations(ctrl)
+	m := opstest.NewMockOFEntryOperations(ctrl)
 	bridge := ovsoftest.NewMockBridge(ctrl)
 	clientOptions := []clientOptionsFn{enableTrafficControl, enableMulticast, enableMulticluster, enableEgressTrafficShaping}
 	fc := newFakeClientWithBridge(m, true, false, config.K8sNode, config.TrafficEncapModeEncap, bridge, clientOptions...)
@@ -2684,7 +2720,7 @@ func Test_client_ReplayFlows(t *testing.T) {
 	expectedFlows := append(pipelineDefaultFlows(true /* egressTrafficShapingEnabled */, false /* externalNodeEnabled */, true /* isEncap */, true /* isIPv4 */), egressInitFlows(true)...)
 	expectedFlows = append(expectedFlows, multicastInitFlows(true)...)
 	expectedFlows = append(expectedFlows, networkPolicyInitFlows(true, false, false)...)
-	expectedFlows = append(expectedFlows, podConnectivityInitFlows(config.TrafficEncapModeEncap, false, true, true, true)...)
+	expectedFlows = append(expectedFlows, podConnectivityInitFlows(config.TrafficEncapModeEncap, config.TrafficEncryptionModeNone, false, true, true, true)...)
 	expectedFlows = append(expectedFlows, serviceInitFlows(true, true, false, false)...)
 
 	addFlowInCache := func(cache *flowCategoryCache, cacheKey string, flows []binding.Flow) {
@@ -2768,7 +2804,7 @@ func Test_client_ReplayFlows(t *testing.T) {
 	)
 	sourceOFPorts := []uint32{50, 100}
 	targetOFPort := uint32(200)
-	addFlowInCache(fc.featurePodConnectivity.tcCachedFlows, "tcFlows", fc.featurePodConnectivity.trafficControlMarkFlows(sourceOFPorts, targetOFPort, v1alpha2.DirectionEgress, v1alpha2.ActionMirror))
+	addFlowInCache(fc.featurePodConnectivity.tcCachedFlows, "tcFlows", fc.featurePodConnectivity.trafficControlMarkFlows(sourceOFPorts, targetOFPort, v1alpha2.DirectionEgress, v1alpha2.ActionMirror, priorityNormal))
 	replayedFlows = append(replayedFlows,
 		"cookie=0x1010000000000, table=TrafficControl, priority=200,in_port=50 actions=set_field:0xc8->reg9,set_field:0x400000/0xc00000->reg4,goto_table:IngressSecurityClassifier",
 		"cookie=0x1010000000000, table=TrafficControl, priority=200,in_port=100 actions=set_field:0xc8->reg9,set_field:0x400000/0xc00000->reg4,goto_table:IngressSecurityClassifier",

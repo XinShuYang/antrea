@@ -134,9 +134,10 @@ function clean_tmp() {
 }
 
 function clean_images() {
-    docker images | grep -E 'mc-controller|antrea-ubuntu' | awk '{print $3}' | xargs -r docker rmi -f || true
+    docker images --format "{{.Repository}}:{{.Tag}}" | grep -E 'mc-controller|antrea-ubuntu' | xargs -r docker rmi -f || true
     # Clean up dangling images generated in previous builds.
-    docker image prune -f --filter "until=24h" || true > /dev/null
+    docker image prune -af --filter "until=24h" || true > /dev/null
+    check_and_cleanup_docker_build_cache
 }
 
 function cleanup_multicluster_ns {
@@ -298,12 +299,13 @@ function deliver_antrea_multicluster {
 
     DOCKER_REGISTRY="${DOCKER_REGISTRY}" ./hack/build-antrea-linux-all.sh --pull
     echo "====== Delivering Antrea to all Nodes ======"
-    docker save -o ${WORKDIR}/antrea-ubuntu.tar antrea/antrea-ubuntu:latest
+    docker save -o ${WORKDIR}/antrea-ubuntu.tar antrea/antrea-agent-ubuntu:latest antrea/antrea-controller-ubuntu:latest
 
 
     if [[ ${KIND} == "true" ]]; then
         for name in ${CLUSTER_NAMES[*]}; do
-            kind load docker-image antrea/antrea-ubuntu:latest --name ${name}
+            kind load docker-image antrea/antrea-agent-ubuntu:latest --name ${name}
+            kind load docker-image antrea/antrea-controller-ubuntu:latest --name ${name}
         done
     else
         for kubeconfig in "${multicluster_kubeconfigs[@]}"
@@ -442,7 +444,7 @@ function run_multicluster_e2e {
     fi
 
     set -x
-    go test -v antrea.io/antrea/multicluster/test/e2e --logs-export-dir `pwd`/antrea-multicluster-test-logs $options
+    go test -v -timeout=15m antrea.io/antrea/multicluster/test/e2e --logs-export-dir `pwd`/antrea-multicluster-test-logs $options
     if [[ "$?" != "0" ]]; then
         TEST_FAILURE=true
     fi

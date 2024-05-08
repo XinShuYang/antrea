@@ -45,9 +45,12 @@ func TestWireGuard(t *testing.T) {
 		skipIfMissingKernelModule(t, data, node.name, []string{"wireguard"})
 	}
 	var previousTrafficEncryptionMode string
+	var previousMulticastEnabledState bool
 	ac := func(config *agentconfig.AgentConfig) {
 		previousTrafficEncryptionMode = config.TrafficEncryptionMode
 		config.TrafficEncryptionMode = "wireguard"
+		previousMulticastEnabledState = config.Multicast.Enable
+		config.Multicast.Enable = false
 	}
 	if err := data.mutateAntreaConfigMap(nil, ac, false, true); err != nil {
 		t.Fatalf("Failed to enable WireGuard tunnel: %v", err)
@@ -55,6 +58,7 @@ func TestWireGuard(t *testing.T) {
 	defer func() {
 		ac := func(config *agentconfig.AgentConfig) {
 			config.TrafficEncryptionMode = previousTrafficEncryptionMode
+			config.Multicast.Enable = previousMulticastEnabledState
 		}
 		if err := data.mutateAntreaConfigMap(nil, ac, false, true); err != nil {
 			t.Errorf("Failed to disable WireGuard tunnel: %v", err)
@@ -69,7 +73,7 @@ func testPodConnectivity(t *testing.T, data *TestData) {
 	podInfos, deletePods := createPodsOnDifferentNodes(t, data, data.testNamespace, "differentnodes")
 	defer deletePods()
 	numPods := 2
-	data.runPingMesh(t, podInfos[:numPods], agnhostContainerName)
+	data.runPingMesh(t, podInfos[:numPods], toolboxContainerName, true)
 
 	// Make sure that route to Pod on peer Node and route to peer gateway is targeting the WireGuard device.
 	srcPod, err := data.getAntreaPodOnNode(nodeName(0))
@@ -141,7 +145,7 @@ func testServiceConnectivity(t *testing.T, data *TestData) {
 	defer cleanup()
 
 	// Create the a hostNetwork Pod on a Node different from the service's backend Pod, so the service traffic will be transferred across the tunnel.
-	require.NoError(t, NewPodBuilder(clientPodName, data.testNamespace, busyboxImage).OnNode(clientPodNode).WithCommand([]string{"sleep", "3600"}).InHostNetwork().Create(data))
+	require.NoError(t, NewPodBuilder(clientPodName, data.testNamespace, ToolboxImage).OnNode(clientPodNode).InHostNetwork().Create(data))
 	defer data.DeletePodAndWait(defaultTimeout, clientPodName, data.testNamespace)
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, clientPodName, data.testNamespace))
 

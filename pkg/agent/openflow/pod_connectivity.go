@@ -52,6 +52,7 @@ type featurePodConnectivity struct {
 	proxyAll              bool
 	enableDSR             bool
 	enableTrafficControl  bool
+	enableL7FlowExporter  bool
 
 	category cookie.Category
 }
@@ -69,7 +70,8 @@ func newFeaturePodConnectivity(
 	enableMulticast bool,
 	proxyAll bool,
 	enableDSR bool,
-	enableTrafficControl bool) *featurePodConnectivity {
+	enableTrafficControl bool,
+	enableL7FlowExporter bool) *featurePodConnectivity {
 	ctZones := make(map[binding.Protocol]int)
 	gatewayIPs := make(map[binding.Protocol]net.IP)
 	localCIDRs := make(map[binding.Protocol]net.IPNet)
@@ -95,7 +97,7 @@ func newFeaturePodConnectivity(
 		}
 	}
 
-	gatewayPort := uint32(config.HostGatewayOFPort)
+	gatewayPort := uint32(config.DefaultHostGatewayOFPort)
 	if nodeConfig.GatewayConfig != nil {
 		gatewayPort = nodeConfig.GatewayConfig.OFPort
 	}
@@ -122,6 +124,7 @@ func newFeaturePodConnectivity(
 		networkConfig:         networkConfig,
 		connectUplinkToBridge: connectUplinkToBridge,
 		enableTrafficControl:  enableTrafficControl,
+		enableL7FlowExporter:  enableL7FlowExporter,
 		ipCtZoneTypeRegMarks:  ipCtZoneTypeRegMarks,
 		ctZoneSrcField:        getZoneSrcField(connectUplinkToBridge),
 		enableMulticast:       enableMulticast,
@@ -165,7 +168,7 @@ func (f *featurePodConnectivity) initFlows() []*openflow15.FlowMod {
 	// Add flow to ensure the liveliness check packet could be forwarded correctly.
 	flows = append(flows, f.localProbeFlows()...)
 
-	if f.networkConfig.TrafficEncapMode.SupportsEncap() {
+	if f.tunnelPort != 0 {
 		flows = append(flows, f.tunnelClassifierFlow(f.tunnelPort))
 		flows = append(flows, f.l2ForwardCalcFlow(GlobalVirtualMAC, f.tunnelPort))
 	}
@@ -182,7 +185,7 @@ func (f *featurePodConnectivity) initFlows() []*openflow15.FlowMod {
 		// Pod IP will take care of routing the traffic to destination Pod.
 		flows = append(flows, f.l3FwdFlowToLocalPodCIDR()...)
 	}
-	if f.enableTrafficControl {
+	if f.enableTrafficControl || f.enableL7FlowExporter {
 		flows = append(flows, f.trafficControlCommonFlows()...)
 	}
 	return GetFlowModMessages(flows, binding.AddMessage)
@@ -200,7 +203,11 @@ func (f *featurePodConnectivity) replayFlows() []*openflow15.FlowMod {
 }
 
 // trafficControlMarkFlows generates the flows to mark the packets that need to be redirected or mirrored.
-func (f *featurePodConnectivity) trafficControlMarkFlows(sourceOFPorts []uint32, targetOFPort uint32, direction v1alpha2.Direction, action v1alpha2.TrafficControlAction) []binding.Flow {
+func (f *featurePodConnectivity) trafficControlMarkFlows(sourceOFPorts []uint32,
+	targetOFPort uint32,
+	direction v1alpha2.Direction,
+	action v1alpha2.TrafficControlAction,
+	priority uint16) []binding.Flow {
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	var actionRegMark *binding.RegMark
 	if action == v1alpha2.ActionRedirect {
@@ -212,7 +219,7 @@ func (f *featurePodConnectivity) trafficControlMarkFlows(sourceOFPorts []uint32,
 	for _, port := range sourceOFPorts {
 		if direction == v1alpha2.DirectionIngress || direction == v1alpha2.DirectionBoth {
 			// This generates the flow to mark the packets destined for a provided port.
-			flows = append(flows, TrafficControlTable.ofTable.BuildFlow(priorityNormal).
+			flows = append(flows, TrafficControlTable.ofTable.BuildFlow(priority).
 				Cookie(cookieID).
 				MatchRegFieldWithValue(TargetOFPortField, port).
 				Action().LoadToRegField(TrafficControlTargetOFPortField, targetOFPort).
@@ -222,7 +229,7 @@ func (f *featurePodConnectivity) trafficControlMarkFlows(sourceOFPorts []uint32,
 		}
 		// This generates the flow to mark the packets sourced from a provided port.
 		if direction == v1alpha2.DirectionEgress || direction == v1alpha2.DirectionBoth {
-			flows = append(flows, TrafficControlTable.ofTable.BuildFlow(priorityNormal).
+			flows = append(flows, TrafficControlTable.ofTable.BuildFlow(priority).
 				Cookie(cookieID).
 				MatchInPort(port).
 				Action().LoadToRegField(TrafficControlTargetOFPortField, targetOFPort).

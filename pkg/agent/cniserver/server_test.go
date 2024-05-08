@@ -29,6 +29,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"antrea.io/antrea/pkg/agent/cniserver/ipam"
 	ipamtest "antrea.io/antrea/pkg/agent/cniserver/ipam/testing"
@@ -43,6 +45,8 @@ import (
 	"antrea.io/antrea/pkg/cni"
 	"antrea.io/antrea/pkg/ovs/ovsconfig"
 	ovsconfigtest "antrea.io/antrea/pkg/ovs/ovsconfig/testing"
+	utilip "antrea.io/antrea/pkg/util/ip"
+	"antrea.io/antrea/pkg/util/wait"
 )
 
 const (
@@ -75,6 +79,80 @@ var (
 	ifaceStore          interfacestore.InterfaceStore
 
 	emptyResponse = &cnipb.CniCmdResponse{CniResult: []byte("")}
+
+	nodeName = "node1"
+	gwMAC    = utilip.MustParseMAC("00:00:11:11:11:11")
+	pod1     = &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "p1",
+			Namespace: testPodNamespace,
+		},
+		Spec: v1.PodSpec{
+			NodeName: nodeName,
+		},
+	}
+	pod2 = &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "p2",
+			Namespace: testPodNamespace,
+		},
+		Spec: v1.PodSpec{
+			NodeName:    nodeName,
+			HostNetwork: true,
+		},
+	}
+	pod3 = &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "p3",
+			Namespace: testPodNamespace,
+		},
+		Spec: v1.PodSpec{
+			NodeName: nodeName,
+		},
+	}
+	normalInterface = &interfacestore.InterfaceConfig{
+		InterfaceName: "iface1",
+		Type:          interfacestore.ContainerInterface,
+		IPs:           []net.IP{net.ParseIP("1.1.1.1")},
+		MAC:           utilip.MustParseMAC("00:11:22:33:44:01"),
+		OVSPortConfig: &interfacestore.OVSPortConfig{
+			PortUUID: generateUUID(),
+			OFPort:   int32(3),
+		},
+		ContainerInterfaceConfig: &interfacestore.ContainerInterfaceConfig{
+			PodName:      pod1.Name,
+			PodNamespace: testPodNamespace,
+			ContainerID:  generateUUID(),
+		},
+	}
+	staleInterface = &interfacestore.InterfaceConfig{
+		InterfaceName: "iface3",
+		Type:          interfacestore.ContainerInterface,
+		OVSPortConfig: &interfacestore.OVSPortConfig{
+			PortUUID: generateUUID(),
+			OFPort:   int32(4),
+		},
+		ContainerInterfaceConfig: &interfacestore.ContainerInterfaceConfig{
+			PodName:      "non-existing-pod",
+			PodNamespace: testPodNamespace,
+			ContainerID:  generateUUID(),
+		},
+	}
+	unconnectedInterface = &interfacestore.InterfaceConfig{
+		InterfaceName: "iface4",
+		Type:          interfacestore.ContainerInterface,
+		IPs:           []net.IP{net.ParseIP("1.1.1.2")},
+		MAC:           utilip.MustParseMAC("00:11:22:33:44:02"),
+		OVSPortConfig: &interfacestore.OVSPortConfig{
+			PortUUID: generateUUID(),
+			OFPort:   int32(-1),
+		},
+		ContainerInterfaceConfig: &interfacestore.ContainerInterfaceConfig{
+			PodName:      pod3.Name,
+			PodNamespace: testPodNamespace,
+			ContainerID:  generateUUID(),
+		},
+	}
 )
 
 func TestLoadNetConfig(t *testing.T) {
@@ -598,46 +676,65 @@ func TestBuildOVSPortExternalIDs(t *testing.T) {
 	containerIP1 := net.ParseIP("10.1.2.100")
 	containerIP2 := net.ParseIP("2001:fd1a::2")
 	containerIPs := []net.IP{containerIP1, containerIP2}
-	containerConfig := interfacestore.NewContainerInterface("pod1-abcd", containerID, "test-1", "t1", containerMAC, containerIPs, 0)
-	externalIds := BuildOVSPortExternalIDs(containerConfig)
-	parsedIP, existed := externalIds[ovsExternalIDIP]
+	containerConfig := interfacestore.NewContainerInterface("pod1-abcd", containerID,
+		"test-1", "t1", "eth0", containerMAC, containerIPs, 0)
+	externalIDs := BuildOVSPortExternalIDs(containerConfig)
+	_, existed := externalIDs[ovsExternalIDIFDev]
+	assert.False(t, existed, "External IDs should not include interface name eth0")
+	parsedIP, existed := externalIDs[ovsExternalIDIP]
 	parsedIPStr := parsedIP.(string)
 	if !existed || !strings.Contains(parsedIPStr, "10.1.2.100") || !strings.Contains(parsedIPStr, "2001:fd1a::2") {
-		t.Errorf("Failed to parse container configuration")
+		t.Errorf("Failed to store IPs to external IDs")
 	}
-	parsedMac, existed := externalIds[ovsExternalIDMAC]
+	parsedMac, existed := externalIDs[ovsExternalIDMAC]
 	if !existed || parsedMac != containerMAC.String() {
-		t.Errorf("Failed to parse container configuration")
+		t.Errorf("Failed to store MAC to external IDs")
 	}
-	parsedID, existed := externalIds[ovsExternalIDContainerID]
+	parsedID, existed := externalIDs[ovsExternalIDContainerID]
 	if !existed || parsedID != containerID {
-		t.Errorf("Failed to parse container configuration")
+		t.Errorf("Failed to store container ID to external IDs")
 	}
-	portExternalIDs := make(map[string]string)
-	for k, v := range externalIds {
-		val := v.(string)
-		portExternalIDs[k] = val
-	}
-	mockPort := &ovsconfig.OVSPortData{
-		Name:        "testPort",
-		ExternalIDs: portExternalIDs,
-	}
-	portConfig := &interfacestore.OVSPortConfig{
-		PortUUID: "12345678",
-		OFPort:   int32(1),
-	}
-	ifaceConfig := ParseOVSPortInterfaceConfig(mockPort, portConfig)
-	assert.Equal(t, len(containerIPs), len(ifaceConfig.IPs))
-	for _, ip1 := range containerIPs {
-		existed := false
-		for _, ip2 := range ifaceConfig.IPs {
-			if ip2.Equal(ip1) {
-				existed = true
-				break
-			}
+
+	testConfigParsingFn := func() {
+		portExternalIDs := make(map[string]string)
+		for k, v := range externalIDs {
+			val := v.(string)
+			portExternalIDs[k] = val
 		}
-		assert.True(t, existed, fmt.Sprintf("IP %s should exist in the restored InterfaceConfig", ip1.String()))
+		mockPort := &ovsconfig.OVSPortData{
+			Name:        "testPort",
+			ExternalIDs: portExternalIDs,
+		}
+		portConfig := &interfacestore.OVSPortConfig{
+			PortUUID: "12345678",
+			OFPort:   int32(1),
+		}
+		ifaceConfig := ParseOVSPortInterfaceConfig(mockPort, portConfig)
+		assert.Equal(t, len(containerIPs), len(ifaceConfig.IPs))
+		for _, ip1 := range containerIPs {
+			existed := false
+			for _, ip2 := range ifaceConfig.IPs {
+				if ip2.Equal(ip1) {
+					existed = true
+					break
+				}
+			}
+			assert.Truef(t, existed, "IP %s should exist in the restored InterfaceConfig", ip1.String())
+		}
 	}
+	testConfigParsingFn()
+
+	// Secondary interface with no IP.
+	containerIPs = nil
+	containerConfig = interfacestore.NewContainerInterface("pod1-abcd", containerID,
+		"test-1", "t1", "eth1", containerMAC, containerIPs, 0)
+	externalIDs = BuildOVSPortExternalIDs(containerConfig)
+	parsedIFDev, existed := externalIDs[ovsExternalIDIFDev]
+	assert.True(t, existed && parsedIFDev == "eth1")
+	parsedIP, existed = externalIDs[ovsExternalIDIP]
+	assert.True(t, existed && parsedIP.(string) == "")
+	testConfigParsingFn()
+
 }
 
 func translateRawPrevResult(prevResult *current.Result, cniVersion string) (map[string]interface{}, error) {
@@ -663,15 +760,13 @@ func translateRawPrevResult(prevResult *current.Result, cniVersion string) (map[
 }
 
 func newCNIServer(t *testing.T) *CNIServer {
-	networkReadyCh := make(chan struct{})
 	cniServer := &CNIServer{
 		cniSocket:       testSocket,
 		nodeConfig:      testNodeConfig,
 		serverVersion:   cni.AntreaCNIVersion,
 		containerAccess: newContainerAccessArbitrator(),
-		networkReadyCh:  networkReadyCh,
+		podNetworkWait:  wait.NewGroup(),
 	}
-	close(networkReadyCh)
 	cniServer.networkConfig = &config.NetworkConfig{InterfaceMTU: 1450}
 	return cniServer
 }
@@ -687,14 +782,14 @@ func generateNetworkConfiguration(name, cniVersion, cniType, ipamType string) *t
 	if cniType == "" {
 		netCfg.Type = AntreaCNIType
 	} else {
-		netCfg.Type = "cniType"
+		netCfg.Type = cniType
 	}
 	netCfg.IPAM = &types.IPAMConfig{Type: ipamType}
 	return netCfg
 }
 
 func newRequest(args string, netCfg *types.NetworkConfig, path string, t *testing.T) (*cnipb.CniCmdRequest, string) {
-	containerID := generateUUID(t)
+	_, _, containerID := cniservertest.ParseCNIArgs(args)
 	networkConfig, err := json.Marshal(netCfg)
 	if err != nil {
 		t.Error("Failed to generate Network configuration")
@@ -713,11 +808,8 @@ func newRequest(args string, netCfg *types.NetworkConfig, path string, t *testin
 	return cmdRequest, containerID
 }
 
-func generateUUID(t *testing.T) string {
-	newID, err := uuid.NewUUID()
-	if err != nil {
-		t.Fatal("Failed to generate UUID")
-	}
+func generateUUID() string {
+	newID, _ := uuid.NewUUID()
 	return newID.String()
 }
 

@@ -190,7 +190,7 @@ func setupTestPods(data *TestData, b *testing.B) (nginxPodIP, perfPodIP *PodIPs)
 	}
 
 	b.Logf("Creating a toolbox test Pod")
-	perfPod := createPerfTestPodDefinition(toolboxPodName, toolboxContainerName, toolboxImage)
+	perfPod := createPerfTestPodDefinition(toolboxPodName, toolboxContainerName, ToolboxImage)
 	_, err = data.clientset.CoreV1().Pods(data.testNamespace).Create(context.TODO(), perfPod, metav1.CreateOptions{})
 	if err != nil {
 		b.Fatalf("Error when creating toolbox test Pod: %v", err)
@@ -278,7 +278,7 @@ func networkPolicyRealize(policyRules int, data *TestData, b *testing.B) {
 }
 
 func WaitNetworkPolicyRealize(nodeName string, table *openflow.Table, policyRules int, data *TestData) error {
-	return wait.PollImmediate(50*time.Millisecond, *realizeTimeout, func() (bool, error) {
+	return wait.PollUntilContextTimeout(context.Background(), 50*time.Millisecond, *realizeTimeout, true, func(ctx context.Context) (bool, error) {
 		return checkRealize(nodeName, table, policyRules, data)
 	})
 }

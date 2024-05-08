@@ -129,7 +129,9 @@ func NewMCDefaultRouteController(
 		controller.wireGuardConfig = &config.WireGuardConfig{
 			Port: multiclusterConfig.WireGuard.Port,
 			Name: multiclusterWireGuardInterface,
-			MTU:  controller.nodeConfig.NodeTransportInterfaceMTU - controller.networkConfig.MTUDeduction - config.WireGuardOverhead,
+			// Regardless of the tunnel type, the WireGuard device must only reduce MTU for encryption because the
+			// packets it transmits have been encapsulated.
+			MTU: nodeConfig.NodeTransportInterfaceMTU - networkConfig.WireGuardMTUDeduction,
 		}
 	}
 	controller.gwInformer.Informer().AddEventHandlerWithResyncPeriod(
@@ -455,7 +457,7 @@ func (c *MCDefaultRouteController) syncMCFlows() error {
 	}
 
 	if activeGW != nil {
-		if err := c.ofClient.InstallMulticlusterClassifierFlows(config.DefaultTunOFPort, activeGW.Name == c.nodeConfig.Name); err != nil {
+		if err := c.ofClient.InstallMulticlusterClassifierFlows(c.nodeConfig.TunnelOFPort, activeGW.Name == c.nodeConfig.Name); err != nil {
 			return err
 		}
 		c.installedActiveGW = activeGW

@@ -132,13 +132,14 @@ func testAntctlAgentLocalAccess(t *testing.T, data *TestData) {
 	if err != nil {
 		t.Fatalf("Error when getting antrea-agent pod name: %v", err)
 	}
+	antctlName := antctlName()
 	for _, c := range antctl.CommandList.GetDebugCommands(runtime.ModeAgent) {
-		args := []string{}
+		args := []string{antctlName}
 		if testOptions.enableCoverage {
-			antctlCovArgs := antctlCoverageArgs("antctl-coverage", "")
+			antctlCovArgs := antctlCoverageArgs(antctlName, "")
 			args = append(antctlCovArgs, c...)
 		} else {
-			args = append([]string{"antctl"}, c...)
+			args = append(args, c...)
 		}
 		t.Logf("args: %s", args)
 
@@ -195,6 +196,8 @@ func testAntctlControllerRemoteAccess(t *testing.T, data *TestData, antctlServic
 		if testOptions.enableCoverage {
 			antctlCovArgs := antctlCoverageArgs(antctlName, covDir)
 			cmd = append(antctlCovArgs, c...)
+		} else {
+			cmd = append(cmd, c...)
 		}
 		testCmds = append(testCmds, cmdAndReturnCode{args: cmd, expectedReturnCode: 0})
 	}
@@ -313,7 +316,7 @@ func testAntctlProxy(t *testing.T, data *TestData, antctlServiceAccountName stri
 	const proxyContainerName = "proxy"
 	const proxyPort = 8001
 
-	require.NoError(t, NewPodBuilder(testPodName, data.testNamespace, toolboxImage).WithContainerName(testContainerName).OnNode(controlPlaneNodeName()).InHostNetwork().Create(data))
+	require.NoError(t, NewPodBuilder(testPodName, data.testNamespace, ToolboxImage).WithContainerName(testContainerName).OnNode(controlPlaneNodeName()).InHostNetwork().Create(data))
 	defer data.DeletePodAndWait(defaultTimeout, testPodName, data.testNamespace)
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, testPodName, data.testNamespace), "test Pod not in the Running state")
 

@@ -29,6 +29,7 @@ MODE="report"
 RUN_ALL=true
 RUN_SETUP_ONLY=false
 RUN_CLEANUP_ONLY=false
+SKIP_IAM_POLICY_BINDING=false
 TEST_SCRIPT_RC=0
 KUBE_CONFORMANCE_IMAGE_VERSION=auto
 
@@ -89,6 +90,10 @@ case $key in
     USER_EMAIL="$2"
     shift 2
     ;;
+    --skip-iam-policy-binding)
+    SKIP_IAM_POLICY_BINDING=true
+    shift
+    ;;
     --gke-zone)
     GKE_ZONE="$2"
     shift 2
@@ -148,6 +153,8 @@ THIS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 GIT_CHECKOUT_DIR=${THIS_DIR}/..
 pushd "$THIS_DIR" > /dev/null
 
+source ${THIS_DIR}/jenkins/utils.sh
+
 # disable gcloud prompts, e.g., when deleting resources
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 
@@ -205,33 +212,35 @@ function deliver_antrea_to_gke() {
     # The cleanup and stats are best-effort.
     set +e
     if [[ -n ${JOB_NAME+x} ]]; then
-        docker images | grep "${JOB_NAME}" | awk '{print $3}' | xargs -r docker rmi -f > /dev/null
+        docker images --format "{{.Repository}}:{{.Tag}}" | grep "${JOB_NAME}" | xargs -r docker rmi -f > /dev/null
     fi
     # Clean up dangling images generated in previous builds. Recent ones must be excluded
     # because they might be being used in other builds running simultaneously.
-    docker image prune -f --filter "until=2h" > /dev/null
+    docker image prune -af --filter "until=2h" > /dev/null
     docker system df -v
+    check_and_cleanup_docker_build_cache
     set -e
 
     cd ${GIT_CHECKOUT_DIR}
-    VERSION="$CLUSTER" make -C ${GIT_CHECKOUT_DIR}
+    VERSION="$CLUSTER" ./hack/build-antrea-linux-all.sh --pull
     if [[ "$?" -ne "0" ]]; then
         echo "=== Antrea Image build failed ==="
         exit 1
     fi
 
     echo "=== Loading the Antrea image to each Node ==="
-    antrea_image="antrea-ubuntu"
+    antrea_images_tar="antrea-ubuntu.tar"
     DOCKER_IMG_VERSION=${CLUSTER}
-    DOCKER_IMG_NAME="antrea/antrea-ubuntu"
-    docker save -o ${antrea_image}.tar ${DOCKER_IMG_NAME}:${DOCKER_IMG_VERSION}
+    DOCKER_AGENT_IMG_NAME="antrea/antrea-agent-ubuntu"
+    DOCKER_CONTROLLER_IMG_NAME="antrea/antrea-controller-ubuntu"
+    docker save -o ${antrea_images_tar} ${DOCKER_AGENT_IMG_NAME}:${DOCKER_IMG_VERSION} ${DOCKER_CONTROLLER_IMG_NAME}:${DOCKER_IMG_VERSION}
 
     node_names=$(kubectl get nodes -o wide --no-headers=true | awk '{print $1}')
     for node_name in ${node_names}; do
-        gcloud compute scp ${antrea_image}.tar ubuntu@${node_name}:~ --zone ${GKE_ZONE}
-        gcloud compute ssh ubuntu@${node_name} --command="sudo ctr -n=k8s.io images import ~/${antrea_image}.tar ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_IMG_NAME}:latest" --zone ${GKE_ZONE}
+        gcloud compute scp ${antrea_images_tar} ubuntu@${node_name}:~ --zone ${GKE_ZONE}
+        gcloud compute ssh ubuntu@${node_name} --command="sudo ctr -n=k8s.io images import ~/${antrea_images_tar} ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_AGENT_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_AGENT_IMG_NAME}:latest ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_CONTROLLER_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_CONTROLLER_IMG_NAME}:latest" --zone ${GKE_ZONE}
     done
-    rm ${antrea_image}.tar
+    rm ${antrea_images_tar}
 
     echo "=== Configuring Antrea for cluster ==="
     if [[ -n ${SVC_ACCOUNT_NAME+x} ]]; then
@@ -240,6 +249,8 @@ function deliver_antrea_to_gke() {
     elif [[ -n ${USER_EMAIL+x} ]]; then
         gcloud projects add-iam-policy-binding ${GKE_PROJECT} --member user:${USER_EMAIL} --role roles/container.admin
         kubectl create clusterrolebinding cluster-admin-binding --clusterrole cluster-admin --user ${USER_EMAIL}
+    elif [[ "$SKIP_IAM_POLICY_BINDING" == true ]]; then
+        echo "Skipping the IAM Policy Binding for Cluster Management."
     else
         echo "Neither service account or user email info is set, cannot create cluster-admin-binding!"
         echo "Please refer to --help for more information."

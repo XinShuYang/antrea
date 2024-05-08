@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
+	"antrea.io/antrea/pkg/agent/apis"
 	"antrea.io/antrea/pkg/agent/ipassigner"
 	"antrea.io/antrea/pkg/agent/memberlist"
 	"antrea.io/antrea/pkg/agent/types"
@@ -393,7 +394,7 @@ func (c *ServiceExternalIPController) assignIP(ip string, service apimachineryty
 	c.assignedIPsMutex.Lock()
 	defer c.assignedIPsMutex.Unlock()
 	if _, ok := c.assignedIPs[ip]; !ok {
-		if err := c.ipAssigner.AssignIP(ip, true); err != nil {
+		if _, err := c.ipAssigner.AssignIP(ip, nil, true); err != nil {
 			return err
 		}
 		c.assignedIPs[ip] = sets.New[string](service.String())
@@ -411,7 +412,7 @@ func (c *ServiceExternalIPController) unassignIP(ip string, service apimachinery
 		return nil
 	}
 	if assigned.Len() == 1 && assigned.Has(service.String()) {
-		if err := c.ipAssigner.UnassignIP(ip); err != nil {
+		if _, err := c.ipAssigner.UnassignIP(ip); err != nil {
 			return err
 		}
 		delete(c.assignedIPs, ip)
@@ -439,12 +440,12 @@ func (c *ServiceExternalIPController) nodesHasHealthyServiceEndpoint(service *co
 	return nodes, nil
 }
 
-func (c *ServiceExternalIPController) GetServiceExternalIPStatus() []querier.ServiceExternalIPInfo {
+func (c *ServiceExternalIPController) GetServiceExternalIPStatus() []apis.ServiceExternalIPInfo {
 	c.externalIPStatesMutex.RLock()
 	defer c.externalIPStatesMutex.RUnlock()
-	info := make([]querier.ServiceExternalIPInfo, 0, len(c.externalIPStates))
+	info := make([]apis.ServiceExternalIPInfo, 0, len(c.externalIPStates))
 	for k, v := range c.externalIPStates {
-		info = append(info, querier.ServiceExternalIPInfo{
+		info = append(info, apis.ServiceExternalIPInfo{
 			ServiceName:    k.Name,
 			Namespace:      k.Namespace,
 			ExternalIP:     v.ip,

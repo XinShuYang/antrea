@@ -84,14 +84,14 @@ func TestVMAgent(t *testing.T) {
 
 func (data *TestData) waitForDeploymentReady(t *testing.T, namespace string, name string, timeout time.Duration) error {
 	t.Logf("Waiting for Deployment '%s/%s' to be ready", namespace, name)
-	err := wait.Poll(1*time.Second, timeout, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, timeout, false, func(ctx context.Context) (bool, error) {
 		dp, err := data.clientset.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
 		return dp.Status.ObservedGeneration == dp.Generation && dp.Status.ReadyReplicas == *dp.Spec.Replicas, nil
 	})
-	if err == wait.ErrWaitTimeout {
+	if wait.Interrupted(err) {
 		_, stdout, _, _ := data.provider.RunCommandOnNode(controlPlaneNodeName(), fmt.Sprintf("kubectl -n %s describe pod -l app=sftp", namespace))
 		return fmt.Errorf("some replicas for Deployment '%s/%s' are not ready after %v:\n%v", namespace, name, timeout, stdout)
 	} else if err != nil {
@@ -103,7 +103,7 @@ func (data *TestData) waitForDeploymentReady(t *testing.T, namespace string, nam
 func (data *TestData) waitForSupportBundleCollectionRealized(t *testing.T, name string, timeout time.Duration) error {
 	t.Logf("Waiting for SupportBundleCollection '%s' to be realized", name)
 	var sbc *crdv1alpha1.SupportBundleCollection
-	if err := wait.Poll(100*time.Millisecond, timeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 100*time.Millisecond, timeout, false, func(ctx context.Context) (bool, error) {
 		var getErr error
 		sbc, getErr = data.crdClient.CrdV1alpha1().SupportBundleCollections().Get(context.TODO(), name, metav1.GetOptions{})
 		if getErr != nil {
@@ -216,13 +216,17 @@ func testExternalNodeSupportBundleCollection(t *testing.T, data *TestData, vmLis
 		require.NoError(t, err)
 		var expectedInfoEntries []string
 		if vm.osType == linuxOS {
-			expectedInfoEntries = []string{"address", "addressgroups", "agentinfo", "appliedtogroups", "flows", "iptables", "link", "logs", "memprofile", "networkpolicies", "ovsports", "route"}
+			expectedInfoEntries = []string{"address", "addressgroups", "agentinfo", "appliedtogroups", "flows", "goroutinestacks", "groups", "iptables", "link", "logs", "memprofile", "networkpolicies", "ovsports", "route"}
 		} else if vm.osType == windowsOS {
-			expectedInfoEntries = []string{"addressgroups", "agentinfo", "appliedtogroups", "flows", "ipconfig", "logs\\ovs\\ovs-vswitchd.log", "logs\\ovs\\ovsdb-server.log", "memprofile", "network-adapters", "networkpolicies", "ovsports", "routes"}
+			expectedInfoEntries = []string{"addressgroups", "agentinfo", "appliedtogroups", "flows", "goroutinestacks", "groups", "ipconfig", "logs\\ovs\\ovs-vswitchd.log", "logs\\ovs\\ovsdb-server.log", "memprofile", "network-adapters", "networkpolicies", "ovsports", "routes"}
 		}
-		actualExpectedInfoEntries := strings.Split(strings.Trim(stdout, "\n"), "\n")
-		t.Logf("Actual files after extracting SupportBundleCollection tarball %s_%s: %v", vm.nodeName, bundleName, actualExpectedInfoEntries)
-		assert.ElementsMatch(t, expectedInfoEntries, actualExpectedInfoEntries)
+		actualInfoEntries := strings.Split(strings.Trim(stdout, "\n"), "\n")
+		t.Logf("Actual files after extracting SupportBundleCollection tarball %s_%s: %v", vm.nodeName, bundleName, actualInfoEntries)
+		// We validate that actualInfoEntries contains expectedInfoEntries instead
+		// of checking for an exact match, which would make the test too easy to break. It
+		// is recommended to update expectedInfoEntries when new elements are added to the
+		// supportbundle, but it is not a strict requirement.
+		assert.Subset(t, actualInfoEntries, expectedInfoEntries)
 	}
 }
 
@@ -236,7 +240,8 @@ func setupVMAgentTest(t *testing.T, data *TestData) ([]vmInfo, error) {
 		vms := strings.Split(testOptions.linuxVMs, " ")
 		for _, vm := range vms {
 			t.Logf("Get info for Linux VM: %s", vm)
-			tempVM := getVMInfo(t, data, vm)
+			tempVM, err := getVMInfo(t, data, vm)
+			require.NoError(t, err)
 			vmList = append(vmList, tempVM)
 		}
 	}
@@ -244,7 +249,8 @@ func setupVMAgentTest(t *testing.T, data *TestData) ([]vmInfo, error) {
 		vms := strings.Split(testOptions.windowsVMs, " ")
 		for _, vm := range vms {
 			t.Logf("Get info for Windows VM: %s", vm)
-			tempVM := getWindowsVMInfo(t, data, vm)
+			tempVM, err := getWindowsVMInfo(t, data, vm)
+			require.NoError(t, err)
 			vmList = append(vmList, tempVM)
 		}
 	}
@@ -265,13 +271,15 @@ func setupVMAgentTest(t *testing.T, data *TestData) ([]vmInfo, error) {
 // and verifies uplink configuration is restored.
 func teardownVMAgentTest(t *testing.T, data *TestData, vmList []vmInfo) {
 	verifyUpLinkAfterCleanup := func(vm vmInfo) {
-		err := wait.PollImmediate(10*time.Second, 1*time.Minute, func() (done bool, err error) {
+		err := wait.PollUntilContextTimeout(context.Background(), 10*time.Second, 1*time.Minute, true, func(ctx context.Context) (done bool, err error) {
 			var tempVM vmInfo
+			var getVMErr error
 			if vm.osType == linuxOS {
-				tempVM = getVMInfo(t, data, vm.nodeName)
+				tempVM, getVMErr = getVMInfo(t, data, vm.nodeName)
 			} else {
-				tempVM = getWindowsVMInfo(t, data, vm.nodeName)
+				tempVM, getVMErr = getWindowsVMInfo(t, data, vm.nodeName)
 			}
+			require.NoError(t, getVMErr)
 			if vm.ifName != tempVM.ifName {
 				t.Logf("Retry, unexpected uplink interface name, expected %s, got %s", vm.ifName, tempVM.ifName)
 				return false, nil
@@ -294,7 +302,7 @@ func teardownVMAgentTest(t *testing.T, data *TestData, vmList []vmInfo) {
 }
 
 func verifyExternalEntityExistence(t *testing.T, data *TestData, eeName string, vmNodeName string, expectExists bool) {
-	if err := wait.PollImmediate(10*time.Second, 1*time.Minute, func() (done bool, err error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 10*time.Second, 1*time.Minute, true, func(ctx context.Context) (done bool, err error) {
 		t.Logf("Verifying ExternalEntity %s, expectExists %t", eeName, expectExists)
 		_, err = data.crdClient.CrdV1alpha2().ExternalEntities(namespace).Get(context.TODO(), eeName, metav1.GetOptions{})
 		if err != nil && !errors.IsNotFound(err) {
@@ -325,19 +333,31 @@ func verifyExternalEntityExistence(t *testing.T, data *TestData, eeName string, 
 
 func testExternalNode(t *testing.T, data *TestData, vmList []vmInfo) {
 	verifyExternalNodeRealization := func(vm vmInfo) {
-		err := wait.PollImmediate(10*time.Second, 1*time.Minute, func() (done bool, err error) {
+		err := wait.PollUntilContextTimeout(context.Background(), 10*time.Second, 1*time.Minute, true, func(ctx context.Context) (done bool, err error) {
 			t.Logf("Verify host interface configuration for VM: %s", vm.nodeName)
 			exists, err := verifyInterfaceIsInOVS(t, data, vm)
 			return exists, err
 		})
-		assert.NoError(t, err, "Failed to verify host interface in OVS, vmInfo %+v", vm)
+		require.NoError(t, err, "Failed to verify host interface in OVS, vmInfo %+v", vm)
 
 		var tempVM vmInfo
-		if vm.osType == windowsOS {
-			tempVM = getWindowsVMInfo(t, data, vm.nodeName)
-		} else {
-			tempVM = getVMInfo(t, data, vm.nodeName)
-		}
+		err = wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 20*time.Second, true, func(ctx context.Context) (done bool, err error) {
+			var getVMErr error
+			if vm.osType == windowsOS {
+				tempVM, getVMErr = getWindowsVMInfo(t, data, vm.nodeName)
+			} else {
+				tempVM, getVMErr = getVMInfo(t, data, vm.nodeName)
+			}
+			if getVMErr != nil {
+				return false, getVMErr
+			}
+			vmIFs := strings.Split(tempVM.ifName, "\n")
+			if len(vmIFs) > 1 {
+				return false, nil
+			}
+			return true, nil
+		})
+		require.NoError(t, err)
 		assert.Equal(t, vm.ifName, tempVM.ifName, "Failed to verify uplink interface")
 		assert.Equal(t, vm.ip, tempVM.ip, "Failed to verify uplink IP")
 	}
@@ -349,50 +369,70 @@ func testExternalNode(t *testing.T, data *TestData, vmList []vmInfo) {
 	}
 }
 
-func getVMInfo(t *testing.T, data *TestData, nodeName string) (info vmInfo) {
-	var vm vmInfo
-	vm.nodeName = nodeName
-	var cmd string
-	cmd = "ip -o -4 route show to default | awk '{print $5}'"
-	vm.osType = linuxOS
+func getVMInfo(t *testing.T, data *TestData, nodeName string) (vmInfo, error) {
+	vm := vmInfo{nodeName: nodeName, osType: linuxOS}
+	cmd := "ip -o -4 route show to default | awk '{print $5}'"
 	rc, ifName, stderr, err := data.RunCommandOnNode(nodeName, cmd)
-	require.NoError(t, err, "Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
-	require.Equal(t, 0, rc, "Failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifName, stderr)
-
+	if err != nil {
+		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
+		return vm, err
+	}
+	if rc != 0 {
+		return vm, fmt.Errorf("failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifName, stderr)
+	}
 	vm.ifName = strings.TrimSpace(ifName)
+
 	cmd = fmt.Sprintf("ifconfig %s | awk '/inet / {print $2}'| sed 's/addr://'", vm.ifName)
 	rc, ifIP, stderr, err := data.RunCommandOnNode(nodeName, cmd)
-	require.NoError(t, err, "Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
-	require.Equal(t, 0, rc, "Failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIP, stderr)
-
+	if err != nil {
+		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
+		return vm, err
+	}
+	if rc != 0 {
+		return vm, fmt.Errorf("failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIP, stderr)
+	}
 	vm.ip = strings.TrimSpace(ifIP)
-	return vm
+
+	return vm, nil
 }
 
-func getWindowsVMInfo(t *testing.T, data *TestData, nodeName string) (vm vmInfo) {
+func getWindowsVMInfo(t *testing.T, data *TestData, nodeName string) (vmInfo, error) {
 	var err error
-	vm.nodeName = nodeName
-	vm.osType = windowsOS
+	vm := vmInfo{nodeName: nodeName, osType: windowsOS}
 	cmd := fmt.Sprintf("powershell 'Get-WmiObject -Class Win32_IP4RouteTable | Where { $_.destination -eq \"0.0.0.0\" -and $_.mask -eq \"0.0.0.0\"} | Sort-Object metric1 | select interfaceindex | ft -HideTableHeaders'")
 	rc, ifIndex, stderr, err := data.RunCommandOnNode(nodeName, cmd)
-	require.NoError(t, err, "Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
-	require.Equal(t, 0, rc, "Failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIndex, stderr)
-
+	if err != nil {
+		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
+		return vm, err
+	}
+	if rc != 0 {
+		return vm, fmt.Errorf("failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIndex, stderr)
+	}
 	vm.ifIndex = strings.TrimSpace(ifIndex)
+
 	cmd = fmt.Sprintf("powershell 'Get-NetAdapter -IfIndex %s | select name | ft -HideTableHeaders'", vm.ifIndex)
 	rc, ifName, stderr, err := data.RunCommandOnNode(nodeName, cmd)
-	require.NoError(t, err, "Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
-	require.Equal(t, 0, rc, "Failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifName, stderr)
-
+	if err != nil {
+		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
+		return vm, err
+	}
+	if rc != 0 {
+		return vm, fmt.Errorf("failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifName, stderr)
+	}
 	vm.ifName = strings.TrimSpace(ifName)
+
 	cmd = fmt.Sprintf("powershell 'Get-NetIPAddress -AddressFamily IPv4 -ifIndex %s| select IPAddress| ft -HideTableHeaders'", vm.ifIndex)
 	rc, ifIP, stderr, err := data.RunCommandOnNode(nodeName, cmd)
-	require.NoError(t, err, "Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
-	require.Equal(t, 0, rc, "Failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIP, stderr)
-
+	if err != nil {
+		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
+		return vm, err
+	}
+	if rc != 0 {
+		return vm, fmt.Errorf("failed to run command: <%s>, stdout: <%v>, stderr: <%v>", cmd, ifIP, stderr)
+	}
 	vm.ip = strings.TrimSpace(ifIP)
-	return vm
 
+	return vm, nil
 }
 
 func startAntreaAgent(t *testing.T, data *TestData, vm vmInfo) {
@@ -656,7 +696,7 @@ func createANPWithFQDN(t *testing.T, data *TestData, name string, namespace stri
 
 func runPingCommandOnVM(data *TestData, dstVM vmInfo, connected bool) error {
 	dstIP := net.ParseIP(dstVM.ip)
-	cmd := getPingCommand(pingCount, 0, strings.ToLower(linuxOS), &dstIP)
+	cmd := getPingCommand(pingCount, 0, strings.ToLower(linuxOS), &dstIP, false)
 	cmdStr := strings.Join(cmd, " ")
 	expCount := pingCount
 	if !connected {
@@ -665,7 +705,7 @@ func runPingCommandOnVM(data *TestData, dstVM vmInfo, connected bool) error {
 	expOutput := fmt.Sprintf("%d packets transmitted, %d received", pingCount, expCount)
 	// Use master Node to run ping command.
 	pingClient := nodeName(0)
-	err := wait.PollImmediate(time.Second*5, time.Second*20, func() (done bool, err error) {
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second*5, time.Second*20, true, func(ctx context.Context) (done bool, err error) {
 		if err := runCommandAndCheckResult(data, pingClient, cmdStr, expOutput, ""); err != nil {
 			return false, nil
 		}
@@ -676,7 +716,7 @@ func runPingCommandOnVM(data *TestData, dstVM vmInfo, connected bool) error {
 
 func runIperfCommandOnVMs(t *testing.T, data *TestData, srcVM vmInfo, dstVM vmInfo, connected bool, isUDP bool, ruleAction crdv1beta1.RuleAction) error {
 	svrIP := net.ParseIP(dstVM.ip)
-	err := wait.PollImmediate(time.Second*5, time.Second*20, func() (done bool, err error) {
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second*5, time.Second*20, true, func(ctx context.Context) (done bool, err error) {
 		if err := runIperfClient(t, data, srcVM, svrIP, iperfPort, isUDP, connected, ruleAction); err != nil {
 			return false, nil
 		}
@@ -769,7 +809,7 @@ func runCurlCommandOnVM(data *TestData, targetVM vmInfo, url string, action crdv
 	case crdv1beta1.RuleActionReject:
 		expectedErr = "Connection refused"
 	}
-	err := wait.PollImmediate(time.Second*5, time.Second*20, func() (done bool, err error) {
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second*5, time.Second*20, true, func(ctx context.Context) (done bool, err error) {
 		if err := runCommandAndCheckResult(data, targetVM.nodeName, cmdStr, expectedOutput, expectedErr); err != nil {
 			return false, nil
 		}

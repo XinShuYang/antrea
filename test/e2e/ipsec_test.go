@@ -15,6 +15,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -137,7 +138,9 @@ func testIPSecTunnelConnectivity(t *testing.T, data *TestData, certAuth bool) {
 	podInfos, deletePods := createPodsOnDifferentNodes(t, data, data.testNamespace, tag)
 	defer deletePods()
 	t.Logf("Executing ping tests across Nodes: '%s' <-> '%s'", podInfos[0].NodeName, podInfos[1].NodeName)
-	data.runPingMesh(t, podInfos[:2], agnhostContainerName)
+	// PMTU is wrong when using GRE+IPsec with some Linux kernel versions, do not set DF to work around.
+	// See https://github.com/antrea-io/antrea/issues/5922 for more details.
+	data.runPingMesh(t, podInfos[:2], toolboxContainerName, false)
 
 	// Check that there is at least one 'up' Security Association on the Node
 	nodeName := podInfos[0].NodeName
@@ -178,9 +181,9 @@ func testIPSecDeleteStaleTunnelPorts(t *testing.T, data *TestData) {
 	}
 
 	t.Logf("Checking that tunnel port has been created")
-	if err := wait.PollImmediate(defaultInterval, defaultTimeout, func() (found bool, err error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), defaultInterval, defaultTimeout, true, func(ctx context.Context) (found bool, err error) {
 		return doesOVSPortExist(), nil
-	}); err == wait.ErrWaitTimeout {
+	}); wait.Interrupted(err) {
 		t.Fatalf("Timed out while waiting for OVS tunnel port to be created")
 	} else if err != nil {
 		t.Fatalf("Error while waiting for OVS tunnel port to be created")
@@ -190,9 +193,9 @@ func testIPSecDeleteStaleTunnelPorts(t *testing.T, data *TestData) {
 	data.redeployAntrea(t, deployAntreaDefault)
 
 	t.Logf("Checking that tunnel port has been deleted")
-	if err := wait.PollImmediate(defaultInterval, defaultTimeout, func() (found bool, err error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), defaultInterval, defaultTimeout, true, func(ctx context.Context) (found bool, err error) {
 		return !doesOVSPortExist(), nil
-	}); err == wait.ErrWaitTimeout {
+	}); wait.Interrupted(err) {
 		t.Fatalf("Timed out while waiting for OVS tunnel port to be deleted")
 	} else if err != nil {
 		t.Fatalf("Error while waiting for OVS tunnel port to be	deleted")

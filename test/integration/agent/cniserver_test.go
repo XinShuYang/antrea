@@ -60,6 +60,7 @@ import (
 	"antrea.io/antrea/pkg/ovs/ovsconfig"
 	ovsconfigtest "antrea.io/antrea/pkg/ovs/ovsconfig/testing"
 	"antrea.io/antrea/pkg/util/channel"
+	"antrea.io/antrea/pkg/util/wait"
 )
 
 const (
@@ -297,7 +298,7 @@ type cmdAddDelTester struct {
 	targetNS       ns.NetNS
 	request        *cnimsg.CniCmdRequest
 	vethName       string
-	networkReadyCh chan struct{}
+	podNetworkWait *wait.Group
 }
 
 func (tester *cmdAddDelTester) setNS(testNS ns.NetNS, targetNS ns.NetNS) {
@@ -566,15 +567,15 @@ func (tester *cmdAddDelTester) cmdDelTest(tc testCase, dataDir string) {
 func newTester() *cmdAddDelTester {
 	tester := &cmdAddDelTester{}
 	ifaceStore := interfacestore.NewInterfaceStore()
-	tester.networkReadyCh = make(chan struct{})
+	tester.podNetworkWait = wait.NewGroup()
 	tester.server = cniserver.New(testSock,
 		"",
 		getTestNodeConfig(false),
 		k8sFake.NewSimpleClientset(),
 		routeMock,
 		false, false, false, false, &config.NetworkConfig{InterfaceMTU: 1450},
-		tester.networkReadyCh)
-	tester.server.Initialize(ovsServiceMock, ofServiceMock, ifaceStore, channel.NewSubscribableChannel("PodUpdate", 100), nil)
+		tester.podNetworkWait.Increment())
+	tester.server.Initialize(ovsServiceMock, ofServiceMock, ifaceStore, channel.NewSubscribableChannel("PodUpdate", 100))
 	ctx := context.Background()
 	tester.ctx = ctx
 	return tester
@@ -609,7 +610,7 @@ func cmdAddDelCheckTest(testNS ns.NetNS, tc testCase, dataDir string) {
 	ovsServiceMock.EXPECT().GetOFPort(ovsPortname, false).Return(int32(10), nil).AnyTimes()
 	ofServiceMock.EXPECT().InstallPodFlows(ovsPortname, mock.Any(), mock.Any(), mock.Any(), uint16(0), nil).Return(nil)
 
-	close(tester.networkReadyCh)
+	tester.podNetworkWait.Done()
 	// Test ips allocation
 	prevResult, err := tester.cmdAddTest(tc, dataDir)
 	testRequire.Nil(err)
@@ -727,15 +728,14 @@ func setupChainTest(
 ) (server *cniserver.CNIServer, hostVeth, containerVeth net.Interface, err error) {
 	if newServer {
 		routeMock = routetest.NewMockInterface(controller)
-		networkReadyCh := make(chan struct{})
-		close(networkReadyCh)
+		podNetworkWait := wait.NewGroup()
 		server = cniserver.New(testSock,
 			"",
 			testNodeConfig,
 			k8sFake.NewSimpleClientset(),
 			routeMock,
 			true, false, false, false, &config.NetworkConfig{InterfaceMTU: 1450},
-			networkReadyCh)
+			podNetworkWait)
 	} else {
 		server = inServer
 	}
@@ -795,7 +795,7 @@ func TestCNIServerChaining(t *testing.T) {
 			ifaceStore := interfacestore.NewInterfaceStore()
 			ovsServiceMock.EXPECT().IsHardwareOffloadEnabled().Return(false).AnyTimes()
 			ovsServiceMock.EXPECT().GetOVSDatapathType().Return(ovsconfig.OVSDatapathSystem).AnyTimes()
-			err = server.Initialize(ovsServiceMock, ofServiceMock, ifaceStore, channel.NewSubscribableChannel("PodUpdate", 100), nil)
+			err = server.Initialize(ovsServiceMock, ofServiceMock, ifaceStore, channel.NewSubscribableChannel("PodUpdate", 100))
 			testRequire.Nil(err)
 		}
 
@@ -915,7 +915,7 @@ func TestCNIServerGCForHostLocalIPAM(t *testing.T) {
 	ofServiceMock := openflowtest.NewMockClient(controller)
 	routeMock := routetest.NewMockInterface(controller)
 	ifaceStore := interfacestore.NewInterfaceStore()
-	networkReadyCh := make(chan struct{})
+	podNetworkWait := wait.NewGroup()
 	k8sClient := k8sFake.NewSimpleClientset(pod)
 	server := cniserver.New(
 		testSock,
@@ -924,11 +924,11 @@ func TestCNIServerGCForHostLocalIPAM(t *testing.T) {
 		k8sClient,
 		routeMock,
 		false, false, false, false, &config.NetworkConfig{InterfaceMTU: 1450},
-		networkReadyCh,
+		podNetworkWait,
 	)
 
 	// call Initialize, which will run reconciliation and perform host-local IPAM garbage collection
-	server.Initialize(ovsServiceMock, ofServiceMock, ifaceStore, channel.NewSubscribableChannel("PodUpdate", 100), nil)
+	server.Initialize(ovsServiceMock, ofServiceMock, ifaceStore, channel.NewSubscribableChannel("PodUpdate", 100))
 
 	getIPs := func(cID string) []net.IP {
 		ipamStore, err := disk.New("antrea", "")

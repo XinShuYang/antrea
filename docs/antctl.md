@@ -25,6 +25,7 @@ running in three different modes:
   - [controllerinfo and agentinfo commands](#controllerinfo-and-agentinfo-commands)
   - [NetworkPolicy commands](#networkpolicy-commands)
     - [Mapping endpoints to NetworkPolicies](#mapping-endpoints-to-networkpolicies)
+    - [Evaluating expected NetworkPolicy behavior](#evaluating-expected-networkpolicy-behavior)
   - [Dumping Pod network interface information](#dumping-pod-network-interface-information)
   - [Dumping OVS flows](#dumping-ovs-flows)
   - [OVS packet tracing](#ovs-packet-tracing)
@@ -41,10 +42,11 @@ running in three different modes:
 
 ## Installation
 
-The antctl binary is included in the Antrea Docker image
-(`antrea/antrea-ubuntu`) which means that there is no need to install anything
-to connect to the Antrea Agent. Simply exec into the antrea-agent container for
-the appropriate antrea-agent Pod and run `antctl`:
+The antctl binary is included in the Antrea Docker images
+(`antrea/antrea-agent-ubuntu`, `antrea/antrea-controller-ubuntu`) which means
+that there is no need to install anything to connect to the Antrea Agent. Simply
+exec into the antrea-agent container for the appropriate antrea-agent Pod and
+run `antctl`:
 
 ```bash
 kubectl exec -it ANTREA-AGENT_POD_NAME -n kube-system -c antrea-agent -- bash
@@ -263,6 +265,20 @@ Namespace.
 This command only works in "controller mode" and **as of now it can only be run
 from inside the Antrea Controller Pod, and not from out-of-cluster**.
 
+#### Evaluating expected NetworkPolicy behavior
+
+`antctl` supports evaluating all the existing Antrea-native NetworkPolicies,
+Kubernetes NetworkPolicies and AdminNetworkPolicies to predict the effective
+policy rule for traffic between source and destination Pods.
+
+```bash
+antctl query networkpolicyevaluation -S NAMESPACE/POD -D NAMESPACE/POD
+```
+
+If only Pod name is provided, the command will default to the "default" Namespace.
+
+This command only works in "controller mode".
+
 ### Dumping Pod network interface information
 
 `antctl` agent command `get podinterface` (or `get pi`) can dump network
@@ -293,7 +309,7 @@ antctl get ovsflows -G GROUP_ID1,GROUP_ID2
 ```
 
 OVS flow tables can be specified using table names, or the table numbers.
-`antctl get ovsflow --help` lists all Antrea flow tables. For more information
+`antctl get ovsflows --table-names-only` lists all Antrea flow tables. For more information
 about Antrea OVS pipeline and flows, please refer to the [OVS pipeline doc](design/ovs-pipeline.md).
 
 Example outputs of dumping Pod and NetworkPolicy OVS flows:
@@ -357,11 +373,11 @@ local (coredns) Pod:
 ```bash
 $ antctl trace-packet -S default/web-client -D kube-system/coredns-6955765f44-zcbwj -f udp,udp_dst=53
 result: |
-  Flow: udp,in_port=1,vlan_tci=0x0000,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=0,tp_dst=53
+  Flow: udp,in_port=32768,vlan_tci=0x0000,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=0,tp_dst=53
 
   bridge("br-int")
   ----------------
-   0. in_port=1, priority 200, cookie 0x5e000000000000
+   0. in_port=32768, priority 200, cookie 0x5e000000000000
       load:0->NXM_NX_REG0[0..15]
       resubmit(,30)
   30. ip, priority 200, cookie 0x5e000000000000
@@ -371,14 +387,14 @@ result: |
        -> Sets the packet to an untracked state, and clears all the conntrack fields.
 
   Final flow: unchanged
-  Megaflow: recirc_id=0,eth,udp,in_port=1,nw_frag=no,tp_src=0x0/0xfc00
+  Megaflow: recirc_id=0,eth,udp,in_port=32768,nw_frag=no,tp_src=0x0/0xfc00
   Datapath actions: ct(zone=65520),recirc(0x53)
 
   ===============================================================================
   recirc(0x53) - resume conntrack with default ct_state=trk|new (use --ct-next to customize)
   ===============================================================================
 
-  Flow: recirc_id=0x53,ct_state=new|trk,ct_zone=65520,eth,udp,in_port=1,vlan_tci=0x0000,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=0,tp_dst=53
+  Flow: recirc_id=0x53,ct_state=new|trk,ct_zone=65520,eth,udp,in_port=32768,vlan_tci=0x0000,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=0,tp_dst=53
 
   bridge("br-int")
   ----------------
@@ -409,15 +425,15 @@ result: |
        -> A clone of the packet is forked to recirculate. The forked pipeline will be resumed at table 110.
        -> Sets the packet to an untracked state, and clears all the conntrack fields.
 
-  Final flow: recirc_id=0x53,eth,udp,reg0=0x10000,reg1=0x5,in_port=1,vlan_tci=0x0000,dl_src=62:39:b4:e8:05:76,dl_dst=52:bd:c6:e0:eb:c1,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=63,tp_src=0,tp_dst=53
-  Megaflow: recirc_id=0x53,ct_state=+new-est-inv+trk,ct_mark=0,eth,udp,in_port=1,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=192.0.0.0/2,nw_dst=172.100.1.7,nw_ttl=64,nw_frag=no,tp_dst=53
+  Final flow: recirc_id=0x53,eth,udp,reg0=0x10000,reg1=0x5,in_port=32768,vlan_tci=0x0000,dl_src=62:39:b4:e8:05:76,dl_dst=52:bd:c6:e0:eb:c1,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=63,tp_src=0,tp_dst=53
+  Megaflow: recirc_id=0x53,ct_state=+new-est-inv+trk,ct_mark=0,eth,udp,in_port=32768,dl_src=aa:bb:cc:dd:ee:ff,dl_dst=aa:bb:cc:dd:ee:ff,nw_src=192.0.0.0/2,nw_dst=172.100.1.7,nw_ttl=64,nw_frag=no,tp_dst=53
   Datapath actions: set(eth(src=62:39:b4:e8:05:76,dst=52:bd:c6:e0:eb:c1)),set(ipv4(ttl=63)),ct(commit,zone=65520),recirc(0x54)
 
   ===============================================================================
   recirc(0x54) - resume conntrack with default ct_state=trk|new (use --ct-next to customize)
   ===============================================================================
 
-  Flow: recirc_id=0x54,ct_state=new|trk,ct_zone=65520,eth,udp,reg0=0x10000,reg1=0x5,in_port=1,vlan_tci=0x0000,dl_src=62:39:b4:e8:05:76,dl_dst=52:bd:c6:e0:eb:c1,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=63,tp_src=0,tp_dst=53
+  Flow: recirc_id=0x54,ct_state=new|trk,ct_zone=65520,eth,udp,reg0=0x10000,reg1=0x5,in_port=32768,vlan_tci=0x0000,dl_src=62:39:b4:e8:05:76,dl_dst=52:bd:c6:e0:eb:c1,nw_src=172.100.2.11,nw_dst=172.100.1.7,nw_tos=0,nw_ecn=0,nw_ttl=63,tp_src=0,tp_dst=53
 
   bridge("br-int")
   ----------------
@@ -428,7 +444,7 @@ result: |
        -> output port is 5
 
   Final flow: unchanged
-  Megaflow: recirc_id=0x54,eth,ip,in_port=1,nw_frag=no
+  Megaflow: recirc_id=0x54,eth,ip,in_port=32768,nw_frag=no
   Datapath actions: 3
 ```
 

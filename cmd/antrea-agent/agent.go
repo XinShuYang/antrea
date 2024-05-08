@@ -39,7 +39,9 @@ import (
 	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/controller/egress"
 	"antrea.io/antrea/pkg/agent/controller/ipseccertificate"
+	"antrea.io/antrea/pkg/agent/controller/l7flowexporter"
 	"antrea.io/antrea/pkg/agent/controller/networkpolicy"
+	"antrea.io/antrea/pkg/agent/controller/networkpolicy/l7engine"
 	"antrea.io/antrea/pkg/agent/controller/noderoute"
 	"antrea.io/antrea/pkg/agent/controller/serviceexternalip"
 	"antrea.io/antrea/pkg/agent/controller/traceflow"
@@ -60,11 +62,11 @@ import (
 	"antrea.io/antrea/pkg/agent/querier"
 	"antrea.io/antrea/pkg/agent/route"
 	"antrea.io/antrea/pkg/agent/secondarynetwork"
-	"antrea.io/antrea/pkg/agent/secondarynetwork/cnipodcache"
 	"antrea.io/antrea/pkg/agent/servicecidr"
 	"antrea.io/antrea/pkg/agent/stats"
 	support "antrea.io/antrea/pkg/agent/supportbundlecollection"
 	agenttypes "antrea.io/antrea/pkg/agent/types"
+	"antrea.io/antrea/pkg/apis"
 	"antrea.io/antrea/pkg/apis/controlplane"
 	crdinformers "antrea.io/antrea/pkg/client/informers/externalversions"
 	crdv1alpha1informers "antrea.io/antrea/pkg/client/informers/externalversions/crd/v1alpha1"
@@ -80,6 +82,7 @@ import (
 	"antrea.io/antrea/pkg/util/k8s"
 	"antrea.io/antrea/pkg/util/lazy"
 	"antrea.io/antrea/pkg/util/podstore"
+	utilwait "antrea.io/antrea/pkg/util/wait"
 	"antrea.io/antrea/pkg/version"
 )
 
@@ -114,7 +117,7 @@ func run(o *Options) error {
 	egressInformer := crdInformerFactory.Crd().V1beta1().Egresses()
 	externalIPPoolInformer := crdInformerFactory.Crd().V1beta1().ExternalIPPools()
 	trafficControlInformer := crdInformerFactory.Crd().V1alpha2().TrafficControls()
-	ipPoolInformer := crdInformerFactory.Crd().V1alpha2().IPPools()
+	ipPoolInformer := crdInformerFactory.Crd().V1beta1().IPPools()
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	serviceInformer := informerFactory.Core().V1().Services()
 	endpointsInformer := informerFactory.Core().V1().Endpoints()
@@ -140,7 +143,10 @@ func run(o *Options) error {
 	enableAntreaIPAM := features.DefaultFeatureGate.Enabled(features.AntreaIPAM)
 	enableBridgingMode := enableAntreaIPAM && o.config.EnableBridgingMode
 	l7NetworkPolicyEnabled := features.DefaultFeatureGate.Enabled(features.L7NetworkPolicy)
+	nodeNetworkPolicyEnabled := features.DefaultFeatureGate.Enabled(features.NodeNetworkPolicy)
+	l7FlowExporterEnabled := features.DefaultFeatureGate.Enabled(features.L7FlowExporter)
 	enableMulticlusterGW := features.DefaultFeatureGate.Enabled(features.Multicluster) && o.config.Multicluster.EnableGateway
+	_, multiclusterEncryptionMode := config.GetTrafficEncryptionModeFromStr(o.config.Multicluster.TrafficEncryptionMode)
 	enableMulticlusterNP := features.DefaultFeatureGate.Enabled(features.Multicluster) && o.config.Multicluster.EnableStretchedNetworkPolicy
 	enableFlowExporter := features.DefaultFeatureGate.Enabled(features.FlowExporter) && o.config.FlowExporter.Enable
 	var nodeIPTracker *nodeip.Tracker
@@ -150,7 +156,10 @@ func run(o *Options) error {
 	// Bridging mode will connect the uplink interface to the OVS bridge.
 	connectUplinkToBridge := enableBridgingMode
 	ovsDatapathType := ovsconfig.OVSDatapathType(o.config.OVSDatapathType)
-	ovsBridgeClient := ovsconfig.NewOVSBridge(o.config.OVSBridge, ovsDatapathType, ovsdbConnection)
+	// WithRequiredPortExternalIDs will ensure that whenever we create a port, the required
+	// external ID (interface type) is provided. This is a sanity check to ensure code
+	// correctness.
+	ovsBridgeClient := ovsconfig.NewOVSBridge(o.config.OVSBridge, ovsDatapathType, ovsdbConnection, ovsconfig.WithRequiredPortExternalIDs(interfacestore.AntreaInterfaceTypeKey))
 	ovsCtlClient := ovsctl.NewClient(o.config.OVSBridge)
 	ovsBridgeMgmtAddr := ofconfig.GetMgmtAddress(o.config.OVSRunDir, o.config.OVSBridge)
 	multicastEnabled := features.DefaultFeatureGate.Enabled(features.Multicast) && o.config.Multicast.Enable
@@ -169,6 +178,7 @@ func run(o *Options) error {
 		connectUplinkToBridge,
 		multicastEnabled,
 		features.DefaultFeatureGate.Enabled(features.TrafficControl),
+		l7FlowExporterEnabled,
 		enableMulticlusterGW,
 		groupIDAllocator,
 		*o.config.EnablePrometheusMetrics,
@@ -188,10 +198,6 @@ func run(o *Options) error {
 
 	_, encapMode := config.GetTrafficEncapModeFromStr(o.config.TrafficEncapMode)
 	_, encryptionMode := config.GetTrafficEncryptionModeFromStr(o.config.TrafficEncryptionMode)
-	if o.config.EnableIPSecTunnel {
-		klog.InfoS("enableIPSecTunnel is deprecated, use trafficEncryptionMode instead.")
-		encryptionMode = config.TrafficEncryptionModeIPSec
-	}
 	_, ipsecAuthenticationMode := config.GetIPsecAuthenticationModeFromStr(o.config.IPsec.AuthenticationMode)
 
 	networkConfig := &config.NetworkConfig{
@@ -205,7 +211,8 @@ func run(o *Options) error {
 		IPsecConfig: config.IPsecConfig{
 			AuthenticationMode: ipsecAuthenticationMode,
 		},
-		EnableMulticlusterGW: enableMulticlusterGW,
+		EnableMulticlusterGW:       enableMulticlusterGW,
+		MulticlusterEncryptionMode: multiclusterEncryptionMode,
 	}
 
 	wireguardConfig := &config.WireGuardConfig{
@@ -219,7 +226,13 @@ func run(o *Options) error {
 	egressConfig := &config.EgressConfig{
 		ExceptCIDRs: exceptCIDRs,
 	}
-	routeClient, err := route.NewClient(networkConfig, o.config.NoSNAT, o.config.AntreaProxy.ProxyAll, connectUplinkToBridge, multicastEnabled, serviceCIDRProvider)
+	routeClient, err := route.NewClient(networkConfig,
+		o.config.NoSNAT,
+		o.config.AntreaProxy.ProxyAll,
+		connectUplinkToBridge,
+		nodeNetworkPolicyEnabled,
+		multicastEnabled,
+		serviceCIDRProvider)
 	if err != nil {
 		return fmt.Errorf("error creating route client: %v", err)
 	}
@@ -227,9 +240,12 @@ func run(o *Options) error {
 	// Create an ifaceStore that caches network interfaces managed by this node.
 	ifaceStore := interfacestore.NewInterfaceStore()
 
-	// networkReadyCh is used to notify that the Node's network is ready.
-	// Functions that rely on the Node's network should wait for the channel to close.
-	networkReadyCh := make(chan struct{})
+	// podNetworkWait is used to wait and notify that preconditions for Pod network are ready.
+	// Processes that are supposed to finish before enabling Pod network should increment the wait group and decrement
+	// it when finished.
+	// Processes that enable Pod network should wait for it.
+	podNetworkWait := utilwait.NewGroup()
+
 	// set up signal capture: the first SIGTERM / SIGINT signal is handled gracefully and will
 	// cause the stopCh channel to be closed; if another signal is received before the program
 	// exits, we will force exit.
@@ -276,13 +292,14 @@ func run(o *Options) error {
 		wireguardConfig,
 		egressConfig,
 		serviceConfig,
-		networkReadyCh,
+		podNetworkWait,
 		stopCh,
 		o.nodeType,
 		o.config.ExternalNode.ExternalNodeNamespace,
 		connectUplinkToBridge,
 		o.enableAntreaProxy,
-		l7NetworkPolicyEnabled)
+		l7NetworkPolicyEnabled,
+		l7FlowExporterEnabled)
 	err = agentInitializer.Initialize()
 	if err != nil {
 		return fmt.Errorf("error initializing agent: %v", err)
@@ -456,9 +473,14 @@ func run(o *Options) error {
 	if o.nodeType == config.ExternalNode {
 		nodeKey = k8s.NamespacedName(o.config.ExternalNode.ExternalNodeNamespace, nodeKey)
 	}
+	var l7Reconciler *l7engine.Reconciler
+	if l7NetworkPolicyEnabled || l7FlowExporterEnabled {
+		l7Reconciler = l7engine.NewReconciler()
+	}
 	networkPolicyController, err := networkpolicy.NewNetworkPolicyController(
 		antreaClientProvider,
 		ofClient,
+		routeClient,
 		ifaceStore,
 		afero.NewOsFs(),
 		nodeKey,
@@ -468,6 +490,7 @@ func run(o *Options) error {
 		groupIDUpdates,
 		antreaPolicyEnabled,
 		l7NetworkPolicyEnabled,
+		nodeNetworkPolicyEnabled,
 		o.enableAntreaProxy,
 		statusManagerEnabled,
 		multicastEnabled,
@@ -480,9 +503,22 @@ func run(o *Options) error {
 		gwPort,
 		tunPort,
 		nodeConfig,
+		podNetworkWait,
+		l7Reconciler,
 	)
 	if err != nil {
 		return fmt.Errorf("error creating new NetworkPolicy controller: %v", err)
+	}
+	var l7FlowExporterController *l7flowexporter.L7FlowExporterController
+	if l7FlowExporterEnabled {
+		l7FlowExporterController = l7flowexporter.NewL7FlowExporterController(
+			ofClient,
+			ifaceStore,
+			localPodInformer.Get(),
+			namespaceInformer,
+			l7Reconciler,
+		)
+		go l7FlowExporterController.Run(stopCh)
 	}
 
 	var egressController *egress.EgressController
@@ -512,9 +548,10 @@ func run(o *Options) error {
 	}
 	if o.enableEgress {
 		egressController, err = egress.NewEgressController(
-			ofClient, antreaClientProvider, crdClient, ifaceStore, routeClient, nodeConfig.Name, nodeConfig.NodeTransportInterfaceName,
-			memberlistCluster, egressInformer, nodeInformer, podUpdateChannel, serviceCIDRProvider, o.config.Egress.MaxEgressIPsPerNode,
+			ofClient, k8sClient, antreaClientProvider, crdClient, ifaceStore, routeClient, nodeConfig.Name, nodeConfig.NodeTransportInterfaceName,
+			memberlistCluster, egressInformer, externalIPPoolInformer, nodeInformer, podUpdateChannel, serviceCIDRProvider, o.config.Egress.MaxEgressIPsPerNode,
 			features.DefaultFeatureGate.Enabled(features.EgressTrafficShaping),
+			features.DefaultFeatureGate.Enabled(features.EgressSeparateSubnet),
 		)
 		if err != nil {
 			return fmt.Errorf("error creating new Egress controller: %v", err)
@@ -535,7 +572,6 @@ func run(o *Options) error {
 	}
 
 	var cniServer *cniserver.CNIServer
-	var cniPodInfoStore cnipodcache.CNIPodInfoStore
 	var externalNodeController *externalnode.ExternalNodeController
 	var localExternalNodeInformer cache.SharedIndexInformer
 
@@ -552,19 +588,11 @@ func run(o *Options) error {
 			enableAntreaIPAM,
 			o.config.DisableTXChecksumOffload,
 			networkConfig,
-			networkReadyCh)
+			podNetworkWait)
 
-		if features.DefaultFeatureGate.Enabled(features.SecondaryNetwork) {
-			cniPodInfoStore = cnipodcache.NewCNIPodInfoStore()
-			err = cniServer.Initialize(ovsBridgeClient, ofClient, ifaceStore, podUpdateChannel, cniPodInfoStore)
-			if err != nil {
-				return fmt.Errorf("error initializing CNI server with cniPodInfoStore cache: %v", err)
-			}
-		} else {
-			err = cniServer.Initialize(ovsBridgeClient, ofClient, ifaceStore, podUpdateChannel, nil)
-			if err != nil {
-				return fmt.Errorf("error initializing CNI server: %v", err)
-			}
+		err = cniServer.Initialize(ovsBridgeClient, ofClient, ifaceStore, podUpdateChannel)
+		if err != nil {
+			return fmt.Errorf("error initializing CNI server: %w", err)
 		}
 	} else {
 		listOptions := func(options *metav1.ListOptions) {
@@ -645,7 +673,9 @@ func run(o *Options) error {
 			o.enableAntreaProxy,
 			networkPolicyController,
 			flowExporterOptions,
-			egressController)
+			egressController,
+			l7FlowExporterController,
+			l7FlowExporterEnabled)
 		if err != nil {
 			return fmt.Errorf("error when creating IPFIX flow exporter: %v", err)
 		}
@@ -698,10 +728,11 @@ func run(o *Options) error {
 	}
 
 	if features.DefaultFeatureGate.Enabled(features.SecondaryNetwork) {
+		defer secondarynetwork.RestoreHostInterfaceConfiguration(&o.config.SecondaryNetwork)
 		if err := secondarynetwork.Initialize(
 			o.config.ClientConnection, o.config.KubeAPIServerOverride,
-			k8sClient, localPodInformer.Get(), nodeConfig.Name, cniPodInfoStore,
-			stopCh,
+			k8sClient, localPodInformer.Get(), nodeConfig.Name,
+			podUpdateChannel, stopCh,
 			&o.config.SecondaryNetwork, ovsdbConnection); err != nil {
 			return fmt.Errorf("failed to initialize secondary network: %v", err)
 		}
@@ -748,10 +779,10 @@ func run(o *Options) error {
 		// Service would fail.
 		if o.config.AntreaProxy.ProxyAll {
 			klog.InfoS("Waiting for AntreaProxy to be ready")
-			if err := wait.PollUntil(time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), time.Second, false, func(ctx context.Context) (bool, error) {
 				klog.V(2).InfoS("Checking if AntreaProxy is ready")
 				return proxier.GetProxyProvider().SyncedOnce(), nil
-			}, stopCh); err != nil {
+			}); err != nil {
 				return fmt.Errorf("error when waiting for AntreaProxy to be ready: %v", err)
 			}
 			klog.InfoS("AntreaProxy is ready")
@@ -787,7 +818,10 @@ func run(o *Options) error {
 			o.igmpQueryVersions,
 			validator,
 			networkConfig.TrafficEncapMode.SupportsEncap(),
-			nodeInformer)
+			nodeInformer,
+			enableBridgingMode,
+			v4Enabled,
+			v6Enabled)
 		if err := mcastController.Initialize(); err != nil {
 			return err
 		}
@@ -862,6 +896,7 @@ func run(o *Options) error {
 		authorization,
 		*o.config.EnablePrometheusMetrics,
 		o.config.ClientConnection.Kubeconfig,
+		apis.APIServerLoopbackTokenPath,
 		v4Enabled,
 		v6Enabled)
 	if err != nil {

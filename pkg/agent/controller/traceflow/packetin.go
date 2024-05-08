@@ -28,7 +28,7 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"antrea.io/antrea/pkg/agent/openflow"
 	crdv1beta1 "antrea.io/antrea/pkg/apis/crd/v1beta1"
@@ -292,11 +292,11 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 				}
 			}
 			if isRemoteEgress == 1 { // an Egress packet, currently on source Node and forwarded to Egress Node.
-				egress, _, err := c.egressQuerier.GetEgress(ns, srcPod)
+				egressName, egressIP, egressNode, err := c.egressQuerier.GetEgress(ns, srcPod)
 				if err != nil {
 					return nil, nil, nil, err
 				}
-				obEgress := getEgressObservation(false, tunnelDstIP, egress)
+				obEgress := getEgressObservation(false, egressIP, egressName, egressNode)
 				obs = append(obs, *obEgress)
 			}
 			ob.TunnelDstIP = tunnelDstIP
@@ -312,18 +312,19 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 				}
 			}
 			if pktMark != 0 { // Egress packet on Egress Node
-				egressIP, err := c.egressQuerier.GetEgressIPByMark(pktMark)
-				if err != nil {
-					return nil, nil, nil, err
-				}
-				egress := ""
+				egressName, egressIP, egressNode := "", "", ""
 				if tunnelDstIP == "" { // Egress Node is Source Node of this Egress packet
-					egress, _, err = c.egressQuerier.GetEgress(ns, srcPod)
+					egressName, egressIP, egressNode, err = c.egressQuerier.GetEgress(ns, srcPod)
+					if err != nil {
+						return nil, nil, nil, err
+					}
+				} else {
+					egressIP, err = c.egressQuerier.GetEgressIPByMark(pktMark)
 					if err != nil {
 						return nil, nil, nil, err
 					}
 				}
-				obEgress := getEgressObservation(true, egressIP, egress)
+				obEgress := getEgressObservation(true, egressIP, egressName, egressNode)
 				obs = append(obs, *obEgress)
 			}
 			ob.Action = crdv1beta1.ActionForwardedOutOfOverlay
@@ -476,7 +477,7 @@ func parseCapturedPacket(pktIn *ofctrl.PacketIn) *crdv1beta1.Packet {
 		capturedPacket.IPHeader = &crdv1beta1.IPHeader{Protocol: int32(pkt.IPProto), TTL: int32(pkt.TTL), Flags: int32(pkt.IPFlags)}
 	}
 	if pkt.IPProto == protocol.Type_TCP {
-		capturedPacket.TransportHeader.TCP = &crdv1beta1.TCPHeader{SrcPort: int32(pkt.SourcePort), DstPort: int32(pkt.DestinationPort), Flags: pointer.Int32(int32(pkt.TCPFlags))}
+		capturedPacket.TransportHeader.TCP = &crdv1beta1.TCPHeader{SrcPort: int32(pkt.SourcePort), DstPort: int32(pkt.DestinationPort), Flags: ptr.To(int32(pkt.TCPFlags))}
 	} else if pkt.IPProto == protocol.Type_UDP {
 		capturedPacket.TransportHeader.UDP = &crdv1beta1.UDPHeader{SrcPort: int32(pkt.SourcePort), DstPort: int32(pkt.DestinationPort)}
 	} else if pkt.IPProto == protocol.Type_ICMP || pkt.IPProto == protocol.Type_IPv6ICMP {
@@ -485,11 +486,12 @@ func parseCapturedPacket(pktIn *ofctrl.PacketIn) *crdv1beta1.Packet {
 	return &capturedPacket
 }
 
-func getEgressObservation(isEgressNode bool, egressIP, egressName string) *crdv1beta1.Observation {
+func getEgressObservation(isEgressNode bool, egressIP, egressName, egressNode string) *crdv1beta1.Observation {
 	ob := new(crdv1beta1.Observation)
 	ob.Component = crdv1beta1.ComponentEgress
 	ob.EgressIP = egressIP
 	ob.Egress = egressName
+	ob.EgressNode = egressNode
 	if isEgressNode {
 		ob.Action = crdv1beta1.ActionMarkedForSNAT
 	} else {

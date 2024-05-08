@@ -98,8 +98,6 @@ type AgentConfig struct {
 	// --service-cluster-ip-range. When AntreaProxy is enabled, this parameter is not needed.
 	// No default value for this field.
 	ServiceCIDRv6 string `yaml:"serviceCIDRv6,omitempty"`
-	// Deprecated. Use TrafficEncryptionMode instead.
-	EnableIPSecTunnel bool `yaml:"enableIPSecTunnel,omitempty"`
 	// Determines how tunnel traffic is encrypted.
 	// It has the following options:
 	// - none (default): Inter-node Pod traffic will not be encrypted.
@@ -141,8 +139,6 @@ type AgentConfig struct {
 	ActiveFlowExportTimeout string `yaml:"activeFlowExportTimeout,omitempty"`
 	// Deprecated. Use the FlowExporter config options instead.
 	IdleFlowExportTimeout string `yaml:"idleFlowExportTimeout,omitempty"`
-	// Deprecated. Use the NodePortLocal config options instead.
-	NPLPortRange string `yaml:"nplPortRange,omitempty"`
 	// NodePortLocal (NPL) configuration options.
 	NodePortLocal NodePortLocalConfig `yaml:"nodePortLocal,omitempty"`
 	// FlowExporter configuration options.
@@ -176,10 +172,6 @@ type AgentConfig struct {
 	// 2. TransportInterfaceCIDRs
 	// 3. The Node IP
 	TransportInterfaceCIDRs []string `yaml:"transportInterfaceCIDRs,omitempty"`
-	// The names of the interfaces on Nodes that are used to forward multicast traffic.
-	// Defaults to transport interface if not set.
-	// Deprecated: use Multicast.MulticastInterfaces instead.
-	MulticastInterfaces []string `yaml:"multicastInterfaces,omitempty"`
 	// Multicast configuration options.
 	Multicast MulticastConfig `yaml:"multicast,omitempty"`
 	// AntreaProxy contains AntreaProxy related configuration options.
@@ -331,9 +323,6 @@ type IPsecConfig struct {
 }
 
 type MulticlusterConfig struct {
-	// Deprecated and replaced by "enableGateway". Keep the field in MulticlusterConfig to be
-	// compatible with earlier version (<= v1.10) Antrea deployment manifests.
-	Enable bool `yaml:"enable,omitempty"`
 	// Enable Multi-cluster Gateway.
 	EnableGateway bool `yaml:"enableGateway,omitempty"`
 	// The Namespace where Antrea Multi-cluster Controller is running.
@@ -400,7 +389,6 @@ type SecondaryNetworkConfig struct {
 
 type OVSBridgeConfig struct {
 	BridgeName string `yaml:"bridgeName"`
-	// Names of physical interfaces to be connected to the bridge. At the moment,
-	// only a single physical interface is supported.
+	// Names of physical interfaces to be connected to the bridge.
 	PhysicalInterfaces []string `yaml:"physicalInterfaces,omitempty"`
 }

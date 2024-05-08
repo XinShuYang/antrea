@@ -113,12 +113,6 @@ func probeFromPod(data *TestData, pod, container string, url string) error {
 	return err
 }
 
-func probeHostnameFromPod(data *TestData, pod, container string, baseUrl string) (string, error) {
-	url := fmt.Sprintf("%s/%s", baseUrl, "hostname")
-	hostname, _, err := data.runWgetCommandFromTestPodWithRetry(pod, data.testNamespace, container, url, 5)
-	return hostname, err
-}
-
 func probeClientIPFromPod(data *TestData, pod, container string, baseUrl string) (string, error) {
 	url := fmt.Sprintf("%s/%s", baseUrl, "clientip")
 	hostPort, _, err := data.runWgetCommandFromTestPodWithRetry(pod, data.testNamespace, container, url, 5)
@@ -159,16 +153,16 @@ func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 	skipIfProxyDisabled(t, data)
 	skipIfProxyAllDisabled(t, data)
 
-	// Create a busybox Pod on every Node. The busybox Pod is used as a client.
+	// Create a toolbox Pod on every Node. The toolbox Pod is used as a client.
 	nodes := []string{nodeName(0), nodeName(1)}
-	var busyboxes, busyboxIPs []string
+	var toolboxes, toolboxIPs []string
 	for idx, node := range nodes {
-		podName, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, fmt.Sprintf("busybox-%d-", idx), node, data.testNamespace, false)
-		busyboxes = append(busyboxes, podName)
+		podName, ips, _ := createAndWaitForPod(t, data, data.createToolboxPodOnNode, fmt.Sprintf("toolbox-%d-", idx), node, data.testNamespace, false)
+		toolboxes = append(toolboxes, podName)
 		if !isIPv6 {
-			busyboxIPs = append(busyboxIPs, ips.IPv4.String())
+			toolboxIPs = append(toolboxIPs, ips.IPv4.String())
 		} else {
-			busyboxIPs = append(busyboxIPs, ips.IPv6.String())
+			toolboxIPs = append(toolboxIPs, ips.IPv6.String())
 		}
 	}
 
@@ -215,7 +209,7 @@ func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 		createAgnhostPod(t, data, agnhosts[idx], node, false)
 	}
 	t.Run("Non-HostNetwork Endpoints", func(t *testing.T) {
-		loadBalancerTestCases(t, data, clusterUrl, localUrl, healthExpected, nodes, healthUrls, busyboxes, busyboxIPs, agnhosts)
+		loadBalancerTestCases(t, data, clusterUrl, localUrl, healthExpected, nodes, healthUrls, toolboxes, toolboxIPs, agnhosts)
 	})
 
 	// Delete agnhost Pods which are not on host network and create new agnhost Pods which are on host network.
@@ -225,7 +219,7 @@ func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 		createAgnhostPod(t, data, hostAgnhosts[idx], node, true)
 	}
 	t.Run("HostNetwork Endpoints", func(t *testing.T) {
-		loadBalancerTestCases(t, data, clusterUrl, localUrl, healthExpected, nodes, healthUrls, busyboxes, busyboxIPs, nodes)
+		loadBalancerTestCases(t, data, clusterUrl, localUrl, healthExpected, nodes, healthUrls, toolboxes, toolboxIPs, nodes)
 	})
 }
 
@@ -253,7 +247,7 @@ func testLoadBalancerClusterFromNode(t *testing.T, data *TestData, nodes []strin
 
 func testLoadBalancerClusterFromPod(t *testing.T, data *TestData, pods []string, url string) {
 	for _, pod := range pods {
-		require.NoError(t, probeFromPod(data, pod, busyboxContainerName, url), "Service LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Pod")
+		require.NoError(t, probeFromPod(data, pod, toolboxContainerName, url), "Service LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Pod")
 	}
 }
 
@@ -273,7 +267,7 @@ func testLoadBalancerLocalFromNode(t *testing.T, data *TestData, nodes, healthUr
 func testLoadBalancerLocalFromPod(t *testing.T, data *TestData, pods []string, url string) {
 	errMsg := "Service NodePort whose externalTrafficPolicy is Local should be able to be connected from Pod"
 	for _, pod := range pods {
-		require.NoError(t, probeFromPod(data, pod, busyboxContainerName, url), errMsg)
+		require.NoError(t, probeFromPod(data, pod, toolboxContainerName, url), errMsg)
 	}
 }
 
@@ -307,15 +301,15 @@ func testProxyNodePortService(t *testing.T, isIPv6 bool) {
 		ipProtocol = corev1.IPv6Protocol
 	}
 
-	// Create a busybox Pod on every Node. The busybox Pod is used as a client.
-	var busyboxes, busyboxIPs []string
+	// Create a toolbox Pod on every Node. The toolbox Pod is used as a client.
+	var toolboxes, toolboxIPs []string
 	for idx, node := range nodes {
-		podName, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, fmt.Sprintf("busybox-%d-", idx), node, data.testNamespace, false)
-		busyboxes = append(busyboxes, podName)
+		podName, ips, _ := createAndWaitForPod(t, data, data.createToolboxPodOnNode, fmt.Sprintf("toolbox-%d-", idx), node, data.testNamespace, false)
+		toolboxes = append(toolboxes, podName)
 		if !isIPv6 {
-			busyboxIPs = append(busyboxIPs, ips.IPv4.String())
+			toolboxIPs = append(toolboxIPs, ips.IPv4.String())
 		} else {
-			busyboxIPs = append(busyboxIPs, ips.IPv6.String())
+			toolboxIPs = append(toolboxIPs, ips.IPv6.String())
 		}
 	}
 
@@ -347,7 +341,7 @@ func testProxyNodePortService(t *testing.T, isIPv6 bool) {
 		createAgnhostPod(t, data, agnhosts[idx], node, false)
 	}
 	t.Run("Non-HostNetwork Endpoints", func(t *testing.T) {
-		nodePortTestCases(t, data, portCluster, portLocal, nodes, nodeIPs, busyboxes, busyboxIPs, agnhosts, false)
+		nodePortTestCases(t, data, portCluster, portLocal, nodes, nodeIPs, toolboxes, toolboxIPs, agnhosts, false)
 	})
 
 	// Delete agnhost Pods which are not on host network and create new agnhost Pods which are on host network.
@@ -357,7 +351,7 @@ func testProxyNodePortService(t *testing.T, isIPv6 bool) {
 		createAgnhostPod(t, data, hostAgnhosts[idx], node, true)
 	}
 	t.Run("HostNetwork Endpoints", func(t *testing.T) {
-		nodePortTestCases(t, data, portCluster, portLocal, nodes, nodeIPs, busyboxes, busyboxIPs, nodes, true)
+		nodePortTestCases(t, data, portCluster, portLocal, nodes, nodeIPs, toolboxes, toolboxIPs, nodes, true)
 	})
 }
 
@@ -483,7 +477,7 @@ func testNodePortClusterFromNode(t *testing.T, data *TestData, nodes, urls []str
 func testNodePortClusterFromPod(t *testing.T, data *TestData, pods, urls []string) {
 	for _, url := range urls {
 		for _, pod := range pods {
-			require.NoError(t, probeFromPod(data, pod, busyboxContainerName, url), "Service NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Pod")
+			require.NoError(t, probeFromPod(data, pod, toolboxContainerName, url), "Service NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Pod")
 		}
 	}
 }
@@ -511,7 +505,7 @@ func testNodePortLocalFromNode(t *testing.T, data *TestData, nodes, urls []strin
 
 func testNodePortLocalFromPod(t *testing.T, data *TestData, pods, urls []string) {
 	for idx, pod := range pods {
-		require.NoError(t, probeFromPod(data, pod, busyboxContainerName, urls[idx]), "There should be no errors when accessing to Service NodePort whose externalTrafficPolicy is Local from Pod")
+		require.NoError(t, probeFromPod(data, pod, toolboxContainerName, urls[idx]), "There should be no errors when accessing to Service NodePort whose externalTrafficPolicy is Local from Pod")
 	}
 }
 
@@ -621,14 +615,14 @@ func testProxyServiceSessionAffinity(ipFamily *corev1.IPFamily, ingressIPs []str
 	defer data.deleteServiceAndWait(defaultTimeout, nginxLBService, data.testNamespace)
 	require.NoError(t, err)
 
-	busyboxPod := randName("busybox-")
-	require.NoError(t, data.createBusyboxPodOnNode(busyboxPod, data.testNamespace, nodeName, false))
-	defer data.DeletePodAndWait(defaultTimeout, busyboxPod, data.testNamespace)
-	require.NoError(t, data.podWaitForRunning(defaultTimeout, busyboxPod, data.testNamespace))
-	stdout, stderr, err := data.runWgetCommandOnBusyboxWithRetry(busyboxPod, data.testNamespace, svc.Spec.ClusterIP, 5)
+	toolboxPod := randName("toolbox-")
+	require.NoError(t, data.createToolboxPodOnNode(toolboxPod, data.testNamespace, nodeName, false))
+	defer data.DeletePodAndWait(defaultTimeout, toolboxPod, data.testNamespace)
+	require.NoError(t, data.podWaitForRunning(defaultTimeout, toolboxPod, data.testNamespace))
+	stdout, stderr, err := data.runWgetCommandOnToolboxWithRetry(toolboxPod, data.testNamespace, getHTTPURLFromIPPort(svc.Spec.ClusterIP, 80), 5)
 	require.NoError(t, err, fmt.Sprintf("ipFamily: %v\nstdout: %s\nstderr: %s\n", *ipFamily, stdout, stderr))
 	for _, ingressIP := range ingressIPs {
-		stdout, stderr, err := data.runWgetCommandOnBusyboxWithRetry(busyboxPod, data.testNamespace, ingressIP, 5)
+		stdout, stderr, err := data.runWgetCommandOnToolboxWithRetry(toolboxPod, data.testNamespace, getHTTPURLFromIPPort(ingressIP, 80), 5)
 		require.NoError(t, err, fmt.Sprintf("ipFamily: %v\nstdout: %s\nstderr: %s\n", *ipFamily, stdout, stderr))
 	}
 
@@ -1101,7 +1095,7 @@ func TestProxyLoadBalancerModeDSR(t *testing.T) {
 	backendNode2 := workerNodeName(2)
 
 	internalClient := "internal-client"
-	err = NewPodBuilder(internalClient, data.testNamespace, toolboxImage).OnNode(ingressNode).Create(data)
+	err = NewPodBuilder(internalClient, data.testNamespace, ToolboxImage).OnNode(ingressNode).Create(data)
 	require.NoError(t, err, "Failed to create internal client")
 	defer deletePodWrapper(t, data, data.testNamespace, internalClient)
 	internalClientIPs, err := data.podWaitForIPs(defaultTimeout, internalClient, data.testNamespace)
@@ -1145,7 +1139,7 @@ func TestProxyLoadBalancerModeDSR(t *testing.T) {
 			// Create another netns to fake an external network on the host network Pod.
 			externalClient := randName("external-client-")
 			cmd, externalNetns := getCommandInFakeExternalNetwork("sleep infinity", externalIPPrefix, externalClientIP, externalClientGateway)
-			err := NewPodBuilder(externalClient, data.testNamespace, toolboxImage).OnNode(ingressNode).WithCommand([]string{"sh", "-c", cmd}).InHostNetwork().Privileged().Create(data)
+			err := NewPodBuilder(externalClient, data.testNamespace, ToolboxImage).OnNode(ingressNode).WithCommand([]string{"sh", "-c", cmd}).InHostNetwork().Privileged().Create(data)
 			require.NoError(t, err, "Failed to create external client")
 			defer deletePodWrapper(t, data, data.testNamespace, externalClient)
 			err = data.podWaitForRunning(defaultTimeout, externalClient, data.testNamespace)
@@ -1175,7 +1169,7 @@ func TestProxyLoadBalancerModeDSR(t *testing.T) {
 			defer data.deleteServiceAndWait(defaultTimeout, serviceName, data.testNamespace)
 
 			curlServiceWithPath := func(clientPod, clientNetns, path string) string {
-				testURL := fmt.Sprintf("http://%s:%d/%s", lbIP, service.Spec.Ports[0].Port, path)
+				testURL := getHTTPURLFromIPPort(lbIP, service.Spec.Ports[0].Port, path)
 				cmd = fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", testURL)
 				if clientNetns != "" {
 					cmd = fmt.Sprintf("ip netns exec %s %s", clientNetns, cmd)

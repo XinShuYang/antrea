@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"antrea.io/antrea/pkg/agent/config"
 	agentconfig "antrea.io/antrea/pkg/config/agent"
@@ -93,7 +93,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 			name:             "default",
 			trafficEncapMode: config.TrafficEncapModeEncap,
 			antreaProxyConfig: agentconfig.AntreaProxyConfig{
-				Enable:                  pointer.Bool(true),
+				Enable:                  ptr.To(true),
 				DefaultLoadBalancerMode: config.LoadBalancerModeNAT.String(),
 			},
 			expectedDefaultLoadBalancerMode: config.LoadBalancerModeNAT,
@@ -103,7 +103,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 			enabledDSR:       true,
 			trafficEncapMode: config.TrafficEncapModeEncap,
 			antreaProxyConfig: agentconfig.AntreaProxyConfig{
-				Enable:                  pointer.Bool(true),
+				Enable:                  ptr.To(true),
 				DefaultLoadBalancerMode: config.LoadBalancerModeDSR.String(),
 			},
 			expectedDefaultLoadBalancerMode: config.LoadBalancerModeDSR,
@@ -111,7 +111,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 		{
 			name: "LoadBalancerModeDSR disabled",
 			antreaProxyConfig: agentconfig.AntreaProxyConfig{
-				Enable:                  pointer.Bool(true),
+				Enable:                  ptr.To(true),
 				DefaultLoadBalancerMode: config.LoadBalancerModeDSR.String(),
 			},
 			trafficEncapMode: config.TrafficEncapModeEncap,
@@ -121,7 +121,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 			name:       "unsupported encap mode",
 			enabledDSR: true,
 			antreaProxyConfig: agentconfig.AntreaProxyConfig{
-				Enable:                  pointer.Bool(true),
+				Enable:                  ptr.To(true),
 				DefaultLoadBalancerMode: config.LoadBalancerModeDSR.String(),
 			},
 			trafficEncapMode: config.TrafficEncapModeNoEncap,
@@ -131,7 +131,7 @@ func TestOptionsValidateAntreaProxyConfig(t *testing.T) {
 			name:             "invalid LoadBalancerMode",
 			trafficEncapMode: config.TrafficEncapModeEncap,
 			antreaProxyConfig: agentconfig.AntreaProxyConfig{
-				Enable:                  pointer.Bool(true),
+				Enable:                  ptr.To(true),
 				DefaultLoadBalancerMode: "drs",
 			},
 			expectedErr: "LoadBalancerMode drs is unknown",
@@ -219,18 +219,42 @@ func TestOptionsValidateMulticastConfig(t *testing.T) {
 	tests := []struct {
 		name              string
 		igmpQueryVersions []int
+		encryptionMode    config.TrafficEncryptionModeType
 		expectedErr       error
 		expectedVersions  []uint8
 	}{
 		{
 			name:              "wrong versions",
 			igmpQueryVersions: []int{1, 3, 4},
+			encryptionMode:    config.TrafficEncryptionModeNone,
 			expectedErr:       fmt.Errorf("igmpQueryVersions should be a subset of [1 2 3]"),
+			expectedVersions:  nil,
+		},
+		{
+			name:              "incorrect encryption mode with IPSec",
+			igmpQueryVersions: []int{1, 2},
+			encryptionMode:    config.TrafficEncryptionModeIPSec,
+			expectedErr:       fmt.Errorf("Multicast feature doesn't work with the current encryption mode 'IPsec'"),
+			expectedVersions:  nil,
+		},
+		{
+			name:              "incorrect encryption mode with WireGuard",
+			igmpQueryVersions: []int{1, 2},
+			encryptionMode:    config.TrafficEncryptionModeWireGuard,
+			expectedErr:       fmt.Errorf("Multicast feature doesn't work with the current encryption mode 'WireGuard'"),
+			expectedVersions:  nil,
+		},
+		{
+			name:              "incorrect encryption mode with invalid",
+			igmpQueryVersions: []int{1, 2},
+			encryptionMode:    config.TrafficEncryptionModeInvalid,
+			expectedErr:       fmt.Errorf("Multicast feature doesn't work with the current encryption mode 'invalid'"),
 			expectedVersions:  nil,
 		},
 		{
 			name:              "no error",
 			igmpQueryVersions: []int{1, 2},
+			encryptionMode:    config.TrafficEncryptionModeNone,
 			expectedErr:       nil,
 			expectedVersions:  []uint8{1, 2},
 		},
@@ -240,11 +264,14 @@ func TestOptionsValidateMulticastConfig(t *testing.T) {
 			defer featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.Multicast, true)()
 			o := &Options{config: &agentconfig.AgentConfig{
 				Multicast: agentconfig.MulticastConfig{
+					Enable:            true,
 					IGMPQueryVersions: tt.igmpQueryVersions},
 			}}
-			err := o.validateMulticastConfig()
-			assert.Equal(t, tt.expectedErr, err)
-			assert.Equal(t, tt.expectedVersions, o.igmpQueryVersions)
+			err := o.validateMulticastConfig(tt.encryptionMode)
+			require.Equal(t, tt.expectedErr, err)
+			if err != nil {
+				assert.Equal(t, tt.expectedVersions, o.igmpQueryVersions)
+			}
 		})
 	}
 }
@@ -292,8 +319,8 @@ func TestOptionsValidateSecondaryNetworkConfig(t *testing.T) {
 			name:               "two interfaces",
 			featureGateValue:   true,
 			ovsBridges:         []string{"br1"},
-			physicalInterfaces: []string{"eth1", "eth2"},
-			expectedErr:        "at most one physical interface can be specified for the secondary network OVS bridge",
+			physicalInterfaces: []string{"eth1", "eth2", "eth3", "eth4", "eth5", "eth6", "eth7", "eth8", "eth9"},
+			expectedErr:        "at most eight physical interfaces can be specified for the secondary network OVS bridge",
 		},
 	}
 	for _, tc := range tests {

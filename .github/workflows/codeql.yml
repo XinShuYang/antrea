@@ -7,7 +7,24 @@ on:
     branches: [ "main" ]
 
 jobs:
+  check-changes:
+    name: Check whether tests need to be run based on diff
+    runs-on: [ubuntu-latest]
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        show-progress: false
+    - uses: antrea-io/has-changes@v2
+      id: check_diff
+      with:
+        paths-ignore: docs/* ci/jenkins/* *.md hack/.notableofcontents
+    outputs:
+      has_changes: ${{ steps.check_diff.outputs.has_changes }}
+
   analyze-on-linux:
+    needs: check-changes
+    if: ${{ needs.check-changes.outputs.has_changes == 'yes' }}
     name: Analyze on Linux
     runs-on: ubuntu-latest
     permissions:
@@ -26,17 +43,17 @@ jobs:
       with:
         show-progress: false
 
+    - name: Set up Go using version from go.mod
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v2
+      uses: github/codeql-action/init@v3
       with:
         languages: ${{ matrix.language }}
         config-file: ./.github/codeql-config.yml
-
-    - name: Set up Go using version from go.mod
-      uses: actions/setup-go@v4
-      with:
-        go-version-file: 'go.mod'
 
     - name: "Build Application"
       run: |
@@ -45,11 +62,13 @@ jobs:
         make build
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v2
+      uses: github/codeql-action/analyze@v3
       with:
         category: "/language:${{matrix.language}}"
 
   analyze-on-windows:
+    needs: check-changes
+    if: ${{ needs.check-changes.outputs.has_changes == 'yes' }}
     name: Analyze on Windows
     runs-on: windows-latest
     permissions:
@@ -68,21 +87,21 @@ jobs:
       with:
         show-progress: false
 
+    - name: Set up Go using version from go.mod
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v2
+      uses: github/codeql-action/init@v3
       with:
         languages: ${{ matrix.language }}
         config-file: ./.github/codeql-config.yml
-
-    - name: Set up Go using version from go.mod
-      uses: actions/setup-go@v4
-      with:
-        go-version-file: 'go.mod'
 
     - name: Build Antrea windows binaries
       run: make windows-bin
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v2
+      uses: github/codeql-action/analyze@v3
       with:
         category: "/language:${{matrix.language}}"

@@ -1,6 +1,14 @@
 # -- Container image to use for Antrea components.
-image:
-  repository: "antrea/antrea-ubuntu"
+# DEPRECATED: use agentImage and controllerImage instead.
+image: {}
+# -- Container image to use for the antrea-agent component.
+agentImage:
+  repository: "antrea/antrea-agent-ubuntu"
+  pullPolicy: "IfNotPresent"
+  tag: ""
+# -- Container image to use for the antrea-controller component.
+controllerImage:
+  repository: "antrea/antrea-controller-ubuntu"
   pullPolicy: "IfNotPresent"
   tag: ""
 
@@ -237,6 +245,8 @@ agent:
   # -- Do not try to load any of the required Kernel modules (e.g., openvswitch)
   # during initialization of the antrea-agent. Most users should never need to
   # set this to true, but it may be required with some specific distributions.
+  # Note that we will never try to load a module if we can detect that it is
+  # "built-in", regardless of this value.
   dontLoadKernelModules: false
   installCNI:
     # -- Extra environment variables to be injected into install-cni.
@@ -363,6 +373,7 @@ controller:
     resources:
       requests:
         cpu: "200m"
+        memory: "100Mi"
 
 flowExporter:
   # -- Enable the flow exporter feature.
@@ -402,7 +413,6 @@ logVerbosity: 0
 # Configure Multicluster defaults for both Antrea Controller and Agent.
 multicluster:
   # -- Enable Antrea Multi-cluster Gateway to support cross-cluster traffic.
-  # This feature is supported only with encap mode.
   enableGateway: false
   # -- The Namespace where Antrea Multi-cluster Controller is running.
   # The default is antrea-agent's Namespace.
@@ -412,10 +422,12 @@ multicluster:
   enableStretchedNetworkPolicy: false
   # -- Enable Multi-cluster Pod to Pod connectivity.
   enablePodToPodConnectivity: false
-  # -- Determines how cross-cluster traffic is encrypted.
-  # It has the following options:
-  # - none (default):  Cross-cluster traffic will not be encrypted.
-  # - wireGuard:       Enable WireGuard for tunnel traffic encryption.
+  # -- Determines how cross-cluster traffic is encrypted. It can be one of
+  # "none" (default) or "wireGuard". When set to "none", cross-cluster traffic
+  # will not be encrypted. When set to "wireGuard", cross-cluster traffic will
+  # be sent over encrypted WireGuard tunnels. "wireGuard" requires Multi-cluster
+  # Gateway to be enabled. Note that when using WireGuard for cross-cluster
+  # traffic, encryption is no longer supported for in-cluster traffic.
   trafficEncryptionMode: "none"
   # WireGuard tunnel configuration for cross-cluster traffic.
   wireGuard:

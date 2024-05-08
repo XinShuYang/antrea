@@ -20,19 +20,21 @@ import (
 
 	"antrea.io/libOpenflow/openflow15"
 
-	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
 	"antrea.io/antrea/pkg/agent/types"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
 )
 
 type featureMulticast struct {
-	cookieAllocator cookie.Allocator
-	ipProtocols     []binding.Protocol
-	bridge          binding.Bridge
-	gatewayPort     uint32
-	encapEnabled    bool
-	tunnelPort      uint32
+	cookieAllocator     cookie.Allocator
+	ipProtocols         []binding.Protocol
+	bridge              binding.Bridge
+	gatewayPort         uint32
+	encapEnabled        bool
+	flexibleIPAMEnabled bool
+	tunnelPort          uint32
+	uplinkPort          uint32
+	hostOFPort          uint32
 
 	cachedFlows        *flowCategoryCache
 	groupCache         sync.Map
@@ -45,18 +47,32 @@ func (f *featureMulticast) getFeatureName() string {
 	return "Multicast"
 }
 
-func newFeatureMulticast(cookieAllocator cookie.Allocator, ipProtocols []binding.Protocol, bridge binding.Bridge, anpEnabled bool, gwPort uint32, encapEnabled bool, tunnelPort uint32) *featureMulticast {
+func newFeatureMulticast(
+	cookieAllocator cookie.Allocator,
+	ipProtocols []binding.Protocol,
+	bridge binding.Bridge,
+	anpEnabled bool,
+	gwPort uint32,
+	encapEnabled bool,
+	tunnelPort uint32,
+	uplinkPort uint32,
+	hostOFPort uint32,
+	flexibleIPAMEnabled bool,
+) *featureMulticast {
 	return &featureMulticast{
-		cookieAllocator:    cookieAllocator,
-		ipProtocols:        ipProtocols,
-		cachedFlows:        newFlowCategoryCache(),
-		bridge:             bridge,
-		category:           cookie.Multicast,
-		groupCache:         sync.Map{},
-		enableAntreaPolicy: anpEnabled,
-		gatewayPort:        gwPort,
-		encapEnabled:       encapEnabled,
-		tunnelPort:         tunnelPort,
+		cookieAllocator:     cookieAllocator,
+		ipProtocols:         ipProtocols,
+		cachedFlows:         newFlowCategoryCache(),
+		bridge:              bridge,
+		category:            cookie.Multicast,
+		groupCache:          sync.Map{},
+		enableAntreaPolicy:  anpEnabled,
+		gatewayPort:         gwPort,
+		encapEnabled:        encapEnabled,
+		tunnelPort:          tunnelPort,
+		uplinkPort:          uplinkPort,
+		hostOFPort:          hostOFPort,
+		flexibleIPAMEnabled: flexibleIPAMEnabled,
 	}
 }
 
@@ -91,6 +107,7 @@ func (f *featureMulticast) replayFlows() []*openflow15.FlowMod {
 	return getCachedFlowMessages(f.cachedFlows)
 }
 
+// IMPORTANT: Ensure any changes to this function are tested in TestMulticastReceiversGroupMaxBuckets.
 func (f *featureMulticast) multicastReceiversGroup(groupID binding.GroupIDType, tableID uint8, ports []uint32, remoteIPs []net.IP) binding.Group {
 	group := f.bridge.NewGroupTypeAll(groupID)
 	for i := range ports {
@@ -131,14 +148,14 @@ func (f *featureMulticast) multicastOutputFlows() []binding.Flow {
 			Cookie(cookieID).
 			MatchRegMark(FromTunnelRegMark).
 			MatchRegMark(OutputToOFPortRegMark).
-			MatchRegFieldWithValue(TargetOFPortField, config.HostGatewayOFPort).
+			MatchRegFieldWithValue(TargetOFPortField, f.gatewayPort).
 			Action().Drop().
 			Done(),
 			MulticastOutputTable.ofTable.BuildFlow(priorityHigh).
 				Cookie(cookieID).
 				MatchRegMark(FromGatewayRegMark).
 				MatchRegMark(OutputToOFPortRegMark).
-				MatchRegFieldWithValue(TargetOFPortField, config.DefaultTunOFPort).
+				MatchRegFieldWithValue(TargetOFPortField, f.tunnelPort).
 				Action().Drop().
 				Done(),
 		)
@@ -198,6 +215,21 @@ func (f *featureMulticast) initGroups() []binding.OFEntry {
 
 func (f *featureMulticast) replayMeters() []binding.OFEntry {
 	return nil
+}
+
+func (f *featureMulticast) multicastForwardFlexibleIPAMFlows(table binding.Table) []binding.Flow {
+	ports := []uint32{f.uplinkPort, f.hostOFPort}
+	flows := make([]binding.Flow, 0, len(ports))
+	for _, port := range ports {
+		flows = append(flows, ClassifierTable.ofTable.BuildFlow(priorityHigh).
+			Cookie(f.cookieAllocator.Request(f.category).Raw()).
+			MatchInPort(port).
+			MatchProtocol(binding.ProtocolIP).
+			MatchDstIPNet(*types.McastCIDR).
+			Action().GotoTable(table.GetID()).
+			Done())
+	}
+	return flows
 }
 
 func (f *featureMulticast) multicastRemoteReportFlows(groupID binding.GroupIDType, firstMulticastTable binding.Table) []binding.Flow {

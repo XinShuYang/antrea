@@ -20,6 +20,7 @@ package util
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +43,7 @@ import (
 	ps "antrea.io/antrea/pkg/agent/util/powershell"
 	antreasyscall "antrea.io/antrea/pkg/agent/util/syscall"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
+	"antrea.io/antrea/pkg/ovs/ovsconfig"
 	iputil "antrea.io/antrea/pkg/util/ip"
 )
 
@@ -66,6 +68,10 @@ const (
 	RT_FILTER_METRIC
 	RT_FILTER_DST
 	RT_FILTER_GW
+
+	// IP_ADAPTER_DHCP_ENABLED is defined in the Win32 API document.
+	// https://learn.microsoft.com/en-us/windows/win32/api/iptypes/ns-iptypes-ip_adapter_addresses_lh
+	IP_ADAPTER_DHCP_ENABLED = 0x00000004
 )
 
 var (
@@ -176,7 +182,7 @@ func EnableHostInterface(ifaceName string) error {
 	// Enable-NetAdapter is not a blocking operation based on our testing.
 	// It returns immediately no matter whether the interface has been enabled or not.
 	// So we need to check the interface status to ensure it is up before returning.
-	if err := wait.PollImmediate(commandRetryInterval, commandRetryTimeout, func() (done bool, err error) {
+	if err := wait.PollUntilContextTimeout(context.TODO(), commandRetryInterval, commandRetryTimeout, true, func(ctx context.Context) (done bool, err error) {
 		if _, err := runCommand(cmd); err != nil {
 			klog.Errorf("Failed to run command %s: %v", cmd, err)
 			return false, nil
@@ -460,10 +466,29 @@ func PrepareHNSNetwork(subnetCIDR *net.IPNet, nodeIPNet *net.IPNet, uplinkAdapte
 			hnsNetworkDelete(hnsNet)
 		}
 	}()
-
-	adapter, ipFound, err := adapterIPExists(nodeIPNet.IP, uplinkAdapter.HardwareAddr, ContainerVNICPrefix)
+	var adapter *net.Interface
+	var ipFound bool
+	// On the current Windows testbed, it takes a maximum of 1.8 seconds to obtain a valid IP.
+	// Therefore, we set the timeout limit to triple of that value, allowing a maximum wait of 6 seconds here.
+	err = wait.PollUntilContextTimeout(context.TODO(), 1*time.Second, 6*time.Second, true, func(ctx context.Context) (bool, error) {
+		var checkErr error
+		adapter, ipFound, checkErr = adapterIPExists(nodeIPNet.IP, uplinkAdapter.HardwareAddr, ContainerVNICPrefix)
+		if checkErr != nil {
+			return false, checkErr
+		}
+		return ipFound, nil
+	})
 	if err != nil {
-		return err
+		if wait.Interrupted(err) {
+			dhcpStatus, err := InterfaceIPv4DhcpEnabled(uplinkAdapter.Name)
+			if err != nil {
+				klog.ErrorS(err, "Failed to get IPv4 DHCP status on the network adapter", "adapter", uplinkAdapter.Name)
+			} else {
+				klog.ErrorS(err, "Timeout acquiring IP for the adapter", "dhcpStatus", dhcpStatus)
+			}
+		} else {
+			return err
+		}
 	}
 	vNicName, index := adapter.Name, adapter.Index
 	// By default, "ipFound" should be true after Windows creates the HNSNetwork. The following check is for some corner
@@ -506,6 +531,8 @@ func PrepareHNSNetwork(subnetCIDR *net.IPNet, nodeIPNet *net.IPNet, uplinkAdapte
 	}
 
 	// Enable OVS Extension on the HNS Network. If an error occurs, delete the HNS Network and return the error.
+	// While the hnsshim API allows for enabling the OVS extension when creating an HNS network, it can cause the adapter being unable
+	// to obtain a valid DHCP IP in case of network interruption. Therefore, we have to enable the OVS extension after running adapterIPExists.
 	if err = EnableHNSNetworkExtension(hnsNet.Id, OVSExtensionID); err != nil {
 		return err
 	}
@@ -629,22 +656,22 @@ func ListenLocalSocket(address string) (net.Listener, error) {
 	return listenUnix(address)
 }
 
-// DialLocalSocket connects to a Unix domain socket or a Windows named pipe.
-// - If the specified address starts with "\\.\pipe\",  connect to a Windows named pipe path.
-// - Else connect to a Unix domain socket.
-func DialLocalSocket(address string) (net.Conn, error) {
-	if strings.HasPrefix(address, namedPipePrefix) {
-		return winio.DialPipe(address, nil)
-	}
-	return dialUnix(address)
-}
-
 func HostInterfaceExists(ifaceName string) bool {
 	_, err := getAdapterInAllCompartmentsByName(ifaceName)
 	if err != nil {
 		return false
 	}
 	return true
+}
+
+// InterfaceIPv4DhcpEnabled returns the IPv4 DHCP status on the specified interface.
+func InterfaceIPv4DhcpEnabled(ifaceName string) (bool, error) {
+	adapter, err := getAdapterInAllCompartmentsByName(ifaceName)
+	if err != nil {
+		return false, err
+	}
+	ipv4Dhcp := (adapter.flags&IP_ADAPTER_DHCP_ENABLED != 0)
+	return ipv4Dhcp, nil
 }
 
 // SetInterfaceMTU configures interface MTU on host for Pods. MTU change cannot be realized with HNSEndpoint because
@@ -990,7 +1017,7 @@ func GetInterfaceConfig(ifName string) (*net.Interface, []*net.IPNet, []interfac
 
 func RenameInterface(from, to string) error {
 	var renameErr error
-	pollErr := wait.Poll(time.Millisecond*100, time.Second, func() (done bool, err error) {
+	pollErr := wait.PollUntilContextTimeout(context.TODO(), time.Millisecond*100, time.Second, false, func(ctx context.Context) (done bool, err error) {
 		renameErr = renameHostInterface(from, to)
 		if renameErr != nil {
 			klog.ErrorS(renameErr, "Failed to rename adapter, retrying")
@@ -1085,6 +1112,7 @@ type updateIPInterfaceFunc func(entry *antreasyscall.MibIPInterfaceRow) *antreas
 type adapter struct {
 	net.Interface
 	compartmentID uint32
+	flags         uint32
 }
 
 func (a *adapter) setMTU(mtu int, family uint16) error {
@@ -1250,6 +1278,7 @@ func getAdaptersByName(name string) ([]adapter, error) {
 		adapter := adapter{
 			Interface:     ifi,
 			compartmentID: aa.CompartmentId,
+			flags:         aa.Flags,
 		}
 		adapters = append(adapters, adapter)
 	}
@@ -1297,3 +1326,9 @@ func adapterAddresses() ([]*windows.IpAdapterAddresses, error) {
 	}
 	return aas, nil
 }
+
+func PrepareHostInterfaceConnection(_ ovsconfig.OVSBridgeClient, ifaceName string, _ int32, _ map[string]interface{}) (string, bool, error) {
+	return ifaceName, false, nil
+}
+
+func RestoreHostInterfaceConfiguration(_ string, _ string) {}

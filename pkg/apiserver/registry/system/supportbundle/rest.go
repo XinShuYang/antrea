@@ -99,10 +99,11 @@ type Storage struct {
 }
 
 var (
-	_ rest.Scoper          = &supportBundleREST{}
-	_ rest.Getter          = &supportBundleREST{}
-	_ rest.Creater         = &supportBundleREST{}
-	_ rest.GracefulDeleter = &supportBundleREST{}
+	_ rest.Scoper               = &supportBundleREST{}
+	_ rest.Getter               = &supportBundleREST{}
+	_ rest.Creater              = &supportBundleREST{}
+	_ rest.GracefulDeleter      = &supportBundleREST{}
+	_ rest.SingularNameProvider = &supportBundleREST{}
 )
 
 // supportBundleREST implements REST interfaces for bundle status querying.
@@ -265,6 +266,7 @@ func (r *supportBundleREST) collectAgent(ctx context.Context, since string) (*sy
 		dumper.DumpLog,
 		dumper.DumpHostNetworkInfo,
 		dumper.DumpFlows,
+		dumper.DumpGroups,
 		dumper.DumpNetworkPolicyResources,
 		dumper.DumpAgentInfo,
 		dumper.DumpHeapPprof,
@@ -306,6 +308,10 @@ func (r *supportBundleREST) clean(ctx context.Context, bundlePath string, durati
 		}()
 	}
 	defaultFS.Remove(bundlePath)
+}
+
+func (r *supportBundleREST) GetSingularName() string {
+	return "supportbundle"
 }
 
 var (

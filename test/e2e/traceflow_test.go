@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -763,7 +764,6 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 							Component:     v1beta1.ComponentNetworkPolicy,
 							ComponentInfo: "IngressDefaultRule",
 							Action:        v1beta1.ActionDropped,
-							NetworkPolicy: fmt.Sprintf("K8sNetworkPolicy:%s/test-networkpolicy-allow-all-egress", data.testNamespace),
 						},
 					},
 				},
@@ -1166,7 +1166,7 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 		podInfos[1].Name = node2Pods[2]
 		podInfos[1].Namespace = data.testNamespace
 		podInfos[1].OS = "windows"
-		data.runPingMesh(t, podInfos, agnhostContainerName)
+		data.runPingMesh(t, podInfos, agnhostContainerName, false)
 	}
 
 	// Setup 2 NetworkPolicies:
@@ -2118,10 +2118,11 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 						Action:    v1beta1.ActionForwarded,
 					},
 					{
-						Component: v1beta1.ComponentEgress,
-						Action:    v1beta1.ActionMarkedForSNAT,
-						Egress:    egress.Name,
-						EgressIP:  egressIP,
+						Component:  v1beta1.ComponentEgress,
+						Action:     v1beta1.ActionMarkedForSNAT,
+						Egress:     egress.Name,
+						EgressIP:   egressIP,
+						EgressNode: egressNode,
 					},
 					{
 						Component:     v1beta1.ComponentForwarding,
@@ -2189,10 +2190,11 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 						Action:    v1beta1.ActionForwarded,
 					},
 					{
-						Component: v1beta1.ComponentEgress,
-						Action:    v1beta1.ActionForwardedToEgressNode,
-						Egress:    egress.Name,
-						EgressIP:  egressIP,
+						Component:  v1beta1.ComponentEgress,
+						Action:     v1beta1.ActionForwardedToEgressNode,
+						Egress:     egress.Name,
+						EgressIP:   egressIP,
+						EgressNode: egressNode,
 					},
 					{
 						Component:     v1beta1.ComponentForwarding,
@@ -2313,7 +2315,7 @@ func (data *TestData) waitForTraceflow(t *testing.T, name string, phase v1beta1.
 	var tf *v1beta1.Traceflow
 	var err error
 	timeout := 15 * time.Second
-	if err = wait.PollImmediate(defaultInterval, timeout, func() (bool, error) {
+	if err = wait.PollUntilContextTimeout(context.Background(), defaultInterval, timeout, true, func(ctx context.Context) (bool, error) {
 		tf, err = data.crdClient.CrdV1beta1().Traceflows().Get(context.TODO(), name, metav1.GetOptions{})
 		if err != nil || tf.Status.Phase != phase {
 			return false, nil
@@ -2345,6 +2347,7 @@ func compareObservations(expected v1beta1.NodeResult, actual v1beta1.NodeResult)
 			exObs[i].TranslatedDstIP != acObs[i].TranslatedDstIP ||
 			exObs[i].EgressIP != acObs[i].EgressIP ||
 			exObs[i].Egress != acObs[i].Egress ||
+			exObs[i].EgressNode != acObs[i].EgressNode ||
 			exObs[i].Action != acObs[i].Action ||
 			exObs[i].NetworkPolicy != acObs[i].NetworkPolicy ||
 			exObs[i].NetworkPolicyRule != acObs[i].NetworkPolicyRule {
@@ -2439,7 +2442,7 @@ func (data *TestData) waitForNetworkpolicyRealized(pod string, node string, isWi
 	if npType == v1beta2.AntreaNetworkPolicy {
 		npOption = "ANNP"
 	}
-	if err := wait.Poll(200*time.Millisecond, 5*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 200*time.Millisecond, 5*time.Second, false, func(ctx context.Context) (bool, error) {
 		var stdout, stderr string
 		var err error
 		if isWindows {
@@ -2455,7 +2458,7 @@ func (data *TestData) waitForNetworkpolicyRealized(pod string, node string, isWi
 			return false, fmt.Errorf("Error when executing antctl get NetworkPolicy, stdout: %s, stderr: %s, err: %v", stdout, stderr, err)
 		}
 		return strings.Contains(stdout, fmt.Sprintf("%s:%s/%s", npType, data.testNamespace, networkpolicy)), nil
-	}); err == wait.ErrWaitTimeout {
+	}); wait.Interrupted(err) {
 		return fmt.Errorf("NetworkPolicy %s isn't realized in time", networkpolicy)
 	} else if err != nil {
 		return err
@@ -2506,7 +2509,7 @@ func runTestTraceflow(t *testing.T, data *TestData, tc testcase) {
 		// Give a little time for Nodes to install OVS flows.
 		time.Sleep(time.Second * 2)
 		// Send an ICMP echo packet from the source Pod to the destination.
-		if err := data.RunPingCommandFromTestPod(PodInfo{srcPod, osString, "", ""}, data.testNamespace, dstPodIPs, agnhostContainerName, 2, 0); err != nil {
+		if err := data.RunPingCommandFromTestPod(PodInfo{srcPod, osString, "", ""}, data.testNamespace, dstPodIPs, agnhostContainerName, 2, 0, false); err != nil {
 			t.Logf("Ping '%s' -> '%v' failed: ERROR (%v)", srcPod, *dstPodIPs, err)
 		}
 	}
@@ -2557,7 +2560,7 @@ func runTestTraceflow(t *testing.T, data *TestData, tc testcase) {
 			pktCap.TransportHeader.ICMP = &v1beta1.ICMPEchoRequestHeader{}
 		}
 		if !reflect.DeepEqual(tc.expectedPktCap, pktCap) {
-			t.Fatalf("Captured packet should be: %+v, but got: %+v", tc.expectedPktCap, tf.Status.CapturedPacket)
+			t.Fatalf("Captured packet should be: %s, but got: %s", spew.Sdump(tc.expectedPktCap), spew.Sdump(tf.Status.CapturedPacket))
 		}
 	}
 }

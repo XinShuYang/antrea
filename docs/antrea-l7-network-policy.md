@@ -72,7 +72,7 @@ forwarded to an application-aware engine for protocol detection and rule enforce
 the layer 7 criteria is also matched, otherwise it will be dropped. Therefore, any rules after a layer 7 rule will not
 be enforced for the traffic that match the layer 7 rule's layer 3/4 criteria.
 
-As of now, the only supported layer 7 protocol is HTTP. More protocols will be supported in the near future, and we
+As of now, the only supported layer 7 protocol is HTTP. Support for more protocols may be added in the future and we
 welcome feature requests for protocols that you are interested in.
 
 ### HTTP
@@ -80,7 +80,7 @@ welcome feature requests for protocols that you are interested in.
 An example layer 7 NetworkPolicy for the HTTP protocol is like below:
 
 ```yaml
-apiVersion: crd.antrea.io/v1alpha1
+apiVersion: crd.antrea.io/v1beta1
 kind: NetworkPolicy
 metadata:
   name: ingress-allow-http-request-to-api-v2
@@ -119,11 +119,11 @@ OPTIONS, CONNECT and PATCH. If not set, the rule matches all methods.
 
 #### More examples
 
-The following NetworkPolicy grants access of privileged URLs to specific clients while make other URLs publicly
+The following NetworkPolicy grants access of privileged URLs to specific clients while making other URLs publicly
 accessible:
 
 ```yaml
-apiVersion: crd.antrea.io/v1alpha1
+apiVersion: crd.antrea.io/v1beta1
 kind: NetworkPolicy
 metadata:
   name: allow-privileged-url-to-admin-role
@@ -146,7 +146,7 @@ spec:
             path: "/admin/*"
         - http:
             path: "/public/*"
-    - name: for-public   # Allow inbound HTTP GET requests to "/public" from Pods with label "app=client".
+    - name: for-public   # Allow inbound HTTP GET requests to "/public" from everyone.
       action: Allow      # All other inbound traffic will be automatically dropped.
       l7Protocols:
         - http:
@@ -156,7 +156,7 @@ spec:
 The following NetworkPolicy prevents applications from accessing unauthorized domains:
 
 ```yaml
-apiVersion: crd.antrea.io/v1alpha1
+apiVersion: crd.antrea.io/v1beta1
 kind: ClusterNetworkPolicy
 metadata:
   name: allow-web-access-to-internal-domain
@@ -185,7 +185,7 @@ spec:
 The following NetworkPolicy blocks network traffic using an unauthorized application protocol regardless of the port used.
 
 ```yaml
-apiVersion: crd.antrea.io/v1alpha1
+apiVersion: crd.antrea.io/v1beta1
 kind: NetworkPolicy
 metadata:
   name: allow-http-only
@@ -208,7 +208,7 @@ spec:
 An example layer 7 NetworkPolicy for the TLS protocol is like below:
 
 ```yaml
-apiVersion: crd.antrea.io/v1alpha1
+apiVersion: crd.antrea.io/v1beta1
 kind: NetworkPolicy
 metadata:
   name: ingress-allow-tls-handshake
@@ -241,7 +241,7 @@ exact matches and wildcards are supported, e.g. `*.foo.com`, `*.foo.*`, `foo.bar
 The following NetworkPolicy prevents applications from accessing unauthorized SSL/TLS server names:
 
 ```yaml
-apiVersion: crd.antrea.io/v1alpha1
+apiVersion: crd.antrea.io/v1beta1
 kind: ClusterNetworkPolicy
 metadata:
   name: allow-tls-handshake-to-internal
@@ -270,7 +270,7 @@ spec:
 The following NetworkPolicy blocks network traffic using an unauthorized application protocol regardless of the port used.
 
 ```yaml
-apiVersion: crd.antrea.io/v1alpha1
+apiVersion: crd.antrea.io/v1beta1
 kind: NetworkPolicy
 metadata:
   name: allow-tls-only
@@ -292,9 +292,38 @@ spec:
 
 Layer 7 traffic that matches the NetworkPolicy will be logged in an event
 triggered log file (`/var/log/antrea/networkpolicy/l7engine/eve-YEAR-MONTH-DAY.json`).
-The event type for this log is `alert`. If `enableLogging` is set for the rule,
+Logs are categorized by **event_type**. The event type for allowed traffic is `http`,
+for dropped traffic it is `alert`. If `enableLogging` is set for the rule, dropped
 packets that match the rule will also be logged in addition to the event with
-event type `packet`. Below is an example of the two event types.
+event type `packet`. Below are examples for allow, drop, packet scenarios.
+
+Allow ingress from client (10.10.1.8) to web (10.10.1.7/public/*)
+
+```json
+{
+  "timestamp": "2024-02-22T21:26:07.074791+0000",
+  "flow_id": 757085628206447,
+  "in_iface": "antrea-l7-tap0",
+  "event_type": "http",
+  "vlan": [1],
+  "src_ip": "10.10.1.8",
+  "src_port": 44132,
+  "dest_ip": "10.10.1.7",
+  "dest_port": 80,
+  "proto": "TCP",
+  "tx_id": 0,
+  "http": {
+      "hostname": "10.10.1.7",
+      "url": "/public/main.html",
+      "http_user_agent": "Wget/1.21.1",
+      "http_content_type": "text/html",
+      "http_method": "GET",
+      "protocol": "HTTP/1.1",
+      "status": 404,
+      "length": 153
+  }
+}
+```
 
 Deny ingress from client (10.10.1.5) to web (10.10.1.4/admin)
 
@@ -340,6 +369,8 @@ Deny ingress from client (10.10.1.5) to web (10.10.1.4/admin)
   }
 }
 ```
+
+Additional packet log when `enableLogging` is set
 
 ```json
 {

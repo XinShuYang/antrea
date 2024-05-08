@@ -76,7 +76,10 @@ data:
             clusterUUID String,
             trusted UInt8 DEFAULT 0,
             egressName String,
-            egressIP String
+            egressIP String,
+            appProtocolName String,
+            httpVals String,
+            egressNodeName String
         ) engine=MergeTree
         ORDER BY (timeInserted, flowEndSeconds)
         TTL timeInserted + INTERVAL 1 HOUR

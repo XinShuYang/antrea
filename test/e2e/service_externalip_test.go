@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,10 +33,10 @@ import (
 	"k8s.io/client-go/util/retry"
 	utilnet "k8s.io/utils/net"
 
+	"antrea.io/antrea/pkg/agent/apis"
 	antreaagenttypes "antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/apis/crd/v1beta1"
 	"antrea.io/antrea/pkg/features"
-	"antrea.io/antrea/pkg/querier"
 )
 
 func TestServiceExternalIP(t *testing.T) {
@@ -207,8 +206,8 @@ func testServiceExternalTrafficPolicyLocal(t *testing.T, data *TestData) {
 			var err error
 			var service *v1.Service
 			var eps *v1.Endpoints
-			ipPool := data.createExternalIPPool(t, "test-service-pool-", tt.ipRange, tt.nodeSelector.MatchExpressions, tt.nodeSelector.MatchLabels)
-			defer data.crdClient.CrdV1alpha2().ExternalIPPools().Delete(context.TODO(), ipPool.Name, metav1.DeleteOptions{})
+			ipPool := data.createExternalIPPool(t, "test-service-pool-", tt.ipRange, nil, tt.nodeSelector.MatchExpressions, tt.nodeSelector.MatchLabels)
+			defer data.crdClient.CrdV1beta1().ExternalIPPools().Delete(context.TODO(), ipPool.Name, metav1.DeleteOptions{})
 
 			annotation := map[string]string{
 				antreaagenttypes.ServiceExternalIPPoolAnnotationKey: ipPool.Name,
@@ -324,8 +323,8 @@ func testServiceWithExternalIPCRUD(t *testing.T, data *TestData) {
 			}
 			var err error
 			var service *v1.Service
-			ipPool := data.createExternalIPPool(t, "crud-pool-", tt.ipRange, tt.nodeSelector.MatchExpressions, tt.nodeSelector.MatchLabels)
-			defer data.crdClient.CrdV1alpha2().ExternalIPPools().Delete(context.TODO(), ipPool.Name, metav1.DeleteOptions{})
+			ipPool := data.createExternalIPPool(t, "crud-pool-", tt.ipRange, nil, tt.nodeSelector.MatchExpressions, tt.nodeSelector.MatchLabels)
+			defer data.crdClient.CrdV1beta1().ExternalIPPools().Delete(context.TODO(), ipPool.Name, metav1.DeleteOptions{})
 
 			annotation := map[string]string{
 				antreaagenttypes.ServiceExternalIPPoolAnnotationKey: ipPool.Name,
@@ -344,20 +343,21 @@ func testServiceWithExternalIPCRUD(t *testing.T, data *TestData) {
 
 			checkEIPStatus := func(expectedUsed int) {
 				var gotUsed, gotTotal int
-				err := wait.PollImmediate(200*time.Millisecond, 2*time.Second, func() (done bool, err error) {
-					pool, err := data.crdClient.CrdV1alpha2().ExternalIPPools().Get(context.TODO(), ipPool.Name, metav1.GetOptions{})
-					if err != nil {
-						return false, fmt.Errorf("failed to get ExternalIPPool: %v", err)
-					}
-					gotUsed, gotTotal = pool.Status.Usage.Used, pool.Status.Usage.Total
-					if expectedUsed != pool.Status.Usage.Used {
-						return false, nil
-					}
-					if tt.expectedTotal != pool.Status.Usage.Total {
-						return false, nil
-					}
-					return true, nil
-				})
+				err := wait.PollUntilContextTimeout(context.Background(), 200*time.Millisecond, 2*time.Second, true,
+					func(ctx context.Context) (done bool, err error) {
+						pool, err := data.crdClient.CrdV1beta1().ExternalIPPools().Get(context.TODO(), ipPool.Name, metav1.GetOptions{})
+						if err != nil {
+							return false, fmt.Errorf("failed to get ExternalIPPool: %v", err)
+						}
+						gotUsed, gotTotal = pool.Status.Usage.Used, pool.Status.Usage.Total
+						if expectedUsed != pool.Status.Usage.Used {
+							return false, nil
+						}
+						if tt.expectedTotal != pool.Status.Usage.Total {
+							return false, nil
+						}
+						return true, nil
+					})
 				require.NoError(t, err, "ExternalIPPool status not match: expectedTotal=%d, got=%d, expectedUsed=%d, got=%d", tt.expectedTotal, gotTotal, expectedUsed, gotUsed)
 			}
 			checkEIPStatus(1)
@@ -414,10 +414,10 @@ func testServiceUpdateExternalIP(t *testing.T, data *TestData) {
 				skipIfNotIPv4Cluster(t)
 			}
 
-			originalPool := data.createExternalIPPool(t, "originalpool-", tt.originalIPRange, nil, map[string]string{v1.LabelHostname: tt.originalNode})
-			defer data.crdClient.CrdV1alpha2().ExternalIPPools().Delete(context.TODO(), originalPool.Name, metav1.DeleteOptions{})
-			newPool := data.createExternalIPPool(t, "newpool-", tt.newIPRange, nil, map[string]string{v1.LabelHostname: tt.newNode})
-			defer data.crdClient.CrdV1alpha2().ExternalIPPools().Delete(context.TODO(), newPool.Name, metav1.DeleteOptions{})
+			originalPool := data.createExternalIPPool(t, "originalpool-", tt.originalIPRange, nil, nil, map[string]string{v1.LabelHostname: tt.originalNode})
+			defer data.crdClient.CrdV1beta1().ExternalIPPools().Delete(context.TODO(), originalPool.Name, metav1.DeleteOptions{})
+			newPool := data.createExternalIPPool(t, "newpool-", tt.newIPRange, nil, nil, map[string]string{v1.LabelHostname: tt.newNode})
+			defer data.crdClient.CrdV1beta1().ExternalIPPools().Delete(context.TODO(), newPool.Name, metav1.DeleteOptions{})
 
 			annotation := map[string]string{
 				antreaagenttypes.ServiceExternalIPPoolAnnotationKey: originalPool.Name,
@@ -499,8 +499,8 @@ func testServiceNodeFailure(t *testing.T, data *TestData) {
 					Values:   sets.List(nodeCandidates),
 				},
 			}
-			externalIPPoolTwoNodes := data.createExternalIPPool(t, "pool-with-two-nodes-", tt.ipRange, matchExpressions, nil)
-			defer data.crdClient.CrdV1alpha2().ExternalIPPools().Delete(context.TODO(), externalIPPoolTwoNodes.Name, metav1.DeleteOptions{})
+			externalIPPoolTwoNodes := data.createExternalIPPool(t, "pool-with-two-nodes-", tt.ipRange, nil, matchExpressions, nil)
+			defer data.crdClient.CrdV1beta1().ExternalIPPools().Delete(context.TODO(), externalIPPoolTwoNodes.Name, metav1.DeleteOptions{})
 			annotation := map[string]string{
 				antreaagenttypes.ServiceExternalIPPoolAnnotationKey: externalIPPoolTwoNodes.Name,
 			}
@@ -521,7 +521,7 @@ func testServiceNodeFailure(t *testing.T, data *TestData) {
 				expectedMigratedNode = nodeName(0)
 			}
 			// The Agent on the original Node is paused. Run antctl from the expected migrated Node instead.
-			err = wait.PollImmediate(200*time.Millisecond, 15*time.Second, func() (done bool, err error) {
+			err = wait.PollUntilContextTimeout(context.Background(), 200*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (done bool, err error) {
 				assignedNode, err := data.getServiceAssignedNode(expectedMigratedNode, service)
 				if err != nil {
 					return false, nil
@@ -573,8 +573,8 @@ func testExternalIPAccess(t *testing.T, data *TestData) {
 			}
 			nodes := []string{nodeName(0), nodeName(1)}
 			ipRange := v1beta1.IPRange{CIDR: tt.externalIPCIDR}
-			ipPool := data.createExternalIPPool(t, "ippool-", ipRange, nil, nil)
-			defer data.crdClient.CrdV1alpha2().ExternalIPPools().Delete(context.TODO(), ipPool.Name, metav1.DeleteOptions{})
+			ipPool := data.createExternalIPPool(t, "ippool-", ipRange, nil, nil, nil)
+			defer data.crdClient.CrdV1beta1().ExternalIPPools().Delete(context.TODO(), ipPool.Name, metav1.DeleteOptions{})
 			agnhosts := []string{"agnhost-0", "agnhost-1"}
 			// Create agnhost Pods on each Node.
 			for idx, node := range nodes {
@@ -601,7 +601,7 @@ func testExternalIPAccess(t *testing.T, data *TestData) {
 			waitExternalIPConfigured := func(service *v1.Service) (string, string, error) {
 				var ip string
 				var assignedNode string
-				err := wait.PollImmediate(200*time.Millisecond, 5*time.Second, func() (done bool, err error) {
+				err := wait.PollUntilContextTimeout(context.Background(), 200*time.Millisecond, 5*time.Second, true, func(ctx context.Context) (done bool, err error) {
 					service, err = data.clientset.CoreV1().Services(service.Namespace).Get(context.TODO(), service.Name, metav1.GetOptions{})
 					if err != nil {
 						return false, err
@@ -633,14 +633,14 @@ func testExternalIPAccess(t *testing.T, data *TestData) {
 					// Create a pod in a different netns with the same subnet of the external IP to mock as another Node in the same subnet.
 					cmd, netns := getCommandInFakeExternalNetwork("sleep 3600", tt.clientIPMaskLen, tt.clientIP, tt.localIP)
 
-					baseUrl := net.JoinHostPort(externalIP, strconv.FormatInt(int64(port), 10))
+					baseURL := getHTTPURLFromIPPort(externalIP, port)
 
 					require.NoError(t, NewPodBuilder(tt.clientName, data.testNamespace, agnhostImage).OnNode(host).WithCommand([]string{"sh", "-c", cmd}).InHostNetwork().Privileged().WithMutateFunc(func(pod *v1.Pod) {
 						delete(pod.Labels, "app")
 						// curl will exit immediately if the destination IP is unreachable and will NOT retry despite having retry flags set.
 						// Use an exec readiness probe to ensure the route is configured to the interface.
 						// Refer to https://github.com/curl/curl/issues/1603.
-						probeCmd := strings.Split(fmt.Sprintf("ip netns exec %s curl -s %s", netns, baseUrl), " ")
+						probeCmd := strings.Split(fmt.Sprintf("ip netns exec %s curl -s %s", netns, baseURL), " ")
 						pod.Spec.Containers[0].ReadinessProbe = &v1.Probe{
 							ProbeHandler: v1.ProbeHandler{
 								Exec: &v1.ExecAction{
@@ -663,8 +663,8 @@ func testExternalIPAccess(t *testing.T, data *TestData) {
 					require.NoError(t, err)
 					defer data.DeletePodAndWait(defaultTimeout, tt.clientName, data.testNamespace)
 
-					hostNameUrl := fmt.Sprintf("%s/%s", baseUrl, "hostname")
-					probeCmd := fmt.Sprintf("ip netns exec %s curl --connect-timeout 1 --retry 5 --retry-connrefused %s", netns, hostNameUrl)
+					hostNameURL := fmt.Sprintf("%s/hostname", baseURL)
+					probeCmd := fmt.Sprintf("ip netns exec %s curl --connect-timeout 1 --retry 5 --retry-connrefused %s", netns, hostNameURL)
 					hostname, stderr, err := data.RunCommandFromPod(data.testNamespace, tt.clientName, "", []string{"sh", "-c", probeCmd})
 					assert.NoError(t, err, "External IP should be able to be connected from remote: %s", stderr)
 
@@ -674,8 +674,8 @@ func testExternalIPAccess(t *testing.T, data *TestData) {
 								assert.Equal(t, agnhosts[idx], hostname, "Hostname should match when ExternalTrafficPolicy setting to Local")
 							}
 						}
-						clientIPUrl := fmt.Sprintf("%s/clientip", baseUrl)
-						probeClientIPCmd := fmt.Sprintf("ip netns exec %s curl --connect-timeout 1 --retry 5 --retry-connrefused %s", netns, clientIPUrl)
+						clientIPURL := fmt.Sprintf("%s/clientip", baseURL)
+						probeClientIPCmd := fmt.Sprintf("ip netns exec %s curl --connect-timeout 1 --retry 5 --retry-connrefused %s", netns, clientIPURL)
 						clientIPPort, stderr, err := data.RunCommandFromPod(data.testNamespace, tt.clientName, "", []string{"sh", "-c", probeClientIPCmd})
 						assert.NoError(t, err, "External IP should be able to be connected from remote: %s", stderr)
 						clientIP, _, err := net.SplitHostPort(clientIPPort)
@@ -702,7 +702,7 @@ func (data *TestData) getServiceAssignedNode(node string, service *v1.Service) (
 	if err != nil {
 		return "", err
 	}
-	var serviceExternalIPInfo []querier.ServiceExternalIPInfo
+	var serviceExternalIPInfo []apis.ServiceExternalIPInfo
 	if err := json.Unmarshal([]byte(stdout), &serviceExternalIPInfo); err != nil {
 		return "", err
 	}
@@ -714,7 +714,7 @@ func (data *TestData) getServiceAssignedNode(node string, service *v1.Service) (
 
 func (data *TestData) waitForServiceConfigured(service *v1.Service, expectedExternalIP string, expectedNodeName string) (*v1.Service, string, error) {
 	var assignedNode string
-	err := wait.PollImmediate(200*time.Millisecond, 15*time.Second, func() (done bool, err error) {
+	err := wait.PollUntilContextTimeout(context.Background(), 200*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (done bool, err error) {
 		service, err = data.clientset.CoreV1().Services(service.Namespace).Get(context.TODO(), service.Name, metav1.GetOptions{})
 		if err != nil {
 			return false, err

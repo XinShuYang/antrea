@@ -59,6 +59,9 @@ var (
 		"flowType",
 		"egressName",
 		"egressIP",
+		"appProtocolName",
+		"httpVals",
+		"egressNodeName",
 	}
 	AntreaInfoElementsIPv4 = append(AntreaInfoElementsCommon, []string{"destinationClusterIPv4"}...)
 	AntreaInfoElementsIPv6 = append(AntreaInfoElementsCommon, []string{"destinationClusterIPv6"}...)
@@ -67,6 +70,7 @@ var (
 		"flowEndSeconds",
 		"flowEndReason",
 		"tcpState",
+		"httpVals",
 	}
 	StatsElementList = []string{
 		"octetDeltaCount",

@@ -35,7 +35,7 @@ import (
 
 	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
-	oftest "antrea.io/antrea/pkg/agent/openflow/testing"
+	opstest "antrea.io/antrea/pkg/agent/openflow/operations/testing"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/apis/controlplane/v1beta2"
 	crdv1beta1 "antrea.io/antrea/pkg/apis/crd/v1beta1"
@@ -464,7 +464,6 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 				"cookie=0x1020000000000, table=AntreaPolicyIngressRule, priority=201,reg1=0x2 actions=conjunction(13,2/3)",
 				"cookie=0x1020000000000, table=AntreaPolicyIngressRule, priority=100,reg1=0x3 actions=conjunction(11,2/3)",
 				"cookie=0x1020000000000, table=AntreaPolicyIngressRule, priority=200,ip,nw_src=192.168.1.40 actions=conjunction(12,1/3)",
-
 				"cookie=0x1020000000000, table=AntreaPolicyIngressRule, priority=100,tcp,tp_src=32800 actions=conjunction(14,3/3)",
 				"cookie=0x1020000000000, table=IngressDefaultRule, priority=200,reg1=0x1,tun_id=16777215 actions=drop",
 				"cookie=0x1020000000000, table=IngressDefaultRule, priority=200,reg1=0x2,tun_id=16777215 actions=drop",
@@ -479,7 +478,7 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			mockOperations := oftest.NewMockOFEntryOperations(ctrl)
+			mockOperations := opstest.NewMockOFEntryOperations(ctrl)
 
 			c := newFakeClient(mockOperations, true, false, config.K8sNode, config.TrafficEncapModeEncap)
 			defer resetPipelines()
@@ -587,7 +586,7 @@ func BenchmarkBatchInstallPolicyRuleFlows(b *testing.B) {
 	defer resetPipelines()
 	c = prepareClient(ctrl, false)
 	// Make it return error so no change gets committed to cache.
-	mockOperations := oftest.NewMockOFEntryOperations(ctrl)
+	mockOperations := opstest.NewMockOFEntryOperations(ctrl)
 	mockOperations.EXPECT().AddAll(gomock.Any()).Return(errors.New("fake error")).AnyTimes()
 	c.ofEntryOperations = mockOperations
 
@@ -1031,7 +1030,7 @@ func prepareClient(ctrl *gomock.Controller, dualStack bool) *client {
 		ipProtocols: ipProtocols,
 	}
 	c.cookieAllocator = cookie.NewAllocator(0)
-	m := oftest.NewMockOFEntryOperations(ctrl)
+	m := opstest.NewMockOFEntryOperations(ctrl)
 	m.EXPECT().AddAll(gomock.Any()).Return(nil).AnyTimes()
 	m.EXPECT().DeleteAll(gomock.Any()).Return(nil).AnyTimes()
 	c.ofEntryOperations = m
@@ -1404,7 +1403,7 @@ func networkPolicyInitFlows(ovsMeterSupported, externalNodeEnabled, l7NetworkPol
 		initFlows = append(initFlows,
 			"cookie=0x1020000000000, table=Classifier, priority=200,in_port=11,vlan_tci=0x1000/0x1000 actions=pop_vlan,set_field:0x6/0xf->reg0,goto_table:L3Forwarding",
 			"cookie=0x1020000000000, table=TrafficControl, priority=210,reg0=0x200006/0x60000f actions=goto_table:Output",
-			"cookie=0x1020000000000, table=Output, priority=211,ct_mark=0x80/0x80,reg0=0x200000/0x600000 actions=push_vlan:0x8100,move:NXM_NX_CT_LABEL[64..75]->OXM_OF_VLAN_VID[0..11],output:10",
+			"cookie=0x1020000000000, table=Output, priority=212,ct_mark=0x80/0x80,reg0=0x200000/0x600000 actions=push_vlan:0x8100,move:NXM_NX_CT_LABEL[64..75]->OXM_OF_VLAN_VID[0..11],output:10",
 		)
 	}
 	return initFlows
@@ -1537,7 +1536,7 @@ func Test_NewDNSPacketInConjunction(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				ctrl := gomock.NewController(t)
-				m := oftest.NewMockOFEntryOperations(ctrl)
+				m := opstest.NewMockOFEntryOperations(ctrl)
 				bridge := mocks.NewMockBridge(ctrl)
 				fc := newFakeClient(m, tc.enableIPv4, tc.enableIPv6, config.K8sNode, config.TrafficEncapModeEncap, setEnableOVSMeters(ovsMetersSupported))
 				defer resetPipelines()

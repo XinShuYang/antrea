@@ -1,5 +1,40 @@
 # Changelog 1.14
 
+## 1.14.3 - 2024-03-29
+
+### Changed
+
+- Stop using `projects.registry.vmware.com` for user-facing images. ([#6073](https://github.com/antrea-io/antrea/pull/6073), [@antoninbas])
+- Persist TLS certificate and key of antrea-controller and periodically sync the CA cert to improve robustness. ([#5955](https://github.com/antrea-io/antrea/pull/5955), [@tnqn])
+- Disable cgo for all Antrea binaries. ([#5988](https://github.com/antrea-io/antrea/pull/5988), [@antoninbas])
+
+### Fixed
+
+- Disable `libcapng` to make logrotate run as root in UBI images to fix an OVS crash issue. ([#6052](https://github.com/antrea-io/antrea/pull/6052), [@xliuxu])
+- Fix nil pointer dereference when ClusterGroup/Group is used in NetworkPolicy controller. ([#6077](https://github.com/antrea-io/antrea/pull/6077), [@tnqn])
+- Fix race condition in agent Traceflow controller when a tag is associated again with a new Traceflow before the old Traceflow deletion event is processed. ([#5954](https://github.com/antrea-io/antrea/pull/5954), [@tnqn])
+- Change the maximum flags from 7 to 255 to fix the wrong TCP flags validation issue in Traceflow CRD. ([#6050](https://github.com/antrea-io/antrea/pull/6050), [@gran-vmv])
+- Update maximum number of buckets to 700 in OVS group add/insert_bucket message. ([#5942](https://github.com/antrea-io/antrea/pull/5942), [@hongliangl])
+- Use 65000 MTU upper bound for interfaces in encap mode in case of large packets being dropped unexpectedly. ([#5997](https://github.com/antrea-io/antrea/pull/5997), [@antoninbas])
+
+## 1.14.2 - 2024-01-26
+
+### Changed
+
+- Enable IPv4/IPv6 forwarding on demand automatically to eliminate the need for user intervention or dependencies on other components. ([#5833](https://github.com/antrea-io/antrea/pull/5833), [@tnqn])
+
+### Fixed
+
+- Store NetworkPolicy in filesystem as fallback data source to let antrea-agent fallback to use the files if it can't connect to antrea-controller on startup. ([#5739](https://github.com/antrea-io/antrea/pull/5739), [@tnqn])
+- Support Local ExternalTrafficPolicy for Services with ExternalIPs when Antrea proxyAll mode is enabled. ([#5795](https://github.com/antrea-io/antrea/pull/5795), [@tnqn])
+- Enable Pod network after realizing initial NetworkPolicies to avoid traffic from/to Pods bypassing NetworkPolicy when antrea-agent restarts. ([#5777](https://github.com/antrea-io/antrea/pull/5777), [@tnqn])
+- Fix Clean-AntreaNetwork.ps1 invocation in Prepare-AntreaAgent.ps1 for containerized OVS on Windows. ([#5859](https://github.com/antrea-io/antrea/pull/5859), [@antoninbas])
+- Add missing space to kubelet args in Prepare-Node.ps1 so that kubelet can start successfully on Windows. ([#5858](https://github.com/antrea-io/antrea/pull/5858), [@antoninbas])
+- Update Windows OVS download link to remove the redundant certificate to fix OVS driver installation failure. ([#5839](https://github.com/antrea-io/antrea/pull/5839), [@XinShuYang])
+- Add DHCP IP retries in PrepareHNSNetwork on Windows to fix the potential race condition issue where acquiring a DHCP IP address may fail after CreateHNSNetwork. ([#5819](https://github.com/antrea-io/antrea/pull/5819), [@XinShuYang])
+- Fix `antctl trace-packet` command failure which is caused by arguments missing issue. ([#5838](https://github.com/antrea-io/antrea/pull/5838), [@luolanzone])
+- Fix incorrect MTU configurations for the WireGuard encryption mode and GRE tunnel mode. ([#5880](https://github.com/antrea-io/antrea/pull/5880) [#5926](https://github.com/antrea-io/antrea/pull/5926), [@hjiajing] [@tnqn])
+
 ## 1.14.1 - 2023-11-21
 
 ### Fixed
@@ -72,6 +107,7 @@
 [@AJPL88]: https://github.com/AJPL88
 [@Atish-iaf]: https://github.com/Atish-iaf
 [@Dyanngg]: https://github.com/Dyanngg
+[@gran-vmv]: https://github.com/gran-vmv
 [@GraysonWu]: https://github.com/GraysonWu
 [@NamanAg30]: https://github.com/NamanAg30
 [@XinShuYang]: https://github.com/XinShuYang

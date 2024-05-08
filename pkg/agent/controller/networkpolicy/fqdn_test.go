@@ -45,7 +45,7 @@ func newMockFQDNController(t *testing.T, controller *gomock.Controller, dnsServe
 		dirtyRuleHandler,
 		true,
 		false,
-		config.HostGatewayOFPort,
+		config.DefaultHostGatewayOFPort,
 	)
 	require.NoError(t, err)
 	return f, mockOFClient
@@ -62,59 +62,103 @@ func TestAddFQDNRule(t *testing.T) {
 		name                       string
 		existingSelectorToRuleIDs  map[fqdnSelectorItem]sets.Set[string]
 		existingDNSCache           map[string]dnsMeta
-		existingFQDNToSelectorItem map[string]map[fqdnSelectorItem]struct{}
+		existingFQDNToSelectorItem map[string]sets.Set[fqdnSelectorItem]
+		existingFQDNToSelectedPods map[string]sets.Set[int32]
 		ruleID                     string
 		fqdns                      []string
 		podAddrs                   sets.Set[int32]
 		finalSelectorToRuleIDs     map[fqdnSelectorItem]sets.Set[string]
-		finalFQDNToSelectorItem    map[string]map[fqdnSelectorItem]struct{}
+		finalFQDNToSelectorItem    map[string]sets.Set[fqdnSelectorItem]
 		addressAdded               bool
 		addressRemoved             bool
+		enqueuedFQDNs              []string
 	}{
 		{
-			"addNewFQDNSelector",
-			nil,
-			nil,
-			nil,
-			"mockRule1",
-			[]string{"test.antrea.io"},
-			sets.New[int32](1),
-			map[fqdnSelectorItem]sets.Set[string]{
+			name:     "addNewMatchNameSelector",
+			ruleID:   "mockRule1",
+			fqdns:    []string{"test.antrea.io"},
+			podAddrs: sets.New[int32](1),
+			finalSelectorToRuleIDs: map[fqdnSelectorItem]sets.Set[string]{
 				selectorItem1: sets.New[string]("mockRule1"),
 			},
-			map[string]map[fqdnSelectorItem]struct{}{
-				"test.antrea.io": {selectorItem1: struct{}{}},
+			finalFQDNToSelectorItem: map[string]sets.Set[fqdnSelectorItem]{
+				"test.antrea.io": sets.New(selectorItem1),
 			},
-			true,
-			false,
+			addressAdded:   true,
+			addressRemoved: false,
+			enqueuedFQDNs:  []string{"test.antrea.io"},
 		},
 		{
-			"addNewFQDNSelectorMatchExisting",
-			map[fqdnSelectorItem]sets.Set[string]{
+			name: "addSameMatchNameSelector",
+			existingSelectorToRuleIDs: map[fqdnSelectorItem]sets.Set[string]{
 				selectorItem1: sets.New[string]("mockRule1"),
 			},
-			map[string]dnsMeta{
+			existingDNSCache: map[string]dnsMeta{
 				"test.antrea.io": {},
 			},
-			map[string]map[fqdnSelectorItem]struct{}{
-				"test.antrea.io": {
-					selectorItem1: struct{}{},
-				},
+			existingFQDNToSelectorItem: map[string]sets.Set[fqdnSelectorItem]{
+				"test.antrea.io": sets.New(selectorItem1),
 			},
-			"mockRule2",
-			[]string{"*antrea.io"},
-			sets.New[int32](2),
-			map[fqdnSelectorItem]sets.Set[string]{
+			existingFQDNToSelectedPods: map[string]sets.Set[int32]{
+				"test.antrea.io": sets.New[int32](1),
+			},
+			ruleID:   "mockRule1",
+			fqdns:    []string{"test.antrea.io"},
+			podAddrs: sets.New[int32](1),
+			finalSelectorToRuleIDs: map[fqdnSelectorItem]sets.Set[string]{
+				selectorItem1: sets.New[string]("mockRule1"),
+			},
+			finalFQDNToSelectorItem: map[string]sets.Set[fqdnSelectorItem]{
+				"test.antrea.io": sets.New(selectorItem1),
+			},
+			addressAdded:   false,
+			addressRemoved: false,
+		},
+		{
+			name: "addNewMatchNameSelectorMatchingExisting",
+			existingSelectorToRuleIDs: map[fqdnSelectorItem]sets.Set[string]{
+				selectorItem1: sets.New[string]("mockRule1"),
+			},
+			existingDNSCache: map[string]dnsMeta{
+				"test.antrea.io": {},
+			},
+			existingFQDNToSelectorItem: map[string]sets.Set[fqdnSelectorItem]{
+				"test.antrea.io": sets.New(selectorItem1),
+			},
+			ruleID:   "mockRule2",
+			fqdns:    []string{"test.antrea.io"},
+			podAddrs: sets.New[int32](2),
+			finalSelectorToRuleIDs: map[fqdnSelectorItem]sets.Set[string]{
+				selectorItem1: sets.New[string]("mockRule1", "mockRule2"),
+			},
+			finalFQDNToSelectorItem: map[string]sets.Set[fqdnSelectorItem]{
+				"test.antrea.io": sets.New(selectorItem1),
+			},
+			addressAdded:   true,
+			addressRemoved: false,
+		},
+		{
+			name: "addNewMatchRegexSelectorMatchExisting",
+			existingSelectorToRuleIDs: map[fqdnSelectorItem]sets.Set[string]{
+				selectorItem1: sets.New[string]("mockRule1"),
+			},
+			existingDNSCache: map[string]dnsMeta{
+				"test.antrea.io": {},
+			},
+			existingFQDNToSelectorItem: map[string]sets.Set[fqdnSelectorItem]{
+				"test.antrea.io": sets.New(selectorItem1),
+			},
+			ruleID:   "mockRule2",
+			fqdns:    []string{"*antrea.io"},
+			podAddrs: sets.New[int32](2),
+			finalSelectorToRuleIDs: map[fqdnSelectorItem]sets.Set[string]{
 				selectorItem1: sets.New[string]("mockRule1"),
 				selectorItem2: sets.New[string]("mockRule2")},
-			map[string]map[fqdnSelectorItem]struct{}{
-				"test.antrea.io": {
-					selectorItem1: struct{}{},
-					selectorItem2: struct{}{},
-				},
+			finalFQDNToSelectorItem: map[string]sets.Set[fqdnSelectorItem]{
+				"test.antrea.io": sets.New(selectorItem1, selectorItem2),
 			},
-			true,
-			false,
+			addressAdded:   true,
+			addressRemoved: false,
 		},
 	}
 	for _, tt := range tests {
@@ -131,12 +175,22 @@ func TestAddFQDNRule(t *testing.T) {
 				f.selectorItemToRuleIDs = tt.existingSelectorToRuleIDs
 				f.fqdnToSelectorItem = tt.existingFQDNToSelectorItem
 			}
+			if tt.existingFQDNToSelectedPods != nil {
+				f.fqdnRuleToSelectedPods = tt.existingFQDNToSelectedPods
+			}
 			if tt.existingDNSCache != nil {
 				f.dnsEntryCache = tt.existingDNSCache
 			}
 			require.NoError(t, f.addFQDNRule(tt.ruleID, tt.fqdns, tt.podAddrs), "Error when adding FQDN rule")
 			assert.Equal(t, tt.finalSelectorToRuleIDs, f.selectorItemToRuleIDs)
 			assert.Equal(t, tt.finalFQDNToSelectorItem, f.fqdnToSelectorItem)
+			var enqueuedFQDNs []string
+			for f.dnsQueryQueue.Len() > 0 {
+				item, _ := f.dnsQueryQueue.Get()
+				f.dnsQueryQueue.Done(item)
+				enqueuedFQDNs = append(enqueuedFQDNs, item.(string))
+			}
+			assert.ElementsMatch(t, tt.enqueuedFQDNs, enqueuedFQDNs)
 		})
 	}
 }
@@ -164,7 +218,7 @@ func TestDeleteFQDNRule(t *testing.T) {
 		ruleID                  string
 		fqdns                   []string
 		finalSelectorToRuleIDs  map[fqdnSelectorItem]sets.Set[string]
-		finalFQDNToSelectorItem map[string]map[fqdnSelectorItem]struct{}
+		finalFQDNToSelectorItem map[string]sets.Set[fqdnSelectorItem]
 		addressRemoved          bool
 	}{
 		{
@@ -182,7 +236,7 @@ func TestDeleteFQDNRule(t *testing.T) {
 			"mockRule1",
 			[]string{"test.antrea.io"},
 			map[fqdnSelectorItem]sets.Set[string]{},
-			map[string]map[fqdnSelectorItem]struct{}{},
+			map[string]sets.Set[fqdnSelectorItem]{},
 			true,
 		},
 		{
@@ -207,10 +261,8 @@ func TestDeleteFQDNRule(t *testing.T) {
 			map[fqdnSelectorItem]sets.Set[string]{
 				selectorItem1: sets.New[string]("mockRule2"),
 			},
-			map[string]map[fqdnSelectorItem]struct{}{
-				"test.antrea.io": {
-					selectorItem1: struct{}{},
-				},
+			map[string]sets.Set[fqdnSelectorItem]{
+				"test.antrea.io": sets.New(selectorItem1),
 			},
 			true,
 		},
@@ -236,10 +288,8 @@ func TestDeleteFQDNRule(t *testing.T) {
 			map[fqdnSelectorItem]sets.Set[string]{
 				selectorItem2: sets.New[string]("mockRule2"),
 			},
-			map[string]map[fqdnSelectorItem]struct{}{
-				"test.antrea.io": {
-					selectorItem2: struct{}{},
-				},
+			map[string]sets.Set[fqdnSelectorItem]{
+				"test.antrea.io": sets.New(selectorItem2),
 			},
 			true,
 		},
@@ -266,10 +316,8 @@ func TestDeleteFQDNRule(t *testing.T) {
 			map[fqdnSelectorItem]sets.Set[string]{
 				selectorItem3: sets.New[string]("mockRule1"),
 			},
-			map[string]map[fqdnSelectorItem]struct{}{
-				"maps.google.com": {
-					selectorItem3: struct{}{},
-				},
+			map[string]sets.Set[fqdnSelectorItem]{
+				"maps.google.com": sets.New(selectorItem3),
 			},
 			true,
 		},
@@ -395,6 +443,10 @@ func TestSyncDirtyRules(t *testing.T) {
 	selectorItem2 := fqdnSelectorItem{
 		matchName: testFQDN2,
 	}
+	testFQDN3 := "*antrea.io"
+	selectorItem3 := fqdnSelectorItem{
+		matchRegex: testFQDN3,
+	}
 	tests := []struct {
 		name                        string
 		fqdnsToSync                 []string
@@ -406,6 +458,17 @@ func TestSyncDirtyRules(t *testing.T) {
 		expectedDirtyRulesRemaining sets.Set[string]
 		expectErr                   bool
 	}{
+		{
+			name:                        "test non-blocking dirty rule sync without address update",
+			fqdnsToSync:                 []string{testFQDN},
+			prevDirtyRules:              sets.New[string](),
+			addressUpdates:              []bool{false},
+			waitChs:                     []chan error{nil},
+			notifications:               []ruleRealizationUpdate{},
+			expectedDirtyRuleSyncCalls:  []string{},
+			expectedDirtyRulesRemaining: sets.New[string](),
+			expectErr:                   false,
+		},
 		{
 			name:                        "test non-blocking dirty rule sync with address update",
 			fqdnsToSync:                 []string{testFQDN},
@@ -482,10 +545,13 @@ func TestSyncDirtyRules(t *testing.T) {
 				dirtyRuleSyncCalls = append(dirtyRuleSyncCalls, s)
 			}
 			f.addFQDNSelector("1", []string{testFQDN})
+			f.addFQDNSelector("1", []string{testFQDN3})
 			f.addFQDNSelector("2", []string{testFQDN})
 			f.addFQDNSelector("2", []string{testFQDN2})
 			f.setFQDNMatchSelector(testFQDN, selectorItem)
 			f.setFQDNMatchSelector(testFQDN2, selectorItem2)
+			f.setFQDNMatchSelector(testFQDN, selectorItem3)
+			f.setFQDNMatchSelector(testFQDN2, selectorItem3)
 			// This simulates failed rule syncs in previous syncDirtyRules() calls
 			if len(tc.prevDirtyRules) > 0 {
 				f.ruleSyncTracker.dirtyRules = tc.prevDirtyRules

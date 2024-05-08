@@ -15,6 +15,7 @@
 package trafficcontrol
 
 import (
+	"context"
 	"crypto/sha1" // #nosec G505: not used for security purposes
 	"encoding/binary"
 	"encoding/hex"
@@ -589,16 +590,17 @@ func (c *Controller) createOVSInternalPort(portName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if pollErr := wait.PollImmediate(time.Second, 5*time.Second, func() (bool, error) {
-		_, _, err := util.SetLinkUp(portName)
-		if err == nil {
-			return true, nil
-		}
-		if _, ok := err.(util.LinkNotFound); ok {
-			return false, nil
-		}
-		return false, err
-	}); pollErr != nil {
+	if pollErr := wait.PollUntilContextTimeout(context.TODO(), time.Second, 5*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			_, _, err := util.SetLinkUp(portName)
+			if err == nil {
+				return true, nil
+			}
+			if _, ok := err.(util.LinkNotFound); ok {
+				return false, nil
+			}
+			return false, err
+		}); pollErr != nil {
 		return "", pollErr
 	}
 	return portUUID, nil
@@ -920,7 +922,12 @@ func (c *Controller) syncTrafficControl(tcName string) error {
 		for _, port := range sets.List(newOfPorts) {
 			ofPorts = append(ofPorts, uint32(port))
 		}
-		if err = c.ofClient.InstallTrafficControlMarkFlows(tc.Name, ofPorts, targetOFPort, tc.Spec.Direction, tc.Spec.Action); err != nil {
+		if err = c.ofClient.InstallTrafficControlMarkFlows(tc.Name,
+			ofPorts,
+			targetOFPort,
+			tc.Spec.Direction,
+			tc.Spec.Action,
+			types.TrafficControlFlowPriorityMedium); err != nil {
 			return err
 		}
 	}

@@ -40,7 +40,7 @@ import (
 	policyv1a1informers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
 
 	mcinformers "antrea.io/antrea/multicluster/pkg/client/informers/externalversions"
-	antreaapis "antrea.io/antrea/pkg/apis"
+	"antrea.io/antrea/pkg/apis"
 	"antrea.io/antrea/pkg/apiserver"
 	"antrea.io/antrea/pkg/apiserver/certificate"
 	"antrea.io/antrea/pkg/apiserver/openapi"
@@ -117,6 +117,7 @@ var allowedPaths = []string{
 	"/validate/supportbundlecollection",
 	"/validate/traceflow",
 	"/convert/clustergroup",
+	"/convert/ippool",
 }
 
 // run starts Antrea Controller with the given options and waits for termination signal.
@@ -149,7 +150,7 @@ func run(o *Options) error {
 	egressInformer := crdInformerFactory.Crd().V1beta1().Egresses()
 	externalIPPoolInformer := crdInformerFactory.Crd().V1beta1().ExternalIPPools()
 	externalNodeInformer := crdInformerFactory.Crd().V1alpha1().ExternalNodes()
-	ipPoolInformer := crdInformerFactory.Crd().V1alpha2().IPPools()
+	ipPoolInformer := crdInformerFactory.Crd().V1beta1().IPPools()
 	adminNPInformer := policyInformerFactory.Policy().V1alpha1().AdminNetworkPolicies()
 	banpInformer := policyInformerFactory.Policy().V1alpha1().BaselineAdminNetworkPolicies()
 
@@ -238,7 +239,7 @@ func run(o *Options) error {
 	var csrLister csrlisters.CertificateSigningRequestLister
 	if features.DefaultFeatureGate.Enabled(features.IPsecCertAuth) {
 		csrInformer = csrinformers.NewFilteredCertificateSigningRequestInformer(client, 0, nil, func(listOptions *metav1.ListOptions) {
-			listOptions.FieldSelector = fields.OneTermEqualSelector("spec.signerName", antreaapis.AntreaIPsecCSRSignerName).String()
+			listOptions.FieldSelector = fields.OneTermEqualSelector("spec.signerName", apis.AntreaIPsecCSRSignerName).String()
 		})
 		csrLister = csrlisters.NewCertificateSigningRequestLister(csrInformer.GetIndexer())
 
@@ -301,6 +302,7 @@ func run(o *Options) error {
 		networkPolicyController,
 		networkPolicyStatusController,
 		egressController,
+		externalIPPoolController,
 		statsAggregator,
 		bundleCollectionController,
 		traceflowController,
@@ -494,6 +496,7 @@ func createAPIServerConfig(kubeconfig string,
 	npController *networkpolicy.NetworkPolicyController,
 	networkPolicyStatusController *networkpolicy.StatusController,
 	egressController *egress.EgressController,
+	externalIPPoolController *externalippool.ExternalIPPoolController,
 	statsAggregator *stats.Aggregator,
 	bundleCollectionStore *supportbundlecollection.Controller,
 	traceflowController *traceflow.Controller,
@@ -531,13 +534,16 @@ func createAPIServerConfig(kubeconfig string,
 		return nil, err
 	}
 
-	if err := os.MkdirAll(path.Dir(apiserver.TokenPath), os.ModeDir); err != nil {
+	if err := os.MkdirAll(path.Dir(apis.APIServerLoopbackTokenPath), os.ModeDir); err != nil {
 		return nil, fmt.Errorf("error when creating dirs of token file: %v", err)
 	}
-	if err := os.WriteFile(apiserver.TokenPath, []byte(serverConfig.LoopbackClientConfig.BearerToken), 0600); err != nil {
+	if err := os.WriteFile(apis.APIServerLoopbackTokenPath, []byte(serverConfig.LoopbackClientConfig.BearerToken), 0600); err != nil {
 		return nil, fmt.Errorf("error when writing loopback access token to file: %v", err)
 	}
 	serverConfig.OpenAPIConfig = genericapiserver.DefaultOpenAPIConfig(
+		openapi.GetOpenAPIDefinitions,
+		genericopenapi.NewDefinitionNamer(apiserver.Scheme))
+	serverConfig.OpenAPIV3Config = genericapiserver.DefaultOpenAPIV3Config(
 		openapi.GetOpenAPIDefinitions,
 		genericopenapi.NewDefinitionNamer(apiserver.Scheme))
 	serverConfig.OpenAPIConfig.Info.Title = "Antrea"
@@ -563,6 +569,7 @@ func createAPIServerConfig(kubeconfig string,
 		endpointQuerier,
 		npController,
 		egressController,
+		externalIPPoolController,
 		bundleCollectionStore,
 		traceflowController), nil
 }

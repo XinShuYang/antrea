@@ -33,11 +33,16 @@ _usage="Usage: $0 [--encap-mode <mode>] [--ip-family <v4|v6|dual>] [--coverage] 
         --multicast                   Enables Multicast.
         --flow-visibility             Only run flow visibility related e2e tests.
         --extra-network               Creates an extra network that worker Nodes will connect to. Cannot be specified with the hybrid mode.
+        --extra-vlan                  Creates an subnet-based VLAN that worker Nodes will connect to.
+        --deploy-external-server      Deploy a container running as an external server for the cluster.
         --skip                        A comma-separated list of keywords, with which tests should be skipped.
         --coverage                    Enables measure Antrea code coverage when run e2e tests on kind.
         --setup-only                  Only perform setting up the cluster and run test.
         --cleanup-only                Only perform cleaning up the cluster.
         --test-only                   Only run test on current cluster. Not set up/clean up the cluster.
+        --antrea-controller-image     The Antrea controller image to use for the test. Default is antrea/antrea-controller-ubuntu.
+        --antrea-agent-image          The Antrea agent image to use for the test. Default is antrea/antrea-agent-ubuntu.
+        --antrea-image-tag            The Antrea image tag to use for the test. Default is latest.
         --help, -h                    Print this message and exit.
 "
 
@@ -72,12 +77,18 @@ node_ipam=false
 multicast=false
 flow_visibility=false
 extra_network=false
+extra_vlan=false
+deploy_external_server=false
 coverage=false
 skiplist=""
 setup_only=false
 cleanup_only=false
 test_only=false
 run=""
+antrea_controller_image="antrea/antrea-controller-ubuntu"
+antrea_agent_image="antrea/antrea-agent-ubuntu"
+use_non_default_images=false
+antrea_image_tag="latest"
 while [[ $# -gt 0 ]]
 do
 key="$1"
@@ -123,6 +134,14 @@ case $key in
     extra_network=true
     shift
     ;;
+    --extra-vlan)
+    extra_vlan=true
+    shift
+    ;;
+    --deploy-external-server)
+    deploy_external_server=true
+    shift
+    ;;
     --coverage)
     coverage=true
     shift
@@ -142,6 +161,20 @@ case $key in
     --test-only)
     test_only=true
     shift
+    ;;
+    --antrea-controller-image)
+    antrea_controller_image="$2"
+    use_non_default_images=true
+    shift 2
+    ;;
+    --antrea-agent-image)
+    antrea_agent_image="$2"
+    use_non_default_images=true
+    shift 2
+    ;;
+    --antrea-image-tag)
+    antrea_image_tag="$2"
+    shift 2
     ;;
     -h|--help)
     print_usage
@@ -174,6 +207,11 @@ if [[ $cleanup_only == "true" ]];then
   exit 0
 fi
 
+if $use_non_default_images && $coverage; then
+    echoerr "Cannot use non-default images when coverage is enabled"
+    exit 1
+fi
+
 trap "quit" INT EXIT
 
 manifest_args="$manifest_args --verbose-log"
@@ -193,20 +231,22 @@ if $multicast; then
     manifest_args="$manifest_args --multicast"
 fi
 if $flow_visibility; then
-    manifest_args="$manifest_args --feature-gates FlowExporter=true --extra-helm-values-file $FLOW_VISIBILITY_HELM_VALUES"
+    manifest_args="$manifest_args --feature-gates FlowExporter=true,L7FlowExporter=true --extra-helm-values-file $FLOW_VISIBILITY_HELM_VALUES"
 fi
 
 COMMON_IMAGES_LIST=("registry.k8s.io/e2e-test-images/agnhost:2.29" \
-                    "projects.registry.vmware.com/antrea/busybox"  \
-                    "projects.registry.vmware.com/antrea/nginx:1.21.6-alpine" \
-                    "projects.registry.vmware.com/antrea/toolbox:1.1-0")
+                    "antrea/nginx:1.21.6-alpine" \
+                    "antrea/toolbox:1.3-0")
 
-FLOW_VISIBILITY_IMAGE_LIST=("projects.registry.vmware.com/antrea/ipfix-collector:v0.6.2" \
-                            "projects.registry.vmware.com/antrea/clickhouse-operator:0.21.0" \
-                            "projects.registry.vmware.com/antrea/metrics-exporter:0.21.0" \
-                            "projects.registry.vmware.com/antrea/clickhouse-server:23.4")
+FLOW_VISIBILITY_IMAGE_LIST=("antrea/ipfix-collector:v0.9.0" \
+                            "antrea/clickhouse-operator:0.21.0" \
+                            "antrea/metrics-exporter:0.21.0" \
+                            "antrea/clickhouse-server:23.4")
 if $proxy_all; then
     COMMON_IMAGES_LIST+=("registry.k8s.io/echoserver:1.10")
+fi
+if $flow_visibility; then
+    COMMON_IMAGES_LIST+=("${FLOW_VISIBILITY_IMAGE_LIST[@]}")
 fi
 # Silence CLI suggestions.
 export DOCKER_CLI_HINTS=false
@@ -220,12 +260,13 @@ done
 # The Antrea images should not be pulled, as we want to use the local build.
 if $coverage; then
     manifest_args="$manifest_args --coverage"
-    COMMON_IMAGES_LIST+=("antrea/antrea-ubuntu-coverage:latest")
+    COMMON_IMAGES_LIST+=("${antrea_controller_image}-coverage:${antrea_image_tag}" \
+                         "${antrea_agent_image}-coverage:${antrea_image_tag}")
 else
-    COMMON_IMAGES_LIST+=("antrea/antrea-ubuntu:latest")
+    COMMON_IMAGES_LIST+=("${antrea_controller_image}:${antrea_image_tag}" \
+                         "${antrea_agent_image}:${antrea_image_tag}")
 fi
 if $flow_visibility; then
-    COMMON_IMAGES_LIST+=("${FLOW_VISIBILITY_IMAGE_LIST[@]}")
     if $coverage; then
         COMMON_IMAGES_LIST+=("antrea/flow-aggregator-coverage:latest")
     else
@@ -234,6 +275,18 @@ if $flow_visibility; then
 fi
 
 printf -v COMMON_IMAGES "%s " "${COMMON_IMAGES_LIST[@]}"
+
+vlan_args=""
+if $extra_vlan; then
+  vlan_args="$vlan_args --vlan-id 10"
+  if [[ "$ipfamily" == "v4" ]]; then
+    vlan_args="$vlan_args --vlan-subnets 172.100.10.1/24"
+  elif [[ "$ipfamily" == "v6" ]]; then
+    vlan_args="$vlan_args --vlan-subnets fd00:172:100:10::1/96"
+  elif [[ "$ipfamily" == "dual" ]]; then
+    vlan_args="$vlan_args --vlan-subnets 172.100.10.1/24,fd00:172:100:10::1/96"
+  fi
+fi
 
 function setup_cluster {
   args=$1
@@ -255,6 +308,8 @@ function setup_cluster {
   if $extra_network && [[ "$mode" != "hybrid" ]]; then
     args="$args --extra-networks \"20.20.30.0/24\""
   fi
+  # Deploy an external server which could be used when testing Pod-to-External traffic.
+  args="$args --deploy-external-server $vlan_args"
 
   echo "creating test bed with args $args"
   eval "timeout 600 $TESTBED_CMD create kind $args"
@@ -265,6 +320,10 @@ function run_test {
   coverage_args=""
   flow_visibility_args=""
 
+  if $use_non_default_images; then
+    export AGENT_IMG_NAME=${antrea_agent_image}
+    export CONTROLLER_IMG_NAME=${antrea_controller_image}
+  fi
   if $coverage; then
       $YML_CMD --encap-mode $current_mode $manifest_args | docker exec -i kind-control-plane dd of=/root/antrea-coverage.yml
       $YML_CMD --ipsec $manifest_args | docker exec -i kind-control-plane dd of=/root/antrea-ipsec-coverage.yml
@@ -288,9 +347,9 @@ function run_test {
       $HELM template "$FLOW_VISIBILITY_CHART" --set "secureConnection.enable=true" | docker exec -i kind-control-plane dd of=/root/flow-visibility-tls.yml
 
       curl -o $CH_OPERATOR_YML https://raw.githubusercontent.com/Altinity/clickhouse-operator/release-0.21.0/deploy/operator/clickhouse-operator-install-bundle.yaml
-      sed -i -e "s|\"image\": \"clickhouse/clickhouse-server:22.3\"|\"image\": \"projects.registry.vmware.com/antrea/clickhouse-server:23.4\"|g" $CH_OPERATOR_YML
-      sed -i -e "s|image: altinity/clickhouse-operator:0.21.0|image: projects.registry.vmware.com/antrea/clickhouse-operator:0.21.0|g" $CH_OPERATOR_YML
-      sed -i -e "s|image: altinity/metrics-exporter:0.21.0|image: projects.registry.vmware.com/antrea/metrics-exporter:0.21.0|g" $CH_OPERATOR_YML
+      sed -i -e "s|\"image\": \"clickhouse/clickhouse-server:22.3\"|\"image\": \"antrea/clickhouse-server:23.4\"|g" $CH_OPERATOR_YML
+      sed -i -e "s|image: altinity/clickhouse-operator:0.21.0|image: antrea/clickhouse-operator:0.21.0|g" $CH_OPERATOR_YML
+      sed -i -e "s|image: altinity/metrics-exporter:0.21.0|image: antrea/metrics-exporter:0.21.0|g" $CH_OPERATOR_YML
       cat $CH_OPERATOR_YML | docker exec -i kind-control-plane dd of=/root/clickhouse-operator-install-bundle.yml
   fi
 
@@ -308,7 +367,12 @@ function run_test {
   if [ -n "$run" ]; then
     RUN_OPT="-run $run"
   fi
-  go test -v -timeout=$timeout $RUN_OPT antrea.io/antrea/test/e2e $flow_visibility_args -provider=kind --logs-export-dir=$ANTREA_LOG_DIR --skip-cases=$skiplist $coverage_args
+
+  external_server_cid=$(docker ps -f name="^antrea-external-server" --format '{{.ID}}')
+  external_server_ips=$(docker inspect $external_server_cid -f '{{.NetworkSettings.Networks.kind.IPAddress}},{{.NetworkSettings.Networks.kind.GlobalIPv6Address}}')
+  EXTRA_ARGS="$vlan_args --external-server-ips $external_server_ips"
+
+  go test -v -timeout=$timeout $RUN_OPT antrea.io/antrea/test/e2e $flow_visibility_args -provider=kind --logs-export-dir=$ANTREA_LOG_DIR --skip-cases=$skiplist $coverage_args $EXTRA_ARGS
 }
 
 if [[ "$mode" == "" ]] || [[ "$mode" == "encap" ]]; then

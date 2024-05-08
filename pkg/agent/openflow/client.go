@@ -39,6 +39,19 @@ import (
 
 const maxRetryForOFSwitch = 5
 
+func tcPriorityToOFPriority(p types.TrafficControlFlowPriority) uint16 {
+	switch p {
+	case types.TrafficControlFlowPriorityHigh:
+		return priorityHigh
+	case types.TrafficControlFlowPriorityMedium:
+		return priorityNormal
+	case types.TrafficControlFlowPriorityLow:
+		return priorityLow
+	default:
+		return 0
+	}
+}
+
 // Client is the interface to program OVS flows for entity connectivity of Antrea.
 type Client interface {
 	// Initialize sets up all basic flows on the specific OVS bridge. It returns a channel which
@@ -231,7 +244,7 @@ type Client interface {
 
 	// RegisterPacketInHandler uses SubscribePacketIn to get PacketIn message and process received
 	// packets through registered handler.
-	RegisterPacketInHandler(packetHandlerReason uint8, packetInHandler interface{})
+	RegisterPacketInHandler(packetHandlerReason uint8, packetInHandler PacketInHandler)
 
 	StartPacketInHandler(stopCh <-chan struct{})
 	// Get traffic metrics of each NetworkPolicy rule.
@@ -309,7 +322,10 @@ type Client interface {
 
 	// UninstallMulticastFlows removes the flow matching the given multicastIP.
 	UninstallMulticastFlows(multicastIP net.IP) error
-
+	// InstallMulticastFlexibleIPAMFlows installs two flows and forwards them to the first table of Multicast Pipeline
+	// when flexibleIPAM is enabled, with one flow matching inbound multicast traffic from the uplink and the other from
+	// the host interface, making multicast packets coming from the host and other Nodes be forward to the OVS multicast pipeline.
+	InstallMulticastFlexibleIPAMFlows() error
 	// InstallMulticastRemoteReportFlows installs flows to forward the IGMP report messages to the other Nodes,
 	// and packetIn the report messages to Antrea Agent which is received via tunnel port.
 	// The OpenFlow group identified by groupID is used to forward packet to all other Nodes in the cluster
@@ -323,7 +339,12 @@ type Client interface {
 		igmp ofutil.Message) error
 
 	// InstallTrafficControlMarkFlows installs the flows to mark the packets for a traffic control rule.
-	InstallTrafficControlMarkFlows(name string, sourceOFPorts []uint32, targetOFPort uint32, direction crdv1alpha2.Direction, action crdv1alpha2.TrafficControlAction) error
+	InstallTrafficControlMarkFlows(name string,
+		sourceOFPorts []uint32,
+		targetOFPort uint32,
+		direction crdv1alpha2.Direction,
+		action crdv1alpha2.TrafficControlAction,
+		priority types.TrafficControlFlowPriority) error
 
 	// UninstallTrafficControlMarkFlows removes the flows for a traffic control rule.
 	UninstallTrafficControlMarkFlows(name string) error
@@ -903,7 +924,8 @@ func (c *client) generatePipelines() {
 			c.enableMulticast,
 			c.proxyAll,
 			c.enableDSR,
-			c.enableTrafficControl)
+			c.enableTrafficControl,
+			c.enableL7FlowExporter)
 		c.activatedFeatures = append(c.activatedFeatures, c.featurePodConnectivity)
 		c.traceableFeatures = append(c.traceableFeatures, c.featurePodConnectivity)
 
@@ -950,8 +972,13 @@ func (c *client) generatePipelines() {
 	}
 
 	if c.enableMulticast {
+		uplinkPort := uint32(0)
+		if c.nodeConfig.UplinkNetConfig != nil {
+			uplinkPort = c.nodeConfig.UplinkNetConfig.OFPort
+		}
+
 		// TODO: add support for IPv6 protocol
-		c.featureMulticast = newFeatureMulticast(c.cookieAllocator, []binding.Protocol{binding.ProtocolIP}, c.bridge, c.enableAntreaPolicy, c.nodeConfig.GatewayConfig.OFPort, c.networkConfig.TrafficEncapMode.SupportsEncap(), config.DefaultTunOFPort)
+		c.featureMulticast = newFeatureMulticast(c.cookieAllocator, []binding.Protocol{binding.ProtocolIP}, c.bridge, c.enableAntreaPolicy, c.nodeConfig.GatewayConfig.OFPort, c.networkConfig.TrafficEncapMode.SupportsEncap(), c.nodeConfig.TunnelOFPort, uplinkPort, c.nodeConfig.HostInterfaceOFPort, c.connectUplinkToBridge)
 		c.activatedFeatures = append(c.activatedFeatures, c.featureMulticast)
 	}
 
@@ -1420,6 +1447,15 @@ func (c *client) UninstallMulticastFlows(multicastIP net.IP) error {
 	return c.deleteFlows(c.featureMulticast.cachedFlows, cacheKey)
 }
 
+func (c *client) InstallMulticastFlexibleIPAMFlows() error {
+	firstMulticastTable := c.pipelines[pipelineMulticast].GetFirstTable()
+	flows := c.featureMulticast.multicastForwardFlexibleIPAMFlows(firstMulticastTable)
+	cacheKey := "multicast_flexible_ipam"
+	c.replayMutex.RLock()
+	defer c.replayMutex.RUnlock()
+	return c.addFlows(c.featureMulticast.cachedFlows, cacheKey, flows)
+}
+
 func (c *client) InstallMulticastRemoteReportFlows(groupID binding.GroupIDType) error {
 	firstMulticastTable := c.pipelines[pipelineMulticast].GetFirstTable()
 	flows := c.featureMulticast.multicastRemoteReportFlows(groupID, firstMulticastTable)
@@ -1449,8 +1485,13 @@ func (c *client) SendIGMPQueryPacketOut(
 	return c.bridge.SendPacketOut(packetOutObj)
 }
 
-func (c *client) InstallTrafficControlMarkFlows(name string, sourceOFPorts []uint32, targetOFPort uint32, direction crdv1alpha2.Direction, action crdv1alpha2.TrafficControlAction) error {
-	flows := c.featurePodConnectivity.trafficControlMarkFlows(sourceOFPorts, targetOFPort, direction, action)
+func (c *client) InstallTrafficControlMarkFlows(name string,
+	sourceOFPorts []uint32,
+	targetOFPort uint32,
+	direction crdv1alpha2.Direction,
+	action crdv1alpha2.TrafficControlAction,
+	priority types.TrafficControlFlowPriority) error {
+	flows := c.featurePodConnectivity.trafficControlMarkFlows(sourceOFPorts, targetOFPort, direction, action, tcPriorityToOFPriority(priority))
 	cacheKey := fmt.Sprintf("tc_%s", name)
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()
@@ -1582,10 +1623,6 @@ func (c *client) InstallMulticlusterClassifierFlows(tunnelOFPort uint32, isGatew
 
 	flows := []binding.Flow{
 		c.featurePodConnectivity.l2ForwardCalcFlow(GlobalVirtualMACForMulticluster, tunnelOFPort),
-	}
-
-	if c.networkConfig.TrafficEncapMode != config.TrafficEncapModeEncap {
-		flows = append(flows, c.featurePodConnectivity.tunnelClassifierFlow(tunnelOFPort))
 	}
 
 	if isGateway {

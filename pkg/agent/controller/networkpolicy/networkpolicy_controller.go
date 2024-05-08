@@ -41,11 +41,13 @@ import (
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/openflow"
 	proxytypes "antrea.io/antrea/pkg/agent/proxy/types"
+	"antrea.io/antrea/pkg/agent/route"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/apis/controlplane/install"
 	"antrea.io/antrea/pkg/apis/controlplane/v1beta2"
 	"antrea.io/antrea/pkg/querier"
 	"antrea.io/antrea/pkg/util/channel"
+	utilwait "antrea.io/antrea/pkg/util/wait"
 )
 
 const (
@@ -89,7 +91,7 @@ type packetInAction func(*ofctrl.PacketIn) error
 
 // Controller is responsible for watching Antrea AddressGroups, AppliedToGroups,
 // and NetworkPolicies, feeding them to ruleCache, getting dirty rules from
-// ruleCache, invoking reconciler to reconcile them.
+// ruleCache, invoking reconcilers to reconcile them.
 //
 //	        a.Feed AddressGroups,AppliedToGroups
 //	             and NetworkPolicies
@@ -100,8 +102,9 @@ type packetInAction func(*ofctrl.PacketIn) error
 type Controller struct {
 	// antreaPolicyEnabled indicates whether Antrea NetworkPolicy and
 	// ClusterNetworkPolicy are enabled.
-	antreaPolicyEnabled    bool
-	l7NetworkPolicyEnabled bool
+	antreaPolicyEnabled      bool
+	l7NetworkPolicyEnabled   bool
+	nodeNetworkPolicyEnabled bool
 	// antreaProxyEnabled indicates whether Antrea proxy is enabled.
 	antreaProxyEnabled bool
 	// statusManagerEnabled indicates whether a statusManager is configured.
@@ -122,9 +125,12 @@ type Controller struct {
 	queue workqueue.RateLimitingInterface
 	// ruleCache maintains the desired state of NetworkPolicy rules.
 	ruleCache *ruleCache
-	// reconciler provides interfaces to reconcile the desired state of
+	// podReconciler provides interfaces to reconcile the desired state of
 	// NetworkPolicy rules with the actual state of Openflow entries.
-	reconciler Reconciler
+	podReconciler Reconciler
+	// nodeReconciler provides interfaces to reconcile the desired state of
+	// NetworkPolicy rules with the actual state of iptables entries.
+	nodeReconciler Reconciler
 	// l7RuleReconciler provides interfaces to reconcile the desired state of
 	// NetworkPolicy rules which have L7 rules with the actual state of Suricata rules.
 	l7RuleReconciler L7RuleReconciler
@@ -143,10 +149,11 @@ type Controller struct {
 	fullSyncGroup         sync.WaitGroup
 	ifaceStore            interfacestore.InterfaceStore
 	// denyConnStore is for storing deny connections for flow exporter.
-	denyConnStore *connections.DenyConnectionStore
-	gwPort        uint32
-	tunPort       uint32
-	nodeConfig    *config.NodeConfig
+	denyConnStore  *connections.DenyConnectionStore
+	gwPort         uint32
+	tunPort        uint32
+	nodeConfig     *config.NodeConfig
+	podNetworkWait *utilwait.Group
 
 	// The fileStores store runtime.Objects in files and use them as the fallback data source when agent can't connect
 	// to antrea-controller on startup.
@@ -162,6 +169,7 @@ type Controller struct {
 // NewNetworkPolicyController returns a new *Controller.
 func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 	ofClient openflow.Client,
+	routeClient route.Interface,
 	ifaceStore interfacestore.InterfaceStore,
 	fs afero.Fs,
 	nodeName string,
@@ -171,6 +179,7 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 	groupIDUpdates <-chan string,
 	antreaPolicyEnabled bool,
 	l7NetworkPolicyEnabled bool,
+	nodeNetworkPolicyEnabled bool,
 	antreaProxyEnabled bool,
 	statusManagerEnabled bool,
 	multicastEnabled bool,
@@ -181,25 +190,29 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 	v4Enabled bool,
 	v6Enabled bool,
 	gwPort, tunPort uint32,
-	nodeConfig *config.NodeConfig) (*Controller, error) {
+	nodeConfig *config.NodeConfig,
+	podNetworkWait *utilwait.Group,
+	l7Reconciler *l7engine.Reconciler) (*Controller, error) {
 	idAllocator := newIDAllocator(asyncRuleDeleteInterval, dnsInterceptRuleID)
 	c := &Controller{
-		antreaClientProvider:   antreaClientGetter,
-		queue:                  workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "networkpolicyrule"),
-		ofClient:               ofClient,
-		nodeType:               nodeType,
-		antreaPolicyEnabled:    antreaPolicyEnabled,
-		l7NetworkPolicyEnabled: l7NetworkPolicyEnabled,
-		antreaProxyEnabled:     antreaProxyEnabled,
-		statusManagerEnabled:   statusManagerEnabled,
-		multicastEnabled:       multicastEnabled,
-		gwPort:                 gwPort,
-		tunPort:                tunPort,
-		nodeConfig:             nodeConfig,
+		antreaClientProvider:     antreaClientGetter,
+		queue:                    workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "networkpolicyrule"),
+		ofClient:                 ofClient,
+		nodeType:                 nodeType,
+		antreaPolicyEnabled:      antreaPolicyEnabled,
+		l7NetworkPolicyEnabled:   l7NetworkPolicyEnabled,
+		nodeNetworkPolicyEnabled: nodeNetworkPolicyEnabled,
+		antreaProxyEnabled:       antreaProxyEnabled,
+		statusManagerEnabled:     statusManagerEnabled,
+		multicastEnabled:         multicastEnabled,
+		gwPort:                   gwPort,
+		tunPort:                  tunPort,
+		nodeConfig:               nodeConfig,
+		podNetworkWait:           podNetworkWait.Increment(),
 	}
 
 	if l7NetworkPolicyEnabled {
-		c.l7RuleReconciler = l7engine.NewReconciler()
+		c.l7RuleReconciler = l7Reconciler
 		c.l7VlanIDAllocator = newL7VlanIDAllocator()
 	}
 
@@ -213,8 +226,12 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 			c.ofClient.RegisterPacketInHandler(uint8(openflow.PacketInCategoryDNS), c.fqdnController)
 		}
 	}
-	c.reconciler = newReconciler(ofClient, ifaceStore, idAllocator, c.fqdnController, groupCounters,
+	c.podReconciler = newPodReconciler(ofClient, ifaceStore, idAllocator, c.fqdnController, groupCounters,
 		v4Enabled, v6Enabled, antreaPolicyEnabled, multicastEnabled)
+
+	if c.nodeNetworkPolicyEnabled {
+		c.nodeReconciler = newNodeReconciler(routeClient, v4Enabled, v6Enabled)
+	}
 	c.ruleCache = newRuleCache(c.enqueueRule, podUpdateSubscriber, externalEntityUpdateSubscriber, groupIDUpdates, nodeType)
 
 	serializer := protobuf.NewSerializer(scheme, scheme)
@@ -285,7 +302,7 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 				klog.ErrorS(err, "Failed to store the NetworkPolicy to file", "policyName", policy.SourceRef.ToString())
 			}
 			c.ruleCache.AddNetworkPolicy(policy)
-			klog.InfoS("NetworkPolicy applied to Pods on this Node", "policyName", policy.SourceRef.ToString())
+			klog.InfoS("NetworkPolicy applied to Pods on this Node or the Node itself", "policyName", policy.SourceRef.ToString())
 			return nil
 		},
 		UpdateFunc: func(obj runtime.Object) error {
@@ -552,7 +569,7 @@ func (c *Controller) GetNetworkPolicyByRuleFlowID(ruleFlowID uint32) *v1beta2.Ne
 }
 
 func (c *Controller) GetRuleByFlowID(ruleFlowID uint32) *types.PolicyRule {
-	rule, exists, err := c.reconciler.GetRuleByFlowID(ruleFlowID)
+	rule, exists, err := c.podReconciler.GetRuleByFlowID(ruleFlowID)
 	if err != nil {
 		klog.Errorf("Error when getting network policy by rule flow ID: %v", err)
 		return nil
@@ -577,7 +594,7 @@ func (c *Controller) SetDenyConnStore(denyConnStore *connections.DenyConnectionS
 // Run will not return until stopCh is closed.
 func (c *Controller) Run(stopCh <-chan struct{}) {
 	attempts := 0
-	if err := wait.PollImmediateUntil(200*time.Millisecond, func() (bool, error) {
+	if err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), 200*time.Millisecond, true, func(ctx context.Context) (bool, error) {
 		if attempts%10 == 0 {
 			klog.Info("Waiting for Antrea client to be ready")
 		}
@@ -586,7 +603,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 			return false, nil
 		}
 		return true, nil
-	}, stopCh); err != nil {
+	}); err != nil {
 		klog.Info("Stopped waiting for Antrea client")
 		return
 	}
@@ -610,6 +627,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	klog.Infof("All watchers have completed full sync, installing flows for init events")
 	// Batch install all rules in queue after fullSync is finished.
 	c.processAllItemsInQueue()
+	c.podNetworkWait.Done()
 
 	klog.Infof("Starting NetworkPolicy workers now")
 	defer c.queue.ShutDown()
@@ -618,7 +636,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	}
 
 	klog.Infof("Starting IDAllocator worker to maintain the async rule cache")
-	go c.reconciler.RunIDAllocatorWorker(stopCh)
+	go c.podReconciler.RunIDAllocatorWorker(stopCh)
 
 	if c.statusManagerEnabled {
 		go c.statusManager.Run(stopCh)
@@ -728,8 +746,14 @@ func (c *Controller) syncRule(key string) error {
 	rule, effective, realizable := c.ruleCache.GetCompletedRule(key)
 	if !effective {
 		klog.V(2).InfoS("Rule was not effective, removing it", "ruleID", key)
-		if err := c.reconciler.Forget(key); err != nil {
+		// Uncertain whether this rule applies to a Node or Pod, but it's safe to delete it redundantly.
+		if err := c.podReconciler.Forget(key); err != nil {
 			return err
+		}
+		if c.nodeNetworkPolicyEnabled {
+			if err := c.nodeReconciler.Forget(key); err != nil {
+				return err
+			}
 		}
 		if c.statusManagerEnabled {
 			// We don't know whether this is a rule owned by Antrea Policy, but
@@ -753,6 +777,12 @@ func (c *Controller) syncRule(key string) error {
 		return nil
 	}
 
+	isNodeNetworkPolicy := rule.isNodeNetworkPolicyRule()
+	if !c.nodeNetworkPolicyEnabled && isNodeNetworkPolicy {
+		klog.Warningf("Feature gate NodeNetworkPolicy is not enabled, skipping ruleID %s", key)
+		return nil
+	}
+
 	if c.l7NetworkPolicyEnabled && len(rule.L7Protocols) != 0 {
 		// Allocate VLAN ID for the L7 rule.
 		vlanID := c.l7VlanIDAllocator.allocate(key)
@@ -763,12 +793,17 @@ func (c *Controller) syncRule(key string) error {
 		}
 	}
 
-	err := c.reconciler.Reconcile(rule)
-	if c.fqdnController != nil {
-		// No matter whether the rule reconciliation succeeds or not, fqdnController
-		// needs to be notified of the status.
-		klog.V(2).InfoS("Rule realization was done", "ruleID", key)
-		c.fqdnController.notifyRuleUpdate(key, err)
+	var err error
+	if isNodeNetworkPolicy {
+		err = c.nodeReconciler.Reconcile(rule)
+	} else {
+		err = c.podReconciler.Reconcile(rule)
+		if c.fqdnController != nil {
+			// No matter whether the rule reconciliation succeeds or not, fqdnController
+			// needs to be notified of the status.
+			klog.V(2).InfoS("Rule realization was done", "ruleID", key)
+			c.fqdnController.notifyRuleUpdate(key, err)
+		}
 	}
 	if err != nil {
 		return err
@@ -788,7 +823,7 @@ func (c *Controller) syncRules(keys []string) error {
 		klog.V(4).Infof("Finished syncing all rules before bookmark event (%v)", time.Since(startTime))
 	}()
 
-	var allRules []*CompletedRule
+	var allPodRules, allNodeRules []*CompletedRule
 	for _, key := range keys {
 		rule, effective, realizable := c.ruleCache.GetCompletedRule(key)
 		// It's normal that a rule is not effective on this Node but abnormal that it is not realizable after watchers
@@ -798,6 +833,11 @@ func (c *Controller) syncRules(keys []string) error {
 		} else if !realizable {
 			klog.Errorf("Rule %s is effective but not realizable", key)
 		} else {
+			isNodeNetworkPolicy := rule.isNodeNetworkPolicyRule()
+			if !c.nodeNetworkPolicyEnabled && isNodeNetworkPolicy {
+				klog.Warningf("Feature gate NodeNetworkPolicy is not enabled, skipping ruleID %s", key)
+				continue
+			}
 			if c.l7NetworkPolicyEnabled && len(rule.L7Protocols) != 0 {
 				// Allocate VLAN ID for the L7 rule.
 				vlanID := c.l7VlanIDAllocator.allocate(key)
@@ -807,16 +847,32 @@ func (c *Controller) syncRules(keys []string) error {
 					return err
 				}
 			}
-			allRules = append(allRules, rule)
+			if isNodeNetworkPolicy {
+				allNodeRules = append(allNodeRules, rule)
+			} else {
+				allPodRules = append(allPodRules, rule)
+			}
 		}
 	}
-	if err := c.reconciler.BatchReconcile(allRules); err != nil {
+	if c.nodeNetworkPolicyEnabled {
+		if err := c.nodeReconciler.BatchReconcile(allNodeRules); err != nil {
+			return err
+		}
+	}
+	if err := c.podReconciler.BatchReconcile(allPodRules); err != nil {
 		return err
 	}
 	if c.statusManagerEnabled {
-		for _, rule := range allRules {
+		for _, rule := range allPodRules {
 			if v1beta2.IsSourceAntreaNativePolicy(rule.SourceRef) {
 				c.statusManager.SetRuleRealization(rule.ID, rule.PolicyUID)
+			}
+		}
+		if c.nodeNetworkPolicyEnabled {
+			for _, rule := range allNodeRules {
+				if v1beta2.IsSourceAntreaNativePolicy(rule.SourceRef) {
+					c.statusManager.SetRuleRealization(rule.ID, rule.PolicyUID)
+				}
 			}
 		}
 	}
@@ -878,10 +934,10 @@ func (w *watcher) fallback() {
 	if w.fullSynced {
 		return
 	}
-	klog.InfoS("Getting init events for %s from fallback", w.objectType)
+	klog.InfoS("Getting init events from fallback", "objectType", w.objectType)
 	objects, err := w.FallbackFunc()
 	if err != nil {
-		klog.ErrorS(err, "Failed to get init events for %s from fallback", w.objectType)
+		klog.ErrorS(err, "Failed to get init events from fallback", "objectType", w.objectType)
 		return
 	}
 	if err := w.ReplaceFunc(objects); err != nil {

@@ -120,7 +120,7 @@ func TestConnectivityFlows(t *testing.T) {
 		antrearuntime.WindowsOS = runtime.GOOS
 	}
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge: %v", err))
 	defer func() {
@@ -176,7 +176,7 @@ func TestAntreaFlexibleIPAMConnectivityFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, true, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, true, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge: %v", err))
 	defer func() {
@@ -216,9 +216,9 @@ func TestAntreaFlexibleIPAMConnectivityFlows(t *testing.T) {
 		Gateway:    "",
 		DNSServers: "",
 		Routes:     nil,
-		OFPort:     uint32(agentconfig.UplinkOFPort),
+		OFPort:     uint32(agentconfig.DefaultUplinkOFPort),
 	}
-	config.nodeConfig.HostInterfaceOFPort = agentconfig.BridgeOFPort
+	config.nodeConfig.HostInterfaceOFPort = ovsconfig.BridgeOFPort
 	for _, f := range []func(t *testing.T, config *testConfig){
 		testInitialize,
 		testInstallGatewayFlows,
@@ -239,7 +239,7 @@ func TestReplayFlowsConnectivityFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge: %v", err))
 
@@ -281,7 +281,7 @@ func TestReplayFlowsNetworkPolicyFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge: %v", err))
 
@@ -466,7 +466,7 @@ func TestNetworkPolicyFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge %s", br))
 
@@ -580,7 +580,7 @@ func TestIPv6ConnectivityFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge: %v", err))
 
@@ -621,7 +621,7 @@ func TestProxyServiceFlowsAntreaPolicyDisabled(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge %s", br))
 
@@ -711,7 +711,7 @@ func TestProxyServiceFlowsAntreaPoilcyEnabled(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, true, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, true, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge %s", br))
 
@@ -1066,7 +1066,7 @@ func prepareConfiguration(enableIPv4, enableIPv6, enableStretchedNetworkPolicy b
 	_, peerIPv4Subnet, _ := net.ParseCIDR("192.168.2.0/24")
 	_, peerIPv6Subnet, _ := net.ParseCIDR("fd74:ca9b:172:20::/64")
 
-	gatewayConfig := &agentconfig.GatewayConfig{MAC: gwMAC, OFPort: uint32(agentconfig.HostGatewayOFPort)}
+	gatewayConfig := &agentconfig.GatewayConfig{MAC: gwMAC, OFPort: uint32(agentconfig.DefaultHostGatewayOFPort)}
 	uplinkConfig := &agentconfig.AdapterNetConfig{MAC: uplinkMAC}
 	nodeConfig := &agentconfig.NodeConfig{GatewayConfig: gatewayConfig, UplinkNetConfig: uplinkConfig, TunnelOFPort: uint32(agentconfig.DefaultTunOFPort), Type: agentconfig.K8sNode}
 	podCfg := &testLocalPodConfig{
@@ -1131,7 +1131,7 @@ func preparePodFlows(podIPs []net.IP, podMAC net.HardwareAddr, podOFPort uint32,
 			[]*ofTestUtils.ExpectFlow{
 				{
 					MatchStr: fmt.Sprintf("priority=190,in_port=%d", podOFPort),
-					ActStr:   fmt.Sprintf("set_field:0x3/0xf->reg0%s%s,goto_table:SpoofGuard", actionNotAntreaFlexibleIPAMString, actionNotMulticlusterString),
+					ActStr:   fmt.Sprintf("set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4%s%s,goto_table:SpoofGuard", actionNotAntreaFlexibleIPAMString, actionNotMulticlusterString),
 				},
 			},
 		},
@@ -1164,7 +1164,7 @@ func preparePodFlows(podIPs []net.IP, podMAC net.HardwareAddr, podOFPort uint32,
 			"Classifier",
 			[]*ofTestUtils.ExpectFlow{
 				{
-					MatchStr: fmt.Sprintf("priority=210,ip,in_port=%d%s,dl_dst=%s", 3, matchVlanVIDString, podMAC.String()),
+					MatchStr: fmt.Sprintf("priority=210,ip,in_port=%d%s,dl_dst=%s", agentconfig.DefaultUplinkOFPort, matchVlanVIDString, podMAC.String()),
 					ActStr:   fmt.Sprintf("set_field:0x1000/0xf000->reg8,set_field:0x4/0xf->reg0,set_field:%s/0xfff->reg8,goto_table:UnSNAT", vlanVIDString),
 				},
 			},
@@ -1184,7 +1184,7 @@ func preparePodFlows(podIPs []net.IP, podMAC net.HardwareAddr, podOFPort uint32,
 				"VLAN",
 				[]*ofTestUtils.ExpectFlow{
 					{
-						MatchStr: fmt.Sprintf("priority=190,reg1=0x%x,in_port=%d", 3, podOFPort),
+						MatchStr: fmt.Sprintf("priority=190,reg1=0x%x,in_port=%d", agentconfig.DefaultUplinkOFPort, podOFPort),
 						ActStr:   fmt.Sprintf("push_vlan:0x8100,set_field:%d->vlan_vid,goto_table:Output", vlanID+4096),
 					},
 				},
@@ -1257,7 +1257,7 @@ func prepareGatewayFlows(gwIPs []net.IP, gwMAC net.HardwareAddr, vMAC net.Hardwa
 			"Classifier",
 			[]*ofTestUtils.ExpectFlow{
 				{
-					MatchStr: fmt.Sprintf("priority=200,in_port=%d", agentconfig.HostGatewayOFPort),
+					MatchStr: fmt.Sprintf("priority=200,in_port=%d", agentconfig.DefaultHostGatewayOFPort),
 					ActStr:   "set_field:0x2/0xf->reg0,set_field:0x8000000/0x8000000->reg4,goto_table:SpoofGuard",
 				},
 			},
@@ -1267,7 +1267,7 @@ func prepareGatewayFlows(gwIPs []net.IP, gwMAC net.HardwareAddr, vMAC net.Hardwa
 			[]*ofTestUtils.ExpectFlow{
 				{
 					MatchStr: fmt.Sprintf("priority=200,dl_dst=%s", gwMAC.String()),
-					ActStr:   fmt.Sprintf("set_field:0x%x->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier", agentconfig.HostGatewayOFPort),
+					ActStr:   fmt.Sprintf("set_field:0x%x->reg1,set_field:0x200000/0x600000->reg0,goto_table:IngressSecurityClassifier", agentconfig.DefaultHostGatewayOFPort),
 				},
 			},
 		},
@@ -1289,7 +1289,7 @@ func prepareGatewayFlows(gwIPs []net.IP, gwMAC net.HardwareAddr, vMAC net.Hardwa
 					"SpoofGuard",
 					[]*ofTestUtils.ExpectFlow{
 						{
-							MatchStr: fmt.Sprintf("priority=200,ip,in_port=%d", agentconfig.HostGatewayOFPort),
+							MatchStr: fmt.Sprintf("priority=200,ip,in_port=%d", agentconfig.DefaultHostGatewayOFPort),
 							ActStr:   fmt.Sprintf("%sgoto_table:UnSNAT", actionSetCtZoneField),
 						},
 					},
@@ -1298,7 +1298,7 @@ func prepareGatewayFlows(gwIPs []net.IP, gwMAC net.HardwareAddr, vMAC net.Hardwa
 					"ARPSpoofGuard",
 					[]*ofTestUtils.ExpectFlow{
 						{
-							MatchStr: fmt.Sprintf("priority=200,arp,in_port=%d,arp_spa=%s,arp_sha=%s", agentconfig.HostGatewayOFPort, gwIP, gwMAC),
+							MatchStr: fmt.Sprintf("priority=200,arp,in_port=%d,arp_spa=%s,arp_sha=%s", agentconfig.DefaultHostGatewayOFPort, gwIP, gwMAC),
 							ActStr:   "goto_table:ARPResponder",
 						},
 					},
@@ -1314,8 +1314,8 @@ func prepareGatewayFlows(gwIPs []net.IP, gwMAC net.HardwareAddr, vMAC net.Hardwa
 				"Classifier",
 				[]*ofTestUtils.ExpectFlow{
 					{
-						MatchStr: fmt.Sprintf("priority=210,%s,in_port=%d,%s=%s", ipProtoStr, agentconfig.HostGatewayOFPort, nwSrcStr, gwIP),
-						ActStr:   "set_field:0x2/0xf->reg0,goto_table:SpoofGuard",
+						MatchStr: fmt.Sprintf("priority=210,%s,in_port=%d,%s=%s", ipProtoStr, agentconfig.DefaultHostGatewayOFPort, nwSrcStr, gwIP),
+						ActStr:   "set_field:0x2/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard",
 					},
 				},
 			},
@@ -1699,7 +1699,7 @@ func expectedExternalFlows(ipProtoStr, gwMACStr string) []expectTableFlows {
 }
 
 func prepareEgressMarkFlows(snatIP net.IP, mark, podOFPort, podOFPortRemote uint32, vMAC, localGwMAC net.HardwareAddr, trafficShaping bool) []expectTableFlows {
-	var ipProtoStr, tunDstFieldName, nextTableName, ctStateMatch string
+	var ipProtoStr, tunDstFieldName, nextTableName string
 	if snatIP.To4() != nil {
 		tunDstFieldName = "tun_dst"
 		ipProtoStr = "ip"
@@ -1709,21 +1709,19 @@ func prepareEgressMarkFlows(snatIP net.IP, mark, podOFPort, podOFPortRemote uint
 	}
 	if trafficShaping {
 		nextTableName = "EgressQoS"
-		ctStateMatch = "+trk"
 	} else {
 		nextTableName = "L2ForwardingCalc"
-		ctStateMatch = "+new+trk"
 	}
 	return []expectTableFlows{
 		{
 			"EgressMark",
 			[]*ofTestUtils.ExpectFlow{
 				{
-					MatchStr: fmt.Sprintf("priority=200,ct_state=%s,%s,%s=%s", ctStateMatch, ipProtoStr, tunDstFieldName, snatIP),
+					MatchStr: fmt.Sprintf("priority=200,ct_state=+trk,%s,%s=%s", ipProtoStr, tunDstFieldName, snatIP),
 					ActStr:   fmt.Sprintf("set_field:0x%x/0xff->pkt_mark,set_field:0x20/0xf0->reg0,goto_table:%s", mark, nextTableName),
 				},
 				{
-					MatchStr: fmt.Sprintf("priority=200,ct_state=%s,%s,in_port=%d", ctStateMatch, ipProtoStr, podOFPort),
+					MatchStr: fmt.Sprintf("priority=200,ct_state=+trk,%s,in_port=%d", ipProtoStr, podOFPort),
 					ActStr:   fmt.Sprintf("set_field:0x%x/0xff->pkt_mark,set_field:0x20/0xf0->reg0,goto_table:%s", mark, nextTableName),
 				},
 				{
@@ -1795,7 +1793,7 @@ func testEgressMarkFlows(t *testing.T, trafficShaping bool) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), false, false, false, true, trafficShaping, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), false, false, false, true, trafficShaping, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge %s", br))
 
@@ -1852,7 +1850,7 @@ func TestTrafficControlFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), false, false, false, false, false, false, false, false, false, false, true, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), false, false, false, false, false, false, false, false, false, false, true, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge %s", br))
 
@@ -1874,7 +1872,7 @@ func TestTrafficControlFlows(t *testing.T) {
 	returnOFPort := uint32(201)
 	expectedFlows := prepareTrafficControlFlows(sourceOFPorts, targetOFPort, returnOFPort)
 	c.InstallTrafficControlReturnPortFlow(returnOFPort)
-	c.InstallTrafficControlMarkFlows("tc", sourceOFPorts, targetOFPort, v1alpha2.DirectionBoth, v1alpha2.ActionRedirect)
+	c.InstallTrafficControlMarkFlows("tc", sourceOFPorts, targetOFPort, v1alpha2.DirectionBoth, v1alpha2.ActionRedirect, types.TrafficControlFlowPriorityMedium)
 	for _, tableFlow := range expectedFlows {
 		ofTestUtils.CheckFlowExists(t, ovsCtlClient, tableFlow.tableName, 0, true, tableFlow.flows)
 	}

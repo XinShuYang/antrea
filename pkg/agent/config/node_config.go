@@ -22,32 +22,47 @@ import (
 )
 
 const (
-	// Invalid ofport_request number is in range 1 to 65,279. For ofport_request number not in the range, OVS
-	// ignore the it and automatically assign a port number.
-	// Here we use an invalid port number "0" to request for automatically port allocation.
-	AutoAssignedOFPort = 0
-	DefaultTunOFPort   = 1
-	HostGatewayOFPort  = 2
-	UplinkOFPort       = 3
-	// 0xfffffffe is a reserved port number in OpenFlow protocol, which is dedicated for the Bridge interface.
-	BridgeOFPort = 0xfffffffe
+	// Open vSwitch limits the port numbers that it automatically assigns to the range 1 through
+	// 32,767, inclusive. Controllers therefore have free use of ports 32,768 and up.
+	// When requesting a specific port number with ofport_request, it is better to use one of
+	// these "controller ports", to avoid unexpected ofport changes. The Antrea datapath assumes
+	// that once a port number has been assigned, it will stay the same throughout the lifetime
+	// of the port, but when using ofport_request it is not guaranteed.
+	// See https://github.com/antrea-io/antrea/issues/6192 for more details.
+	// We will request these default port values when initializing the agent, unless the ports
+	// already exist.
+	DefaultTunOFPort = ovsconfig.FirstControllerOFPort + iota
+	DefaultHostGatewayOFPort
+	DefaultUplinkOFPort
+	DefaultHostInterfaceOFPort
 )
 
 const (
-	vxlanOverhead     = 50
-	geneveOverhead    = 50
-	greOverhead       = 38
+	vxlanOverhead  = 50
+	geneveOverhead = 50
+	// GRE overhead: 14-byte outer MAC, 20-byte outer IPv4, 8-byte GRE header (4-byte standard header + 4-byte key field)
+	greOverhead = 42
+
 	ipv6ExtraOverhead = 20
 
-	WireGuardOverhead = 80
+	// WireGuard overhead: 20-byte outer IPv4, 8-byte UDP header, 4-byte type, 4-byte key index, 8-byte nonce, 16-byte authentication tag
+	WireGuardOverhead = 60
 	// IPsec ESP can add a maximum of 38 bytes to the packet including the ESP
 	// header and trailer.
 	IPSecESPOverhead = 38
 )
 
 const (
-	L7NetworkPolicyTargetPortName = "antrea-l7-tap0"
-	L7NetworkPolicyReturnPortName = "antrea-l7-tap1"
+	L7RedirectTargetPortName = "antrea-l7-tap0"
+	L7RedirectReturnPortName = "antrea-l7-tap1"
+	L7SuricataSocketPath     = "/var/run/suricata/suricata_eve.socket"
+)
+
+const (
+	NodeNetworkPolicyIngressRulesChain = "ANTREA-POL-INGRESS-RULES"
+	NodeNetworkPolicyEgressRulesChain  = "ANTREA-POL-EGRESS-RULES"
+
+	NodeNetworkPolicyPrefix = "ANTREA-POL"
 )
 
 var (
@@ -201,14 +216,19 @@ type NetworkConfig struct {
 	TransportIfaceCIDRs   []string
 	IPv4Enabled           bool
 	IPv6Enabled           bool
-	// MTUDeduction only counts IPv4 tunnel overhead, no IPsec and WireGuard overhead.
+	// MTUDeduction is the MTU deduction for encapsulation and encryption in cluster.
 	MTUDeduction int
+	// WireGuardMTUDeduction is the MTU deduction for WireGuard encryption.
+	// It is calculated based on whether IPv6 is used.
+	WireGuardMTUDeduction int
 	// Set by the defaultMTU config option or auto discovered.
 	// Auto discovery will use MTU value of the Node's transport interface.
 	// For Encap and Hybrid mode, InterfaceMTU will be adjusted to account for
 	// encap header.
-	InterfaceMTU         int
-	EnableMulticlusterGW bool
+	InterfaceMTU int
+
+	EnableMulticlusterGW       bool
+	MulticlusterEncryptionMode TrafficEncryptionModeType
 }
 
 // IsIPv4Enabled returns true if the cluster network supports IPv4. Legal cases are:
@@ -256,7 +276,14 @@ func (nc *NetworkConfig) NeedsTunnelToPeer(peerIP net.IP, localIP *net.IPNet) bo
 }
 
 func (nc *NetworkConfig) NeedsTunnelInterface() bool {
-	return nc.TrafficEncapMode.SupportsEncap() || nc.EnableMulticlusterGW
+	// For encap or hybrid mode, we need to create the tunnel interface, except if we are using
+	// WireGuard, in which case inter-Node traffic always goes through the antrea-wg0 interface,
+	// and tunneling is managed by Linux, not OVS.
+	// If multi-cluster gateway is enabled, we always need the tunnel interface. For example,
+	// cross-cluster traffic from a regular Node to the gateway Node for the source cluster
+	// always goes through antrea-tun0, regardless of the actual "traffic mode" for the source
+	// cluster.
+	return (nc.TrafficEncapMode.SupportsEncap() && nc.TrafficEncryptionMode != TrafficEncryptionModeWireGuard) || nc.EnableMulticlusterGW
 }
 
 // NeedsDirectRoutingToPeer returns true if Pod traffic to peer Node needs a direct route installed to the routing table.
@@ -264,24 +291,50 @@ func (nc *NetworkConfig) NeedsDirectRoutingToPeer(peerIP net.IP, localIP *net.IP
 	return (nc.TrafficEncapMode == TrafficEncapModeNoEncap || nc.TrafficEncapMode == TrafficEncapModeHybrid) && localIP.Contains(peerIP)
 }
 
+func (nc *NetworkConfig) getEncapMTUDeduction(isIPv6 bool) int {
+	var deduction int
+	if nc.TunnelType == ovsconfig.VXLANTunnel {
+		deduction = vxlanOverhead
+	} else if nc.TunnelType == ovsconfig.GeneveTunnel {
+		deduction = geneveOverhead
+	} else if nc.TunnelType == ovsconfig.GRETunnel {
+		deduction = greOverhead
+	} else {
+		return 0
+	}
+	if isIPv6 {
+		deduction += ipv6ExtraOverhead
+	}
+	return deduction
+}
+
 func (nc *NetworkConfig) CalculateMTUDeduction(isIPv6 bool) int {
-	var mtuDeduction int
-	// When Multi-cluster Gateway is enabled, we need to reduce MTU for potential cross-cluster traffic.
-	if nc.TrafficEncapMode.SupportsEncap() || nc.EnableMulticlusterGW {
-		if nc.TunnelType == ovsconfig.VXLANTunnel {
-			mtuDeduction = vxlanOverhead
-		} else if nc.TunnelType == ovsconfig.GeneveTunnel {
-			mtuDeduction = geneveOverhead
-		} else if nc.TunnelType == ovsconfig.GRETunnel {
-			mtuDeduction = greOverhead
-		}
+	nc.WireGuardMTUDeduction = WireGuardOverhead
+	if isIPv6 {
+		nc.WireGuardMTUDeduction += ipv6ExtraOverhead
 	}
 
-	if nc.TrafficEncapMode.SupportsEncap() && isIPv6 {
-		mtuDeduction += ipv6ExtraOverhead
+	if nc.EnableMulticlusterGW {
+		nc.MTUDeduction = nc.getEncapMTUDeduction(isIPv6)
+		// When multi-cluster WireGuard is enabled, cross-cluster traffic will be encapsulated and encrypted, we need to
+		// reduce MTU for both encapsulation and encryption.
+		if nc.MulticlusterEncryptionMode == TrafficEncryptionModeWireGuard {
+			nc.MTUDeduction += nc.WireGuardMTUDeduction
+		}
+		return nc.MTUDeduction
 	}
-	nc.MTUDeduction = mtuDeduction
-	return mtuDeduction
+	if nc.TrafficEncapMode.SupportsEncap() {
+		nc.MTUDeduction = nc.getEncapMTUDeduction(isIPv6)
+	}
+	if nc.TrafficEncryptionMode == TrafficEncryptionModeWireGuard {
+		// When WireGuard is enabled, cross-node traffic will only be encrypted, just reduce MTU for encryption.
+		nc.MTUDeduction = nc.WireGuardMTUDeduction
+	} else if nc.TrafficEncryptionMode == TrafficEncryptionModeIPSec {
+		// When IPsec is enabled, cross-node traffic will be encapsulated and encrypted, we need to reduce MTU for both
+		// encapsulation and encryption.
+		nc.MTUDeduction += IPSecESPOverhead
+	}
+	return nc.MTUDeduction
 }
 
 // ServiceConfig includes K8s Service CIDR and available IP addresses for NodePort.

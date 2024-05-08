@@ -9,6 +9,9 @@ updates:
       golang.org/x:
         patterns:
         - "golang.org/x/*"
+      prometheus:
+        patterns:
+        - "github.com/prometheus/*"
     ignore:
     - dependency-name: "k8s.io/*"
     - dependency-name: "sigs.k8s.io/*"
@@ -27,3 +30,8 @@ updates:
     schedule:
       interval: "daily"
     open-pull-requests-limit: 5
+    groups:
+      artifact-actions:
+        patterns:
+        - "actions/upload-artifact"
+        - "actions/download-artifact"

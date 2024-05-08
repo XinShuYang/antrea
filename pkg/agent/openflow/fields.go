@@ -41,7 +41,7 @@ var (
 	PktSourceField      = binding.NewRegField(0, 0, 3)
 	FromTunnelRegMark   = binding.NewRegMark(PktSourceField, tunnelVal)
 	FromGatewayRegMark  = binding.NewRegMark(PktSourceField, gatewayVal)
-	FromLocalRegMark    = binding.NewRegMark(PktSourceField, localVal)
+	FromPodRegMark      = binding.NewRegMark(PktSourceField, localVal)
 	FromUplinkRegMark   = binding.NewRegMark(PktSourceField, uplinkVal)
 	FromBridgeRegMark   = binding.NewRegMark(PktSourceField, bridgeVal)
 	FromTCReturnRegMark = binding.NewRegMark(PktSourceField, tcReturnVal)
@@ -109,12 +109,12 @@ var (
 	APConjIDField = binding.NewRegField(3, 0, 31)
 
 	// reg4(NXM_NX_REG4)
-	// reg4[0..15]: Field to store the selected Service Endpoint port.
+	// reg4[0..15]: Field to store the selected Service Endpoint port number.
 	EndpointPortField = binding.NewRegField(4, 0, 15)
 	// reg4[16..18]: Field to store the state of a packet accessing a Service. Marks in this field include:
-	//	- 0b001: packet need to do service selection.
-	//	- 0b010: packet has done service selection.
-	//	- 0b011: packet has done service selection and the selection result needs to be cached.
+	//	- 0b001: packet needs to do Endpoint selection.
+	//	- 0b010: packet has done Endpoint selection.
+	//	- 0b011: packet has done Endpoint selection and the selection result needs to be cached.
 	ServiceEPStateField = binding.NewRegField(4, 16, 18)
 	EpToSelectRegMark   = binding.NewRegMark(ServiceEPStateField, 0b001)
 	EpSelectedRegMark   = binding.NewRegMark(ServiceEPStateField, 0b010)
@@ -147,6 +147,8 @@ var (
 	// the Node's traffic is forwarded to OVS. And even if there is no masquerade rule, there should be no problem to
 	// consider the packet external sourced as the other IPs are routable externally anyway.
 	FromExternalRegMark = binding.NewOneBitRegMark(4, 27)
+	// reg4[28]: Mark to indicate that whether the traffic's source is a local Pod or the Node.
+	FromLocalRegMark = binding.NewOneBitRegMark(4, 28)
 
 	// reg5(NXM_NX_REG5)
 	// Field to cache the Egress conjunction ID hit by TraceFlow packet.

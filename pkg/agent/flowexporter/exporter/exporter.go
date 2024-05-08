@@ -36,6 +36,7 @@ import (
 	"antrea.io/antrea/pkg/agent/metrics"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/proxy"
+	"antrea.io/antrea/pkg/features"
 	"antrea.io/antrea/pkg/ipfix"
 	"antrea.io/antrea/pkg/ovs/ovsconfig"
 	"antrea.io/antrea/pkg/querier"
@@ -101,6 +102,9 @@ var (
 		"flowType",
 		"egressName",
 		"egressIP",
+		"appProtocolName",
+		"httpVals",
+		"egressNodeName",
 	}
 	AntreaInfoElementsIPv4 = append(antreaInfoElementsCommon, []string{"destinationClusterIPv4"}...)
 	AntreaInfoElementsIPv6 = append(antreaInfoElementsCommon, []string{"destinationClusterIPv6"}...)
@@ -130,6 +134,7 @@ type FlowExporter struct {
 	expiredConns           []flowexporter.Connection
 	egressQuerier          querier.EgressQuerier
 	podStore               podstore.Interface
+	l7Listener             *connections.L7Listener
 }
 
 func genObservationID(nodeName string) uint32 {
@@ -157,7 +162,7 @@ func prepareExporterInputArgs(collectorProto, nodeName string) exporter.Exporter
 func NewFlowExporter(podStore podstore.Interface, proxier proxy.Proxier, k8sClient kubernetes.Interface, nodeRouteController *noderoute.Controller,
 	trafficEncapMode config.TrafficEncapModeType, nodeConfig *config.NodeConfig, v4Enabled, v6Enabled bool, serviceCIDRNet, serviceCIDRNetv6 *net.IPNet,
 	ovsDatapathType ovsconfig.OVSDatapathType, proxyEnabled bool, npQuerier querier.AgentNetworkPolicyInfoQuerier, o *flowexporter.FlowExporterOptions,
-	egressQuerier querier.EgressQuerier) (*FlowExporter, error) {
+	egressQuerier querier.EgressQuerier, podL7FlowExporterAttrGetter connections.PodL7FlowExporterAttrGetter, l7FlowExporterEnabled bool) (*FlowExporter, error) {
 	// Initialize IPFIX registry
 	registry := ipfix.NewIPFIXRegistry()
 	registry.LoadRegistry()
@@ -171,8 +176,13 @@ func NewFlowExporter(podStore podstore.Interface, proxier proxy.Proxier, k8sClie
 
 	connTrackDumper := connections.InitializeConnTrackDumper(nodeConfig, serviceCIDRNet, serviceCIDRNetv6, ovsDatapathType, proxyEnabled)
 	denyConnStore := connections.NewDenyConnectionStore(podStore, proxier, o)
-	conntrackConnStore := connections.NewConntrackConnectionStore(connTrackDumper, v4Enabled, v6Enabled, npQuerier, podStore, proxier, o)
-
+	var l7Listener *connections.L7Listener
+	var eventMapGetter connections.L7EventMapGetter
+	if l7FlowExporterEnabled {
+		l7Listener = connections.NewL7Listener(podL7FlowExporterAttrGetter, podStore)
+		eventMapGetter = l7Listener
+	}
+	conntrackConnStore := connections.NewConntrackConnectionStore(connTrackDumper, v4Enabled, v6Enabled, npQuerier, podStore, proxier, eventMapGetter, o)
 	if nodeRouteController == nil {
 		klog.InfoS("NodeRouteController is nil, will not be able to determine flow type for connections")
 	}
@@ -195,6 +205,7 @@ func NewFlowExporter(podStore podstore.Interface, proxier proxy.Proxier, k8sClie
 		expiredConns:           make([]flowexporter.Connection, 0, maxConnsToExport*2),
 		egressQuerier:          egressQuerier,
 		podStore:               podStore,
+		l7Listener:             l7Listener,
 	}, nil
 }
 
@@ -204,6 +215,10 @@ func (exp *FlowExporter) GetDenyConnStore() *connections.DenyConnectionStore {
 
 func (exp *FlowExporter) Run(stopCh <-chan struct{}) {
 	go exp.podStore.Run(stopCh)
+	// Start L7 connection flow socket
+	if features.DefaultFeatureGate.Enabled(features.L7FlowExporter) {
+		go exp.l7Listener.Run(stopCh)
+	}
 	// Start the goroutine to periodically delete stale deny connections.
 	go exp.denyConnStore.RunPeriodicDeletion(stopCh)
 
@@ -260,8 +275,14 @@ func (exp *FlowExporter) Run(stopCh <-chan struct{}) {
 func (exp *FlowExporter) sendFlowRecords() (time.Duration, error) {
 	currTime := time.Now()
 	var expireTime1, expireTime2 time.Duration
-	exp.expiredConns, expireTime1 = exp.conntrackConnStore.GetExpiredConns(exp.expiredConns, currTime, maxConnsToExport)
+	// We export records from denyConnStore first, then conntrackConnStore. We enforce the ordering to handle a
+	// special case: for an inter-node connection with egress drop network policy, both conntrackConnStore and
+	// denyConnStore from the same Node will send out records to Flow Aggregator. If the record from conntrackConnStore
+	// arrives FA first, FA will not be able to capture the deny network policy metadata, and it will keep waiting
+	// for a record from destination Node to finish flow correlation until timeout. Later on we probably should
+	// consider doing a record deduplication between conntrackConnStore and denyConnStore before exporting records.
 	exp.expiredConns, expireTime2 = exp.denyConnStore.GetExpiredConns(exp.expiredConns, currTime, maxConnsToExport)
+	exp.expiredConns, expireTime1 = exp.conntrackConnStore.GetExpiredConns(exp.expiredConns, currTime, maxConnsToExport)
 	// Select the shorter time out among two connection stores to do the next round of export.
 	nextExpireTime := getMinTime(expireTime1, expireTime2)
 	for i := range exp.expiredConns {
@@ -571,6 +592,12 @@ func (exp *FlowExporter) addConnToSet(conn *flowexporter.Connection) error {
 			ie.SetStringValue(conn.EgressName)
 		case "egressIP":
 			ie.SetStringValue(conn.EgressIP)
+		case "appProtocolName":
+			ie.SetStringValue(conn.AppProtocolName)
+		case "httpVals":
+			ie.SetStringValue(conn.HttpVals)
+		case "egressNodeName":
+			ie.SetStringValue(conn.EgressNodeName)
 		}
 	}
 	err := exp.ipfixSet.AddRecord(eL, templateID)
@@ -617,14 +644,15 @@ func (exp *FlowExporter) findFlowType(conn flowexporter.Connection) uint8 {
 }
 
 func (exp *FlowExporter) fillEgressInfo(conn *flowexporter.Connection) {
-	egressName, egressIP, err := exp.egressQuerier.GetEgress(conn.SourcePodNamespace, conn.SourcePodName)
+	egressName, egressIP, egressNodeName, err := exp.egressQuerier.GetEgress(conn.SourcePodNamespace, conn.SourcePodName)
 	if err != nil {
 		// Egress is not enabled or no Egress is applied to this Pod
 		return
 	}
 	conn.EgressName = egressName
 	conn.EgressIP = egressIP
-	klog.V(4).InfoS("Filling Egress Info for flow", "Egress", conn.EgressName, "EgressIP", conn.EgressIP, "SourcePodNamespace", conn.SourcePodNamespace, "SourcePodName", conn.SourcePodName)
+	conn.EgressNodeName = egressNodeName
+	klog.V(4).InfoS("Filling Egress Info for flow", "Egress", conn.EgressName, "EgressIP", conn.EgressIP, "EgressNode", conn.EgressNodeName, "SourcePod", klog.KRef(conn.SourcePodNamespace, conn.SourcePodName))
 }
 
 func (exp *FlowExporter) exportConn(conn *flowexporter.Connection) error {

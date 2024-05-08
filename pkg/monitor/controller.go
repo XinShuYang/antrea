@@ -39,7 +39,6 @@ import (
 )
 
 const (
-	crdName        = "antrea-controller"
 	controllerName = "AntreaControllerMonitor"
 	// How long to wait before retrying the processing of a Node/ExternalNode change.
 	minRetryDelay = 5 * time.Second
@@ -155,10 +154,10 @@ func (monitor *controllerMonitor) syncControllerCRD() {
 		monitor.controllerCRD = nil
 	}
 
-	monitor.controllerCRD, err = monitor.getControllerCRD(crdName)
+	monitor.controllerCRD, err = monitor.getControllerCRD(v1beta1.AntreaControllerInfoResourceName)
 
 	if errors.IsNotFound(err) {
-		monitor.controllerCRD, err = monitor.createControllerCRD(crdName)
+		monitor.controllerCRD, err = monitor.createControllerCRD(v1beta1.AntreaControllerInfoResourceName)
 		if err != nil {
 			klog.ErrorS(err, "Failed to create controller monitoring CRD")
 			monitor.controllerCRD = nil
@@ -189,14 +188,14 @@ func (monitor *controllerMonitor) createControllerCRD(crdName string) (*v1beta1.
 	controllerCRD := new(v1beta1.AntreaControllerInfo)
 	controllerCRD.Name = crdName
 	monitor.querier.GetControllerInfo(controllerCRD, false)
-	klog.V(2).Infof("Creating controller monitoring CRD %+v", controllerCRD)
+	klog.V(2).InfoS("Creating controller monitoring CRD", "name", klog.KObj(controllerCRD))
 	return monitor.client.CrdV1beta1().AntreaControllerInfos().Create(context.TODO(), controllerCRD, metav1.CreateOptions{})
 }
 
 // updateControllerCRD updates the monitoring CRD.
 func (monitor *controllerMonitor) updateControllerCRD(partial bool) (*v1beta1.AntreaControllerInfo, error) {
 	monitor.querier.GetControllerInfo(monitor.controllerCRD, partial)
-	klog.V(2).Infof("Updating controller monitoring CRD %+v, partial: %t", monitor.controllerCRD, partial)
+	klog.V(2).InfoS("Updating controller monitoring CRD", "name", klog.KObj(monitor.controllerCRD), "partial", partial)
 	return monitor.client.CrdV1beta1().AntreaControllerInfos().Update(context.TODO(), monitor.controllerCRD, metav1.UpdateOptions{})
 }
 
@@ -390,7 +389,7 @@ func (monitor *controllerMonitor) antreaAgentInfoAPIAvailable(stopCh <-chan stru
 	}
 
 	found := false
-	if err := wait.PollImmediateUntil(time.Second*10, func() (done bool, err error) {
+	if err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), time.Second*10, true, func(ctx context.Context) (done bool, err error) {
 		var checkErr error
 		found, checkErr = checkFunc()
 		if checkErr != nil {
@@ -398,7 +397,7 @@ func (monitor *controllerMonitor) antreaAgentInfoAPIAvailable(stopCh <-chan stru
 			return false, nil
 		}
 		return true, nil
-	}, stopCh); err != nil {
+	}); err != nil {
 		klog.ErrorS(err, "Failed to get server resources for GroupVersion", "groupVersion", groupVersion)
 		found = false
 	}

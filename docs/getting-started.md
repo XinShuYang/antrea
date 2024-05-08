@@ -103,8 +103,9 @@ If you want to add Windows Nodes to your cluster, please refer to these
 Starting with v1.0, Antrea supports arm64 and arm/v7 Nodes. The installation
 instructions do not change when some (or all) Linux Nodes in a cluster use an
 ARM architecture: the same deployment YAML can be used, as the
-`antrea/antrea-ubuntu` Docker image is actually a manifest list with support for
-the amd64, arm64 and arm/v7 architectures.
+`antrea/antrea-agent-ubuntu` and `antrea/antrea-controller-ubuntu` Docker images
+are actually manifest lists with support for the amd64, arm64 and arm/v7
+architectures.
 
 Note that while we do run a subset of the Kubernetes conformance tests on both
 the arm/v7 and arm64 Docker images (using [k3s](https://k3s.io/) as the
@@ -140,7 +141,7 @@ following:
 2. Delete Flannel bridge and tunnel interface with `ip link delete flannel.1 &&
 ip link delete flannel cni0` **on each Node**.
 3. Ensure [requirements](#ensuring-requirements-are-satisfied) are satisfied.
-4. [Deploy Antrea](#installation).
+4. [Deploy Antrea](#installation--upgrade).
 5. Drain and uncordon Nodes one-by-one. For each Node, run `kubectl drain
 --ignore-daemonsets <node name> && kubectl uncordon <node name>`. The
 `--ignore-daemonsets` flag will ignore DaemonSet-managed Pods, including the
