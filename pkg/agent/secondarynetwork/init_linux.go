@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 // Copyright 2023 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -91,7 +94,7 @@ func Initialize(
 	// k8s.v1.cni.cncf.io/networks Annotation defined.
 	if podWatchController, err := podwatch.NewPodController(
 		k8sClient, netAttachDefClient, podInformer,
-		nodeName, podUpdateSubscriber, ovsBridgeClient); err != nil {
+		podUpdateSubscriber, ovsBridgeClient); err != nil {
 		return err
 	} else {
 		go podWatchController.Run(stopCh)
@@ -101,7 +104,7 @@ func Initialize(
 
 // RestoreHostInterfaceConfiguration restores interface configuration from secondary-bridge back to host-interface.
 func RestoreHostInterfaceConfiguration(secNetConfig *agentconfig.SecondaryNetworkConfig) {
-	if len(secNetConfig.OVSBridges[0].PhysicalInterfaces) == 1 {
+	if len(secNetConfig.OVSBridges) != 0 && len(secNetConfig.OVSBridges[0].PhysicalInterfaces) == 1 {
 		util.RestoreHostInterfaceConfiguration(secNetConfig.OVSBridges[0].BridgeName, secNetConfig.OVSBridges[0].PhysicalInterfaces[0])
 	}
 }
