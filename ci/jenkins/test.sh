@@ -69,7 +69,9 @@ Run K8s e2e community tests (Conformance & Network Policy) or Antrea e2e tests o
         --ip-mode                IP mode for flexible-ipam e2e test. Default is $DEFAULT_IP_MODE. It can also be ipv6 or ds.
         --win-image-node         Name of the windows image node in cluster. Images are built by docker on this node.
         --kind-cluster-name      Name of the kind Cluster.
-        --proxyall               Enable proxyAll to test AntreaProxy."
+        --proxyall               Enable proxyAll to test AntreaProxy.
+        --docker-user             Username for Docker account.
+        --docker-password         Password for Docker account."
 
 function print_usage {
     echoerr "$_usage"
@@ -118,6 +120,14 @@ case $key in
     ;;
     --win-image-node)
     WIN_IMAGE_NODE="$2"
+    shift 2
+    ;;
+    --docker-user)
+    dockerUser="$2"
+    shift 2
+    ;;
+    --docker-password)
+    dockerPassword="$2"
     shift 2
     ;;
     -h|--help)

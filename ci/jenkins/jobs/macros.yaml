@@ -103,7 +103,7 @@
           #!/bin/bash
           set -ex
           DOCKER_REGISTRY="$(head -n1 ci/docker-registry)"
-          ./ci/jenkins/test-vmc.sh --cluster-name "$BUILD_TAG" --testcase e2e --coverage --codecov-token "${CODECOV_TOKEN}" --registry ${DOCKER_REGISTRY} --username "${CAPVC_USERNAME}" --password "${CAPVC_PASSWORD}"
+          ./ci/jenkins/test-vmc.sh --cluster-name "$BUILD_TAG" --testcase e2e --coverage --codecov-token "${CODECOV_TOKEN}" --registry ${DOCKER_REGISTRY} --username "${CAPVC_USERNAME}" --password "${CAPVC_PASSWORD}" --docker-user "${{DOCKER_USERNAME}}" --docker-password "${{DOCKER_PASSWORD}}"
 
 - builder:
     name: builder-conformance
@@ -112,7 +112,7 @@
           #!/bin/bash
           set -ex
           DOCKER_REGISTRY="$(head -n1 ci/docker-registry)"
-          ./ci/jenkins/test-vmc.sh --cluster-name "$BUILD_TAG" --testcase '{conformance_type}' --coverage --codecov-token "${{CODECOV_TOKEN}}" --registry ${{DOCKER_REGISTRY}} --username "${{CAPVC_USERNAME}}" --password "${{CAPVC_PASSWORD}}"
+          ./ci/jenkins/test-vmc.sh --cluster-name "$BUILD_TAG" --testcase '{conformance_type}' --coverage --codecov-token "${{CODECOV_TOKEN}}" --registry ${{DOCKER_REGISTRY}} --username "${{CAPVC_USERNAME}}" --password "${{CAPVC_PASSWORD}}" --docker-user "${{DOCKER_USERNAME}}" --docker-password "${{DOCKER_PASSWORD}}"
 
 - builder:
     name: builder-install-ovs
@@ -128,7 +128,7 @@
           #!/bin/bash
           set -ex
           DOCKER_REGISTRY="$(head -n1 ci/docker-registry)"
-          ./ci/jenkins/test.sh --testcase '{e2e_type}' --registry ${{DOCKER_REGISTRY}}
+          ./ci/jenkins/test.sh --testcase '{e2e_type}' --registry ${{DOCKER_REGISTRY}} --docker-user "${{DOCKER_USERNAME}}" --docker-password "${{DOCKER_PASSWORD}}"
 
 - builder:
     name: builder-conformance-win
@@ -137,7 +137,7 @@
           #!/bin/bash
           set -ex
           DOCKER_REGISTRY="$(head -n1 ci/docker-registry)"
-          ./ci/jenkins/test.sh --testcase '{conformance_type}' --registry ${{DOCKER_REGISTRY}}
+          ./ci/jenkins/test.sh --testcase '{conformance_type}' --registry ${{DOCKER_REGISTRY}} --docker-user "${{DOCKER_USERNAME}}" --docker-password "${{DOCKER_PASSWORD}}"
 
 - builder:
     name: builder-flexible-ipam-e2e
@@ -146,7 +146,7 @@
           #!/bin/bash
           set -e
           DOCKER_REGISTRY="$(head -n1 ci/docker-registry)"
-          ./ci/jenkins/test.sh --testcase e2e --registry ${DOCKER_REGISTRY} --workdir "/home/ubuntu" --kubeconfig "/home/ubuntu/kube.conf" --testbed-type "flexible-ipam"
+          ./ci/jenkins/test.sh --testcase e2e --registry ${DOCKER_REGISTRY} --workdir "/home/ubuntu" --kubeconfig "/home/ubuntu/kube.conf" --testbed-type "flexible-ipam" --docker-user "${{DOCKER_USERNAME}}" --docker-password "${{DOCKER_PASSWORD}}"
 
 - builder:
     name: builder-flow-visibility
@@ -218,7 +218,7 @@
           ./ci/kind/kind-setup.sh --antrea-cni create "${{FULL_CLUSTER_NAME}}" --ip-family '{ip_version}'
           kind export kubeconfig -n "${{FULL_CLUSTER_NAME}}" --kubeconfig ${{PWD}}/.kube/config
           set +e
-          ./ci/jenkins/test.sh --testcase '{conformance_type}' --registry ${{DOCKER_REGISTRY}} --kubeconfig ${{PWD}}/.kube/config --testbed-type "kind" --kind-cluster-name "${{FULL_CLUSTER_NAME}}"
+          ./ci/jenkins/test.sh --testcase '{conformance_type}' --registry ${{DOCKER_REGISTRY}} --kubeconfig ${{PWD}}/.kube/config --testbed-type "kind" --kind-cluster-name "${{FULL_CLUSTER_NAME}}" --docker-user "${{DOCKER_USERNAME}}" --docker-password "${{DOCKER_PASSWORD}}"
           return_code=$?
           set -ex
           ./ci/kind/kind-setup.sh destroy "${{FULL_CLUSTER_NAME}}"
@@ -241,7 +241,7 @@
           ./ci/kind/kind-setup.sh --antrea-cni create "${{FULL_CLUSTER_NAME}}" --ip-family '{ip_version}'
           kind export kubeconfig -n "${{FULL_CLUSTER_NAME}}" --kubeconfig ${{PWD}}/.kube/config
           set +e
-          ./ci/jenkins/test.sh --testcase e2e --registry ${{DOCKER_REGISTRY}} --kubeconfig ${{PWD}}/.kube/config --testbed-type "kind" --kind-cluster-name "${{FULL_CLUSTER_NAME}}"
+          ./ci/jenkins/test.sh --testcase e2e --registry ${{DOCKER_REGISTRY}} --kubeconfig ${{PWD}}/.kube/config --testbed-type "kind" --kind-cluster-name "${{FULL_CLUSTER_NAME}}" --docker-user "${{DOCKER_USERNAME}}" --docker-password "${{DOCKER_PASSWORD}}"
           return_code=$?
           set -ex
           ./ci/kind/kind-setup.sh destroy "${{FULL_CLUSTER_NAME}}"
@@ -273,7 +273,7 @@
           #!/bin/bash
           set -e 
           DOCKER_REGISTRY="$(head -n1 ci/docker-registry)"
-          ./ci/jenkins/test-mc.sh --testcase e2e --registry ${DOCKER_REGISTRY} --mc-gateway --codecov-token "${CODECOV_TOKEN}" --coverage --kind
+          ./ci/jenkins/test-mc.sh --testcase e2e --registry ${DOCKER_REGISTRY} --mc-gateway --codecov-token "${CODECOV_TOKEN}" --coverage --kind --docker-user "${{DOCKER_USERNAME}}" --docker-password "${{DOCKER_PASSWORD}}"
             
 - builder:
     name: builder-e2e-jumper
@@ -282,7 +282,7 @@
           #!/bin/bash
           set -e
           DOCKER_REGISTRY="$(head -n1 ci/docker-registry)"
-          ./ci/jenkins/test.sh --testcase e2e --registry ${DOCKER_REGISTRY} --testbed-type jumper
+          ./ci/jenkins/test.sh --testcase e2e --registry ${DOCKER_REGISTRY} --testbed-type jumper --docker-user "${{DOCKER_USERNAME}}" --docker-password "${{DOCKER_PASSWORD}}"
 
 - builder:
     name: builder-conformance-jumper
@@ -291,7 +291,7 @@
           #!/bin/bash
           set -e
           DOCKER_REGISTRY="$(head -n1 ci/docker-registry)"
-          ./ci/jenkins/test.sh --testcase '{conformance_type}' --registry ${{DOCKER_REGISTRY}} --testbed-type jumper
+          ./ci/jenkins/test.sh --testcase '{conformance_type}' --registry ${{DOCKER_REGISTRY}} --testbed-type jumper --docker-user "${{DOCKER_USERNAME}}" --docker-password "${{DOCKER_PASSWORD}}"
 
 - builder:
      name: builder-stop-all

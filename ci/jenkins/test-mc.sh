@@ -60,7 +60,9 @@ Run Antrea multi-cluster e2e tests on a remote (Jenkins) Linux Cluster Set.
         --codecov-token               Token used to upload coverage report(s) to Codecov.
         --coverage                    Run e2e with coverage.
         --kind                        Run e2e on Kind clusters.
-        --debug                       Do not clean up Kind clusters when --kind is set."
+        --debug                       Do not clean up Kind clusters when --kind is set.
+        --docker-user                 Username for Docker account.
+        --docker-password             Password for Docker account."
 
 function print_usage {
     echoerr "$_usage"
@@ -99,6 +101,14 @@ case $key in
     --coverage)
     COVERAGE=true
     shift
+    ;;
+    --docker-user)
+    dockerUser="$2"
+    shift 2
+    ;;
+    --docker-password)
+    dockerPassword="$2"
+    shift 2
     ;;
     --kind)
     KIND=true
@@ -476,6 +486,7 @@ function collect_coverage {
 
 trap clean_multicluster EXIT
 source $WORKSPACE/ci/jenkins/utils.sh
+docker_login "${dockerUser}" "${dockerPassword}"
 check_and_upgrade_golang
 clean_tmp
 clean_images

@@ -57,7 +57,9 @@ Setup a VMC cluster to run K8s e2e community tests (E2e, Conformance, all featur
         --coverage               Run e2e with coverage.
         --test-only              Only run test on current cluster. Not set up/clean up the cluster.
         --codecov-token          Token used to upload coverage report(s) to Codecov.
-        --registry               Using private registry to pull images."
+        --registry               Using private registry to pull images.
+        --docker-user            Username for Docker account.
+        --docker-password        Password for Docker account."
 
 function print_usage {
     echoerr "$_usage"
@@ -106,6 +108,14 @@ case $key in
     ;;
     --password)
     CLUSTER_PASSWORD="$2"
+    shift 2
+    ;;
+    --docker-user)
+    dockerUser="$2"
+    shift 2
+    ;;
+    --docker-password)
+    dockerPassword="$2"
     shift 2
     ;;
     --garbage-collection)
@@ -646,14 +656,13 @@ function collect_coverage() {
 }
 
 function cleanup_cluster() {
+    release_static_ip
     echo "=== Cleaning up VMC cluster ${CLUSTER} ==="
     export KUBECONFIG=$KUBECONFIG_PATH
 
     kubectl delete ns ${CLUSTER}
     rm -rf "${GIT_CHECKOUT_DIR}/jenkins"
     echo "=== Cleanup cluster ${CLUSTER} succeeded ==="
-
-    release_static_ip
 }
 
 function garbage_collection() {
@@ -708,6 +717,7 @@ SSH_WITH_UTILS_KEY="ssh -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyCheck
 SCP_WITH_UTILS_KEY="scp -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -i ${WORKDIR}/utils/key"
 
 source $WORKSPACE/ci/jenkins/utils.sh
+echo $dockerUser
 check_and_upgrade_golang
 clean_tmp
 if [[ "$RUN_GARBAGE_COLLECTION" == true ]]; then
