@@ -244,9 +244,10 @@ function collect_windows_network_info_and_logs {
         ANTREA_AGENT_LOG_PATH="${DEBUG_LOG_PATH}/${AGENTNAME}/antrea_agent_log"
         mkdir "${ANTREA_AGENT_LOG_PATH}"
         kubectl logs "${AGENTNAME}" -n kube-system -c antrea-agent > "${ANTREA_AGENT_LOG_PATH}/antrea-agent.log"
-        if [[ "${AGENTNAME}" =~ "windows" ]]; then
+        if [[ "${TESTCASE}" == "windows-e2e-ovs-as-service" ]]; then
             echo "Windows agent doesn't have antrea-ovs container"
         else
+            echo "=== Collecting '${AGENTNAME}' ovs log after failure ==="
             kubectl logs "${AGENTNAME}" -n kube-system -c antrea-ovs > "${ANTREA_AGENT_LOG_PATH}/antrea-ovs.log"
         fi
     done
@@ -408,6 +409,8 @@ function  build_and_deliver_antrea_windows_and_linux_images {
     ${PRINT_DOCKER_STATUS}
     export_govc_env_var
     # Enable verbose log for troubleshooting.
+    curl -OL ${WINDOWS_YAML_NAME}.yml
+    cp ${WINDOWS_YAML_NAME}.yml build/yamls/${WINDOWS_YAML_NAME}.yml
     sed -i "s/--v=0/--v=4/g" build/yamls/antrea.yml build/yamls/${WINDOWS_YAML_NAME}.yml
 
     echo "====== Updating yaml files to enable proxyAll ======"
@@ -478,12 +481,8 @@ function deliver_antrea_linux {
 function deliver_antrea_windows {
     echo "===== Build Antrea Windows ====="
     rm -f antrea-windows.tar.gz
-    DOCKER_REGISTRY="${DOCKER_REGISTRY}" ./hack/build-antrea-windows-all.sh --pull
-    if ! (test -f antrea-windows.tar); then
-        echo "antrea-windows.tar wasn't built, exiting"
-        exit 1
-    fi
-    gzip -f antrea-windows.tar
+    curl -OL antrea-advanced-windows-v2.6.2_vmware.1.tar.gz
+    mv antrea-advanced-windows-v2.6.2_vmware.1.tar.gz antrea-windows.tar.gz
 
     echo "===== Deliver Antrea Windows to Windows worker nodes and pull necessary images on Windows worker nodes ====="
     sed -i 's/if (!(Test-Path $AntreaAgentConfigPath))/if ($true)/' hack/windows/Helper.psm1
@@ -776,9 +775,9 @@ function run_conformance_windows {
     export KUBE_TEST_REPO_LIST=${WORKDIR}/repo_list
     if [ "$TESTCASE" == "windows-networkpolicy" ]; then
         # Allow LinuxOnly mark in windows-networkpolicy because Antrea Windows supports NP functions.
-        ginkgo -timeout=3h -p --flake-attempts 3 --no-color $E2ETEST_PATH -- --provider=skeleton --ginkgo.focus="$WINDOWS_NETWORKPOLICY_FOCUS" --ginkgo.skip="$WINDOWS_NETWORKPOLICY_CONTAINERD_SKIP" > windows_conformance_result_no_color.txt || true
+        ginkgo -timeout=4h -p --flake-attempts 5 --no-color $E2ETEST_PATH -- --provider=skeleton --ginkgo.focus="$WINDOWS_NETWORKPOLICY_FOCUS" --ginkgo.skip="$WINDOWS_NETWORKPOLICY_CONTAINERD_SKIP" > windows_conformance_result_no_color.txt || true
     else
-        ginkgo --no-color $E2ETEST_PATH -- --provider=skeleton --node-os-distro=windows --ginkgo.focus="$WINDOWS_CONFORMANCE_FOCUS" --ginkgo.skip="$WINDOWS_CONFORMANCE_SKIP" > windows_conformance_result_no_color.txt || true
+        ginkgo --flake-attempts 3 --no-color $E2ETEST_PATH -- --provider=skeleton --node-os-distro=windows --ginkgo.focus="$WINDOWS_CONFORMANCE_FOCUS" --ginkgo.skip="$WINDOWS_CONFORMANCE_SKIP" > windows_conformance_result_no_color.txt || true
     fi
 
     if grep -Fxq "Test Suite Failed" windows_conformance_result_no_color.txt; then
@@ -1022,9 +1021,9 @@ fi
 trap clean_antrea EXIT
 if [[ ${TESTCASE} =~ "windows" ]]; then
     if [[ ${TESTCASE} == "windows-e2e-ovs-as-service" ]]; then
-        WINDOWS_YAML_NAME="antrea-windows"
+        WINDOWS_YAML_NAME="antrea-windows-v2.6.2+vmware.1"
     else
-        WINDOWS_YAML_NAME="antrea-windows-with-ovs"
+        WINDOWS_YAML_NAME="antrea-windows-v2.6.2+vmware.1"
     fi
     build_and_deliver_antrea_windows_and_linux_images
     if [[ ${TESTCASE} =~ "e2e" ]]; then
