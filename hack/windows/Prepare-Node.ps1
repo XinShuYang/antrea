@@ -51,7 +51,7 @@ $ErrorActionPreference = 'Stop'
 
 function DownloadFile($destination, $source) {
     Write-Host("Downloading $source to $destination")
-    curl.exe --silent --fail -Lo $destination $source
+    curl.exe --silent --fail --ssl-no-revoke -Lo $destination $source
 
     if (!$?) {
         Write-Error "Download $source failed"
@@ -90,8 +90,8 @@ $env:Path += ";$global:KubernetesPath"
 [Environment]::SetEnvironmentVariable("Path", $env:Path, [System.EnvironmentVariableTarget]::Machine)
 [Environment]::SetEnvironmentVariable("NODE_IP", $NodeIP, [System.EnvironmentVariableTarget]::Machine)
 
-DownloadFile $kubeletBinPath "https:/$KubernetesURL/$KubernetesVersion/bin/windows/amd64/kubelet.exe"
-DownloadFile "$global:KubernetesPath\kubeadm.exe" "https:/$KubernetesURL/$KubernetesVersion/bin/windows/amd64/kubeadm.exe"
+DownloadFile $kubeletBinPath "https://$KubernetesURL/$KubernetesVersion/bin/windows/amd64/kubelet.exe"
+DownloadFile "$global:KubernetesPath\kubeadm.exe" "https://$KubernetesURL/$KubernetesVersion/bin/windows/amd64/kubeadm.exe"
 
 
 mkdir -force C:\var\log\kubelet
