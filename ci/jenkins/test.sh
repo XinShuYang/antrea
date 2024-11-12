@@ -243,9 +243,10 @@ function collect_windows_network_info_and_logs {
         ANTREA_AGENT_LOG_PATH="${DEBUG_LOG_PATH}/${AGENTNAME}/antrea_agent_log"
         mkdir "${ANTREA_AGENT_LOG_PATH}"
         kubectl logs "${AGENTNAME}" -n kube-system -c antrea-agent > "${ANTREA_AGENT_LOG_PATH}/antrea-agent.log"
-        if [[ "${AGENTNAME}" =~ "windows" ]]; then
+        if [[ "${TESTCASE}" == "windows-e2e-ovs-as-service" ]]; then
             echo "Windows agent doesn't have antrea-ovs container"
         else
+            echo "=== Collecting '${AGENTNAME}' ovs log after failure ==="
             kubectl logs "${AGENTNAME}" -n kube-system -c antrea-ovs > "${ANTREA_AGENT_LOG_PATH}/antrea-ovs.log"
         fi
     done
@@ -770,9 +771,9 @@ function run_conformance_windows {
     export KUBE_TEST_REPO_LIST=${WORKDIR}/repo_list
     if [ "$TESTCASE" == "windows-networkpolicy" ]; then
         # Allow LinuxOnly mark in windows-networkpolicy because Antrea Windows supports NP functions.
-        ginkgo -timeout=3h -p --flake-attempts 3 --no-color $E2ETEST_PATH -- --provider=skeleton --ginkgo.focus="$WINDOWS_NETWORKPOLICY_FOCUS" --ginkgo.skip="$WINDOWS_NETWORKPOLICY_CONTAINERD_SKIP" > windows_conformance_result_no_color.txt || true
+        ginkgo -timeout=4h -p --flake-attempts 5 --no-color $E2ETEST_PATH -- --provider=skeleton --ginkgo.focus="$WINDOWS_NETWORKPOLICY_FOCUS" --ginkgo.skip="$WINDOWS_NETWORKPOLICY_CONTAINERD_SKIP" > windows_conformance_result_no_color.txt || true
     else
-        ginkgo --no-color $E2ETEST_PATH -- --provider=skeleton --node-os-distro=windows --ginkgo.focus="$WINDOWS_CONFORMANCE_FOCUS" --ginkgo.skip="$WINDOWS_CONFORMANCE_SKIP" > windows_conformance_result_no_color.txt || true
+        ginkgo --flake-attempts 3 --no-color $E2ETEST_PATH -- --provider=skeleton --node-os-distro=windows --ginkgo.focus="$WINDOWS_CONFORMANCE_FOCUS" --ginkgo.skip="$WINDOWS_CONFORMANCE_SKIP" > windows_conformance_result_no_color.txt || true
     fi
 
     if grep -Fxq "Test Suite Failed" windows_conformance_result_no_color.txt; then

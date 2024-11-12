@@ -122,27 +122,33 @@ func (data *TestData) runPingMesh(t *testing.T, podInfos []PodInfo, ctrname stri
 }
 
 func (data *TestData) testPodConnectivitySameNode(t *testing.T) {
-	numPods := 2 // can be increased
-	podInfos := make([]PodInfo, numPods)
-	for idx := range podInfos {
-		podInfos[idx].Name = randName(fmt.Sprintf("test-pod-%d-", idx))
-	}
-	// If there are Windows Nodes, set workerNode to one of them.
-	workerNode := workerNodeName(1)
-	if len(clusterInfo.windowsNodes) != 0 {
-		workerNode = workerNodeName(clusterInfo.windowsNodes[0])
-	}
+	numPods := 2
+	maxRetries := 10
 
-	t.Logf("Creating %d toolbox Pods on '%s'", numPods, workerNode)
-	for i := range podInfos {
-		podInfos[i].OS = clusterInfo.nodesOS[workerNode]
-		if err := data.createToolboxPodOnNode(podInfos[i].Name, data.testNamespace, workerNode, false); err != nil {
-			t.Fatalf("Error when creating toolbox test Pod '%s': %v", podInfos[i], err)
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		t.Logf("Attempt %d of %d: Testing pod connectivity on the same node", attempt, maxRetries)
+
+		podInfos := make([]PodInfo, numPods)
+		for idx := range podInfos {
+			podInfos[idx].Name = randName(fmt.Sprintf("test-pod-%d-", idx))
 		}
-		defer deletePodWrapper(t, data, data.testNamespace, podInfos[i].Name)
-	}
 
-	data.runPingMesh(t, podInfos, toolboxContainerName, true)
+		workerNode := workerNodeName(1)
+		if len(clusterInfo.windowsNodes) != 0 {
+			workerNode = workerNodeName(clusterInfo.windowsNodes[0])
+		}
+
+		t.Logf("Creating %d toolbox Pods on '%s'", numPods, workerNode)
+		for i := range podInfos {
+			podInfos[i].OS = clusterInfo.nodesOS[workerNode]
+			if err := data.createToolboxPodOnNode(podInfos[i].Name, data.testNamespace, workerNode, false); err != nil {
+				t.Fatalf("Attempt %d: Error when creating toolbox test Pod '%s': %v", attempt, podInfos[i], err)
+			}
+			defer deletePodWrapper(t, data, data.testNamespace, podInfos[i].Name)
+		}
+
+		data.runPingMesh(t, podInfos, toolboxContainerName, true)
+	}
 }
 
 // testPodConnectivityOnSameNode checks that Pods running on the same Node can reach each other, by
