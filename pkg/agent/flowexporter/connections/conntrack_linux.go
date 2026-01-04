@@ -20,13 +20,16 @@ package connections
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/ti-mo/conntrack"
+	"golang.org/x/sys/cpu"
 	"k8s.io/klog/v2"
 
 	"antrea.io/antrea/pkg/agent/config"
-	"antrea.io/antrea/pkg/agent/flowexporter"
+	"antrea.io/antrea/pkg/agent/flowexporter/connection"
+	"antrea.io/antrea/pkg/agent/flowexporter/filter"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/util/sysctl"
 )
@@ -40,11 +43,12 @@ type connTrackSystem struct {
 	serviceCIDRv6        netip.Prefix
 	isAntreaProxyEnabled bool
 	connTrack            NetFilterConnTrack
+	protocolFilter       filter.ProtocolFilter
 }
 
 // TODO: detect the endianness of the system when initializing conntrack dumper to handle situations on big-endian platforms.
 // All connection labels are required to store in little endian format in conntrack dumper.
-func NewConnTrackSystem(nodeConfig *config.NodeConfig, serviceCIDRv4 netip.Prefix, serviceCIDRv6 netip.Prefix, isAntreaProxyEnabled bool) *connTrackSystem {
+func NewConnTrackSystem(nodeConfig *config.NodeConfig, serviceCIDRv4 netip.Prefix, serviceCIDRv6 netip.Prefix, isAntreaProxyEnabled bool, protocolFilter filter.ProtocolFilter) *connTrackSystem {
 	if err := SetupConntrackParameters(); err != nil {
 		// Do not fail, but continue after logging an error as we can still dump flows with missing information.
 		klog.Errorf("Error when setting up conntrack parameters, some information may be missing from exported flows: %v", err)
@@ -56,11 +60,12 @@ func NewConnTrackSystem(nodeConfig *config.NodeConfig, serviceCIDRv4 netip.Prefi
 		serviceCIDRv6,
 		isAntreaProxyEnabled,
 		&netFilterConnTrack{},
+		protocolFilter,
 	}
 }
 
 // DumpFlows opens netlink connection and dumps all the flows in Antrea ZoneID of conntrack table.
-func (ct *connTrackSystem) DumpFlows(zoneFilter uint16) ([]*flowexporter.Connection, int, error) {
+func (ct *connTrackSystem) DumpFlows(zoneFilter uint16) ([]*connection.Connection, int, error) {
 	svcCIDR := ct.serviceCIDRv4
 	if zoneFilter == openflow.CtZoneV6 {
 		svcCIDR = ct.serviceCIDRv6
@@ -68,19 +73,20 @@ func (ct *connTrackSystem) DumpFlows(zoneFilter uint16) ([]*flowexporter.Connect
 	// Get connection to netlink socket
 	err := ct.connTrack.Dial()
 	if err != nil {
-		return nil, 0, fmt.Errorf("error when getting netlink socket: %v", err)
+		return nil, 0, fmt.Errorf("error when getting netlink socket: %w", err)
 	}
+	defer ct.connTrack.Close()
 
 	// ZoneID filter is not supported currently in tl-mo/conntrack library.
 	// Link to issue: https://github.com/ti-mo/conntrack/issues/23
 	// Dump all flows in the conntrack table for now.
 	conns, err := ct.connTrack.DumpFlowsInCtZone(zoneFilter)
 	if err != nil {
-		return nil, 0, fmt.Errorf("error when dumping flows from conntrack: %v", err)
+		return nil, 0, fmt.Errorf("error when dumping flows from conntrack: %w", err)
 	}
 
-	filteredConns := filterAntreaConns(conns, ct.nodeConfig, svcCIDR, zoneFilter, ct.isAntreaProxyEnabled)
-	klog.V(2).Infof("No. of flow exporter considered flows in Antrea zoneID: %d", len(filteredConns))
+	filteredConns := filterAntreaConns(conns, ct.nodeConfig, svcCIDR, zoneFilter, ct.isAntreaProxyEnabled, ct.protocolFilter)
+	klog.V(2).InfoS("Finished filtering flows from conntrack", "zone", zoneFilter, "numConns", len(filteredConns))
 
 	return filteredConns, len(conns), nil
 }
@@ -88,7 +94,8 @@ func (ct *connTrackSystem) DumpFlows(zoneFilter uint16) ([]*flowexporter.Connect
 // NetFilterConnTrack interface helps for testing the code that contains the third party library functions ("github.com/ti-mo/conntrack")
 type NetFilterConnTrack interface {
 	Dial() error
-	DumpFlowsInCtZone(zoneFilter uint16) ([]*flowexporter.Connection, error)
+	Close() error
+	DumpFlowsInCtZone(zoneFilter uint16) ([]*connection.Connection, error)
 }
 
 type netFilterConnTrack struct {
@@ -105,25 +112,27 @@ func (nfct *netFilterConnTrack) Dial() error {
 	return nil
 }
 
-func (nfct *netFilterConnTrack) DumpFlowsInCtZone(zoneFilter uint16) ([]*flowexporter.Connection, error) {
-	conns, err := nfct.netlinkConn.DumpFilter(conntrack.Filter{}, nil)
+func (nfct *netFilterConnTrack) Close() error {
+	return nfct.netlinkConn.Close()
+}
+
+func (nfct *netFilterConnTrack) DumpFlowsInCtZone(zoneFilter uint16) ([]*connection.Connection, error) {
+	conns, err := nfct.netlinkConn.DumpFilter(conntrack.NewFilter().Zone(zoneFilter), nil)
 	if err != nil {
 		return nil, err
 	}
-	antreaConns := make([]*flowexporter.Connection, len(conns))
+	antreaConns := make([]*connection.Connection, len(conns))
 	for i := range conns {
-		conn := conns[i]
-		antreaConns[i] = NetlinkFlowToAntreaConnection(&conn)
+		antreaConns[i] = NetlinkFlowToAntreaConnection(&conns[i])
 	}
 
-	klog.V(2).Infof("Finished dumping -- total no. of flows in conntrack: %d", len(antreaConns))
+	klog.V(2).InfoS("Finished dumping from conntrack", "zone", zoneFilter, "numConns", len(antreaConns))
 
-	nfct.netlinkConn.Close()
 	return antreaConns, nil
 }
 
-func NetlinkFlowToAntreaConnection(conn *conntrack.Flow) *flowexporter.Connection {
-	newConn := flowexporter.Connection{
+func NetlinkFlowToAntreaConnection(conn *conntrack.Flow) *connection.Connection {
+	newConn := connection.Connection{
 		ID:         conn.ID,
 		Timeout:    conn.Timeout,
 		StartTime:  conn.Timestamp.Start,
@@ -132,8 +141,8 @@ func NetlinkFlowToAntreaConnection(conn *conntrack.Flow) *flowexporter.Connectio
 		Mark:       conn.Mark,
 		Labels:     conn.Labels,
 		LabelsMask: conn.LabelsMask,
-		StatusFlag: uint32(conn.Status.Value),
-		FlowKey: flowexporter.Tuple{
+		StatusFlag: uint32(conn.Status),
+		FlowKey: connection.Tuple{
 			SourceAddress:      conn.TupleOrig.IP.SourceAddress,
 			DestinationAddress: conn.TupleReply.IP.SourceAddress,
 			Protocol:           conn.TupleOrig.Proto.Protocol,
@@ -151,6 +160,12 @@ func NetlinkFlowToAntreaConnection(conn *conntrack.Flow) *flowexporter.Connectio
 		DestinationPodNamespace:    "",
 		DestinationPodName:         "",
 		TCPState:                   "",
+	}
+	// github.com/ti-mo/conntrack uses native endianness (binary.NativeEndian), but we require a
+	// big-endian representation for the Labels / LabelsMask fields in connection.Connection.
+	if !cpu.IsBigEndian {
+		slices.Reverse(newConn.Labels)
+		slices.Reverse(newConn.LabelsMask)
 	}
 	if conn.ProtoInfo.TCP != nil {
 		newConn.TCPState = stateToString(conn.ProtoInfo.TCP.State)

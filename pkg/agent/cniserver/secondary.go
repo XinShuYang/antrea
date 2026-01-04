@@ -16,6 +16,7 @@ package cniserver
 
 import (
 	"fmt"
+	"net"
 
 	current "github.com/containernetworking/cni/pkg/types/100"
 	"k8s.io/klog/v2"
@@ -44,7 +45,7 @@ func (pc *podConfigurator) ConfigureSriovSecondaryInterface(
 		return fmt.Errorf("error getting the Pod SR-IOV VF device ID")
 	}
 
-	err := pc.ifConfigurator.configureContainerLink(podName, podNamespace, containerID, containerNetNS, containerInterfaceName, mtu, "", podSriovVFDeviceID, result, nil)
+	err := pc.ifConfigurator.configureContainerLink(podName, podNamespace, containerID, containerNetNS, containerInterfaceName, mtu, "", podSriovVFDeviceID, result, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -53,9 +54,10 @@ func (pc *podConfigurator) ConfigureSriovSecondaryInterface(
 
 	// Use podSriovVFDeviceID as the interface name in the interface store.
 	hostInterfaceName := podSriovVFDeviceID
-	containerConfig := buildContainerConfig(hostInterfaceName, containerID, podName, podNamespace, containerIface, result.IPs, 0)
+	containerConfig := buildContainerConfig(hostInterfaceName, containerID, podName, podNamespace,
+		containerNetNS, containerIface, result.IPs, 0)
 	pc.ifaceStore.AddInterface(containerConfig)
-
+	containerIface.PciID = podSriovVFDeviceID
 	if result.IPs != nil {
 		if err = pc.ifConfigurator.advertiseContainerAddr(containerNetNS, containerIface.Name, result); err != nil {
 			klog.ErrorS(err, "Failed to advertise IP address for SR-IOV interface",
@@ -67,11 +69,17 @@ func (pc *podConfigurator) ConfigureSriovSecondaryInterface(
 
 // DeleteSriovSecondaryInterface deletes a SRIOV secondary interface.
 func (pc *podConfigurator) DeleteSriovSecondaryInterface(interfaceConfig *interfacestore.InterfaceConfig) error {
+	if err := pc.ifConfigurator.recoverVFInterfaceName(interfaceConfig.IFDev, interfaceConfig.NetNS); err != nil {
+		klog.ErrorS(err, "Failed to rename the container interface link to the original VF name",
+			"Pod", klog.KRef(interfaceConfig.PodNamespace, interfaceConfig.PodName),
+			"interface", interfaceConfig.IFDev)
+		return err
+	}
+
 	pc.ifaceStore.DeleteInterface(interfaceConfig)
 	klog.InfoS("Deleted SR-IOV interface", "Pod", klog.KRef(interfaceConfig.PodNamespace, interfaceConfig.PodName),
 		"interface", interfaceConfig.IFDev)
 	return nil
-
 }
 
 // ConfigureVLANSecondaryInterface configures a VLAN secondary interface on the secondary network
@@ -79,9 +87,9 @@ func (pc *podConfigurator) DeleteSriovSecondaryInterface(interfaceConfig *interf
 func (pc *podConfigurator) ConfigureVLANSecondaryInterface(
 	podName, podNamespace string,
 	containerID, containerNetNS, containerInterfaceName string,
-	mtu int, ipamResult *ipam.IPAMResult) error {
+	mtu int, ipamResult *ipam.IPAMResult, mac net.HardwareAddr) error {
 	return pc.configureInterfacesCommon(podName, podNamespace, containerID, containerNetNS,
-		containerInterfaceName, mtu, "", ipamResult, nil)
+		containerInterfaceName, mtu, "", ipamResult, nil, mac)
 }
 
 // DeleteVLANSecondaryInterface deletes a VLAN secondary interface.

@@ -46,11 +46,6 @@ const (
 	linuxOS              = "Linux"
 )
 
-var (
-	icmpType = int32(8)
-	icmpCode = int32(0)
-)
-
 type vmInfo struct {
 	nodeName string
 	osType   string
@@ -143,9 +138,9 @@ func testExternalNodeSupportBundleCollection(t *testing.T, data *TestData, vmLis
 			},
 		},
 	}
-	_, err = data.crdClient.CrdV1alpha1().SupportBundleCollections().Create(context.TODO(), sbc, metav1.CreateOptions{})
+	_, err = data.CRDClient.CrdV1alpha1().SupportBundleCollections().Create(context.TODO(), sbc, metav1.CreateOptions{})
 	require.NoError(t, err)
-	defer data.crdClient.CrdV1alpha1().SupportBundleCollections().Delete(context.TODO(), bundleName, metav1.DeleteOptions{})
+	defer data.CRDClient.CrdV1alpha1().SupportBundleCollections().Delete(context.TODO(), bundleName, metav1.DeleteOptions{})
 	failOnError(data.waitForSupportBundleCollectionRealized(t, bundleName, 30*time.Second), t)
 	pods, err := data.clientset.CoreV1().Pods(data.testNamespace).List(context.TODO(), metav1.ListOptions{LabelSelector: "app=sftp"})
 	require.NoError(t, err)
@@ -176,9 +171,10 @@ func testExternalNodeSupportBundleCollection(t *testing.T, data *TestData, vmLis
 		}
 		require.NoError(t, err)
 		var expectedInfoEntries []string
-		if vm.osType == linuxOS {
+		switch vm.osType {
+		case linuxOS:
 			expectedInfoEntries = []string{"address", "addressgroups", "agentinfo", "appliedtogroups", "flows", "goroutinestacks", "groups", "iptables", "link", "logs", "memprofile", "networkpolicies", "ovsports", "route"}
-		} else if vm.osType == windowsOS {
+		case windowsOS:
 			expectedInfoEntries = []string{"addressgroups", "agentinfo", "appliedtogroups", "flows", "goroutinestacks", "groups", "ipconfig", "logs\\ovs\\ovs-vswitchd.log", "logs\\ovs\\ovsdb-server.log", "memprofile", "network-adapters", "networkpolicies", "ovsports", "routes"}
 		}
 		actualInfoEntries := strings.Split(strings.Trim(stdout, "\n"), "\n")
@@ -255,7 +251,7 @@ func teardownVMAgentTest(t *testing.T, data *TestData, vmList []vmInfo) {
 	}
 	t.Logf("TestVMAgent teardown")
 	for _, vm := range vmList {
-		err := data.crdClient.CrdV1alpha1().ExternalNodes(namespace).Delete(context.TODO(), vm.nodeName, metav1.DeleteOptions{})
+		err := data.CRDClient.CrdV1alpha1().ExternalNodes(namespace).Delete(context.TODO(), vm.nodeName, metav1.DeleteOptions{})
 		assert.NoError(t, err, "Failed to delete ExternalNode %s", vm.nodeName)
 		verifyExternalEntityExistence(t, data, vm.eeName, vm.nodeName, false)
 		verifyUpLinkAfterCleanup(vm)
@@ -265,7 +261,7 @@ func teardownVMAgentTest(t *testing.T, data *TestData, vmList []vmInfo) {
 func verifyExternalEntityExistence(t *testing.T, data *TestData, eeName string, vmNodeName string, expectExists bool) {
 	if err := wait.PollUntilContextTimeout(context.Background(), 10*time.Second, 1*time.Minute, true, func(ctx context.Context) (done bool, err error) {
 		t.Logf("Verifying ExternalEntity %s, expectExists %t", eeName, expectExists)
-		_, err = data.crdClient.CrdV1alpha2().ExternalEntities(namespace).Get(context.TODO(), eeName, metav1.GetOptions{})
+		_, err = data.CRDClient.CrdV1alpha2().ExternalEntities(namespace).Get(context.TODO(), eeName, metav1.GetOptions{})
 		if err != nil && !errors.IsNotFound(err) {
 			t.Errorf("Failed to get ExternalEntity %s by ExternalNode %s: %v", eeName, vmNodeName, err)
 			return false, err
@@ -360,7 +356,7 @@ func getVMInfo(t *testing.T, data *TestData, nodeName string) (vmInfo, error) {
 func getWindowsVMInfo(t *testing.T, data *TestData, nodeName string) (vmInfo, error) {
 	var err error
 	vm := vmInfo{nodeName: nodeName, osType: windowsOS}
-	cmd := fmt.Sprintf("powershell 'Get-WmiObject -Class Win32_IP4RouteTable | Where { $_.destination -eq \"0.0.0.0\" -and $_.mask -eq \"0.0.0.0\"} | Sort-Object metric1 | select interfaceindex | ft -HideTableHeaders'")
+	cmd := "powershell 'Get-WmiObject -Class Win32_IP4RouteTable | Where { $_.destination -eq \"0.0.0.0\" -and $_.mask -eq \"0.0.0.0\"} | Sort-Object metric1 | select interfaceindex | ft -HideTableHeaders'"
 	rc, ifIndex, stderr, err := data.RunCommandOnNode(nodeName, cmd)
 	if err != nil {
 		t.Logf("Failed to run command <%s> on VM %s, err %v", cmd, nodeName, err)
@@ -453,7 +449,7 @@ func createExternalNodeCRD(data *TestData, nodeName string, ifName string, ip st
 	testEn.AddInterface(ifName, ipList)
 	// Add labels on the VMs.
 	testEn.AddLabels(map[string]string{externalNodeLabelKey: nodeName})
-	return data.crdClient.CrdV1alpha1().ExternalNodes(namespace).Create(context.TODO(), testEn.Get(), metav1.CreateOptions{})
+	return data.CRDClient.CrdV1alpha1().ExternalNodes(namespace).Create(context.TODO(), testEn.Get(), metav1.CreateOptions{})
 }
 
 func testExternalNodeWithANP(t *testing.T, data *TestData, vmList []vmInfo) {
@@ -590,12 +586,10 @@ func createANPForExternalNode(t *testing.T, data *TestData, name, namespace stri
 		SetName(namespace, name).
 		SetPriority(1.0).
 		SetAppliedToGroup([]ANNPAppliedToSpec{{ExternalEntitySelector: eeSelector}})
-
 	ruleFunc := builder.AddIngress
 	if !ingress {
 		ruleFunc = builder.AddEgress
 	}
-
 	switch proto {
 	case ProtocolTCP:
 		fallthrough
@@ -610,13 +604,32 @@ func createANPForExternalNode(t *testing.T, data *TestData, name, namespace stri
 			peerIPCIDR := fmt.Sprintf("%s/32", peerVM.ip)
 			cidr = &peerIPCIDR
 		}
+		ipBlock := &crdv1beta1.IPBlock{
+			CIDR: *cidr,
+		}
 		port := int32(iperfPort)
-		ruleFunc(proto, &port, nil, nil, nil, nil, nil, nil, nil, cidr, nil, nil, peerLabel,
-			nil, nil, nil, nil, ruleAction, "", "")
+		ruleFunc(ANNPRuleBuilder{
+			EESelector: peerLabel,
+			BaseRuleBuilder: BaseRuleBuilder{
+				Protoc:  proto,
+				Port:    &port,
+				Action:  ruleAction,
+				IPBlock: ipBlock,
+			}})
 	case ProtocolICMP:
 		peerIPCIDR := fmt.Sprintf("%s/32", nodeIP(0))
-		ruleFunc(ProtocolICMP, nil, nil, nil, &icmpType, &icmpCode, nil, nil, nil, &peerIPCIDR, nil, nil, nil,
-			nil, nil, nil, nil, ruleAction, "", "")
+		cidr := &peerIPCIDR
+		ipBlock := &crdv1beta1.IPBlock{
+			CIDR: *cidr,
+		}
+		ruleFunc(ANNPRuleBuilder{
+			BaseRuleBuilder: BaseRuleBuilder{
+				Protoc:   ProtocolICMP,
+				ICMPType: &icmpRequestType,
+				ICMPCode: &icmpRequestCode,
+				Action:   ruleAction,
+				IPBlock:  ipBlock,
+			}})
 	}
 	anpRule := builder.Get()
 
@@ -638,7 +651,7 @@ func createANPWithFQDN(t *testing.T, data *TestData, name string, namespace stri
 	for fqdn, action := range fqdnSettings {
 		ruleName := fmt.Sprintf("name-%d", i)
 		policyPeer := []crdv1beta1.NetworkPolicyPeer{{FQDN: fqdn}}
-		ports, _ := GenPortsOrProtocols(ProtocolTCP, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		ports, _ := GenPortsOrProtocols(BaseRuleBuilder{Protoc: ProtocolTCP})
 		newRule := crdv1beta1.Rule{
 			To:     policyPeer,
 			Ports:  ports,
@@ -733,7 +746,7 @@ func runIperfClient(t *testing.T, data *TestData, targetVM vmInfo, svrIP net.IP,
 		}
 	}
 
-	errCh := make(chan error, 0)
+	errCh := make(chan error)
 	go func() {
 		err := runCommandAndCheckResult(data, targetVM.nodeName, cmdStr, expectedOutput, "")
 		errCh <- err

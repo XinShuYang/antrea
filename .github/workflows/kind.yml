@@ -17,7 +17,7 @@ jobs:
     name: Check whether tests need to be run based on diff
     runs-on: [ubuntu-latest]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         fetch-depth: 0
         show-progress: false
@@ -34,7 +34,7 @@ jobs:
     if: ${{ needs.check-changes.outputs.has_changes == 'yes' }}
     runs-on: [ubuntu-latest]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         show-progress: false
     - name: Set up Docker Buildx
@@ -47,7 +47,7 @@ jobs:
     - name: Save Antrea image to tarball
       run:  docker save -o antrea-ubuntu.tar antrea/antrea-agent-ubuntu-coverage:latest antrea/antrea-controller-ubuntu-coverage:latest
     - name: Upload Antrea image for subsequent jobs
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: antrea-ubuntu-cov
         path: antrea-ubuntu.tar
@@ -59,14 +59,14 @@ jobs:
     if: ${{ needs.check-changes.outputs.has_changes == 'yes' }}
     runs-on: [ ubuntu-latest ]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         show-progress: false
     - run: make flow-aggregator-ubuntu-coverage
     - name: Save Flow Aggregator image to tarball
       run: docker save -o flow-aggregator.tar antrea/flow-aggregator-coverage:latest
     - name: Upload Flow Aggregator image for subsequent jobs
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: flow-aggregator-cov
         path: flow-aggregator.tar
@@ -82,14 +82,14 @@ jobs:
       run: |
         sudo apt-get clean
         df -h
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         show-progress: false
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
     - name: Download Antrea image from previous job
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: antrea-ubuntu-cov
     - name: Load Antrea image
@@ -109,7 +109,7 @@ jobs:
     - name: Tar coverage files
       run: tar -czf test-e2e-encap-coverage.tar.gz test-e2e-encap-coverage
     - name: Upload coverage for test-e2e-encap-coverage
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: test-e2e-encap-coverage
         path: test-e2e-encap-coverage.tar.gz
@@ -118,7 +118,7 @@ jobs:
       uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        files: '*.cov.out*'
+        files: '**/*.cov.out'
         disable_search: true
         flags: kind-e2e-tests
         name: codecov-test-e2e-encap
@@ -128,7 +128,7 @@ jobs:
       if: ${{ failure() }}
       run: tar -czf log.tar.gz log
     - name: Upload test log
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: ${{ failure() }}
       with:
         name: e2e-kind-encap.tar.gz
@@ -145,14 +145,14 @@ jobs:
       run: |
         sudo apt-get clean
         df -h
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         show-progress: false
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
     - name: Download Antrea image from previous job
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: antrea-ubuntu-cov
     - name: Load Antrea image
@@ -179,7 +179,7 @@ jobs:
     - name: Tar coverage files
       run: tar -czf test-e2e-encap-non-default-coverage.tar.gz test-e2e-encap-non-default-coverage
     - name: Upload coverage for test-e2e-encap-non-default-coverage
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: test-e2e-encap-non-default-coverage
         path: test-e2e-encap-non-default-coverage.tar.gz
@@ -188,7 +188,7 @@ jobs:
       uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        files: '*.cov.out*'
+        files: '**/*.cov.out'
         disable_search: true
         flags: kind-e2e-tests
         name: codecov-test-e2e-encap-non-default
@@ -198,7 +198,7 @@ jobs:
       if: ${{ failure() }}
       run: tar -czf log.tar.gz log
     - name: Upload test log
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: ${{ failure() }}
       with:
         name: e2e-kind-encap-non-default.tar.gz
@@ -215,14 +215,14 @@ jobs:
         run: |
           sudo apt-get clean
           df -h
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           show-progress: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
       - name: Download Antrea image from previous job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: antrea-ubuntu-cov
       - name: Load Antrea image
@@ -251,7 +251,7 @@ jobs:
       - name: Tar coverage files
         run: tar -czf test-e2e-encap-all-features-enabled-coverage.tar.gz test-e2e-encap-all-features-enabled-coverage
       - name: Upload coverage for test-e2e-encap-all-features-enabled-coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: test-e2e-encap-all-features-enabled-coverage
           path: test-e2e-encap-all-features-enabled-coverage.tar.gz
@@ -260,7 +260,7 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: '*.cov.out*'
+          files: '**/*.cov.out'
           disable_search: true
           flags: kind-e2e-tests
           name: codecov-test-e2e-encap-all-features-enabled
@@ -270,7 +270,7 @@ jobs:
         if: ${{ failure() }}
         run: tar -czf log.tar.gz log
       - name: Upload test log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: ${{ failure() }}
         with:
           name: e2e-kind-encap-all-features-enabled.tar.gz
@@ -280,16 +280,16 @@ jobs:
   test-e2e-ipam-feature-enabled:
     name: E2e tests on a Kind cluster on Linux with FlexibleIPAM feature enabled
     needs: [build-antrea-coverage-image]
-    runs-on: [ubuntu-latest-4-cores]
+    runs-on: [oracle-vm-4cpu-16gb-x86-64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           show-progress: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
       - name: Download Antrea image from previous job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: antrea-ubuntu-cov
       - name: Load Antrea image
@@ -309,12 +309,13 @@ jobs:
           ANTREA_LOG_DIR=$PWD/log ANTREA_COV_DIR=$PWD/test-ipam-e2e-coverage ./ci/kind/test-e2e-kind.sh \
            --encap-mode noEncap \
            --coverage \
+           --skip mode-irrelevant \
            --multicast \
            --flexible-ipam \
       - name: Tar coverage files
         run: tar -czf test-ipam-e2e-coverage.tar.gz test-ipam-e2e-coverage
       - name: Upload coverage for test-ipam-e2e-coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: test-ipam-e2e-coverage
           path: test-ipam-e2e-coverage.tar.gz
@@ -323,7 +324,7 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: '*.cov.out*'
+          files: '**/*.cov.out'
           disable_search: true
           flags: kind-e2e-tests
           name: test-ipam-e2e-coverage
@@ -333,7 +334,7 @@ jobs:
         if: ${{ failure() }}
         run: tar -czf log.tar.gz log
       - name: Upload test log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: ${{ failure() }}
         with:
           name: e2e-kind-ipam-features-enabled.tar.gz
@@ -350,14 +351,14 @@ jobs:
       run: |
         sudo apt-get clean
         df -h
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         show-progress: false
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
     - name: Download Antrea image from previous job
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: antrea-ubuntu-cov
     - name: Load Antrea image
@@ -377,7 +378,7 @@ jobs:
     - name: Tar coverage files
       run: tar -czf test-e2e-noencap-coverage.tar.gz test-e2e-noencap-coverage
     - name: Upload coverage for test-e2e-noencap-coverage
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: test-e2e-noencap-coverage
         path: test-e2e-noencap-coverage.tar.gz
@@ -386,7 +387,7 @@ jobs:
       uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        files: '*.cov.out*'
+        files: '**/*.cov.out'
         disable_search: true
         flags: kind-e2e-tests
         name: codecov-test-e2e-noencap
@@ -396,7 +397,7 @@ jobs:
       if: ${{ failure() }}
       run: tar -czf log.tar.gz log
     - name: Upload test log
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: ${{ failure() }}
       with:
         name: e2e-kind-noencap.tar.gz
@@ -413,14 +414,14 @@ jobs:
       run: |
         sudo apt-get clean
         df -h
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         show-progress: false
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
     - name: Download Antrea image from previous job
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: antrea-ubuntu-cov
     - name: Load Antrea image
@@ -440,7 +441,7 @@ jobs:
     - name: Tar coverage files
       run: tar -czf test-e2e-hybrid-coverage.tar.gz test-e2e-hybrid-coverage
     - name: Upload coverage for test-e2e-hybrid-coverage
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: test-e2e-hybrid-coverage
         path: test-e2e-hybrid-coverage.tar.gz
@@ -449,7 +450,7 @@ jobs:
       uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        files: '*.cov.out*'
+        files: '**/*.cov.out'
         disable_search: true
         flags: kind-e2e-tests
         name: codecov-test-e2e-hybrid
@@ -459,17 +460,90 @@ jobs:
       if: ${{ failure() }}
       run: tar -czf log.tar.gz log
     - name: Upload test log
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: ${{ failure() }}
       with:
         name: e2e-kind-hybrid.tar.gz
         path: log.tar.gz
         retention-days: 30
 
+  test-e2e-hybrid-non-default:
+    name: E2e tests on a Kind cluster on Linux (hybrid) with non default values (proxyAll=true, kube-proxy-mode=nftables)
+    needs: [ build-antrea-coverage-image ]
+    runs-on: [ ubuntu-latest ]
+    steps:
+      - name: Free disk space
+        # https://github.com/actions/virtual-environments/issues/709
+        run: |
+          sudo apt-get clean
+          df -h
+      - uses: actions/checkout@v6
+        with:
+          show-progress: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+      - name: Download Antrea image from previous job
+        uses: actions/download-artifact@v7
+        with:
+          name: antrea-ubuntu-cov
+      - name: Load Antrea image
+        run: |
+          docker load -i antrea-ubuntu.tar
+      - name: Install Kind
+        run: |
+          KIND_VERSION=$(head -n1 ./ci/kind/version)
+          curl -Lo ./kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-$(uname)-amd64
+          chmod +x ./kind
+          sudo mv kind /usr/local/bin
+      - name: Run e2e tests
+        run: |
+          mkdir log
+          mkdir test-e2e-hybrid-non-default-coverage
+          ANTREA_LOG_DIR=$PWD/log ANTREA_COV_DIR=$PWD/test-e2e-hybrid-non-default-coverage ./ci/kind/test-e2e-kind.sh \
+            --encap-mode hybrid \
+            --coverage \
+            --proxy-all \
+            --host-network-mode nftables \
+            --kube-proxy-mode nftables \
+            --feature-gates NFTablesHostNetworkMode=true \
+            --skip mode-irrelevant
+      - name: Tar coverage files
+        run: tar -czf test-e2e-hybrid-non-default-coverage.tar.gz test-e2e-hybrid-non-default-coverage
+      - name: Upload coverage for test-e2e-hybrid-non-default-coverage
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-e2e-hybrid-non-default-coverage
+          path: test-e2e-hybrid-non-default-coverage.tar.gz
+          retention-days: 30
+      - name: Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: '**/*.cov.out'
+          disable_search: true
+          flags: kind-e2e-tests
+          name: codecov-test-e2e-non-default-noencap
+          directory: test-e2e-hybrid-non-default-coverage
+          fail_ci_if_error: ${{ github.event_name == 'push' }}
+      - name: Tar log files
+        if: ${{ failure() }}
+        run: tar -czf log.tar.gz log
+      - name: Upload test log
+        uses: actions/upload-artifact@v6
+        if: ${{ failure() }}
+        with:
+          name: e2e-kind-hybrid-non-default.tar.gz
+          path: log.tar.gz
+          retention-days: 30
+
   test-e2e-flow-visibility:
     name: E2e tests on a Kind cluster on Linux for Flow Visibility
     needs: [build-antrea-coverage-image, build-flow-aggregator-coverage-image]
     runs-on: [ubuntu-latest]
+    strategy:
+      matrix:
+        protocol: [grpc, ipfix]
     steps:
       - name: Free disk space
         # https://github.com/actions/virtual-environments/issues/709
@@ -481,21 +555,21 @@ jobs:
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
           sudo rm -rf "/usr/local/lib/android"
           df -h
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           show-progress: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
       - name: Download Antrea image from previous job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: antrea-ubuntu-cov
       - name: Load Antrea image
         run: |
           docker load -i antrea-ubuntu.tar
       - name: Download Flow Aggregator image from previous job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: flow-aggregator-cov
       - name: Load Flow Aggregator image
@@ -510,34 +584,34 @@ jobs:
       - name: Run e2e tests
         run: |
           mkdir log
-          mkdir test-e2e-fa-coverage
-          ANTREA_LOG_DIR=$PWD/log ANTREA_COV_DIR=$PWD/test-e2e-fa-coverage ./ci/kind/test-e2e-kind.sh --encap-mode encap --coverage --flow-visibility --ip-family dual
+          mkdir test-e2e-fa-${{ matrix.protocol }}-coverage
+          ANTREA_LOG_DIR=$PWD/log ANTREA_COV_DIR=$PWD/test-e2e-fa-${{ matrix.protocol }}-coverage ./ci/kind/test-e2e-kind.sh --encap-mode encap --coverage --flow-visibility --flow-visibility-protocol ${{ matrix.protocol }} --ip-family dual
       - name: Tar coverage files
-        run: tar -czf test-e2e-fa-coverage.tar.gz test-e2e-fa-coverage
-      - name: Upload coverage for test-e2e-fa-coverage
-        uses: actions/upload-artifact@v4
+        run: tar -czf test-e2e-fa-${{ matrix.protocol }}-coverage.tar.gz test-e2e-fa-${{ matrix.protocol }}-coverage
+      - name: Upload coverage for test-e2e-fa-${{ matrix.protocol }}-coverage
+        uses: actions/upload-artifact@v6
         with:
-          name: test-e2e-fa-coverage
-          path: test-e2e-fa-coverage.tar.gz
+          name: test-e2e-fa-${{ matrix.protocol }}-coverage
+          path: test-e2e-fa-${{ matrix.protocol }}-coverage.tar.gz
           retention-days: 30
       - name: Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: '*.cov.out*'
+          files: '**/*.cov.out'
           disable_search: true
           flags: kind-e2e-tests
           name: codecov-test-e2e-fa
-          directory: test-e2e-fa-coverage
+          directory: test-e2e-fa-${{ matrix.protocol }}-coverage
           fail_ci_if_error: ${{ github.event_name == 'push' }}
       - name: Tar log files
         if: ${{ failure() }}
         run: tar -czf log.tar.gz log
       - name: Upload test log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: ${{ failure() }}
         with:
-          name: e2e-kind-fa.tar.gz
+          name: e2e-kind-fa-${{ matrix.protocol }}.tar.gz
           path: log.tar.gz
           retention-days: 30
 
@@ -551,14 +625,14 @@ jobs:
       run: |
         sudo apt-get clean
         df -h
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         show-progress: false
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
     - name: Download Antrea image from previous job
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: antrea-ubuntu-cov
     - name: Load Antrea image
@@ -580,7 +654,7 @@ jobs:
       if: ${{ failure() }}
       run: tar -czf log.tar.gz log
     - name: Upload test log
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: ${{ failure() }}
       with:
         name: networkpolicy-conformance-kind-encap.tar.gz
@@ -597,14 +671,14 @@ jobs:
       run: |
         sudo apt-get clean
         df -h
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         show-progress: false
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
     - name: Download Antrea image from previous job
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: antrea-ubuntu-cov
     - name: Load Antrea image
@@ -626,7 +700,7 @@ jobs:
       if: ${{ failure() }}
       run: tar -czf log.tar.gz log
     - name: Upload test log
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: ${{ failure() }}
       with:
         name: secondary-network.tar.gz
@@ -643,14 +717,14 @@ jobs:
         run: |
           sudo apt-get clean
           df -h
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           show-progress: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
       - name: Download Antrea image from previous job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: antrea-ubuntu-cov
       - name: Load Antrea image
@@ -672,7 +746,7 @@ jobs:
         if: ${{ failure() }}
         run: tar -czf log.tar.gz log
       - name: Upload test log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: ${{ failure() }}
         with:
           name: upgrade-from-antrea-version-n-1.tar.gz
@@ -689,14 +763,14 @@ jobs:
         run: |
           sudo apt-get clean
           df -h
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           show-progress: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
       - name: Download Antrea image from previous job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: antrea-ubuntu-cov
       - name: Load Antrea image
@@ -718,7 +792,7 @@ jobs:
         if: ${{ failure() }}
         run: tar -czf log.tar.gz log
       - name: Upload test log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: ${{ failure() }}
         with:
           name: upgrade-from-antrea-version-n-2.tar.gz
@@ -735,14 +809,14 @@ jobs:
         run: |
           sudo apt-get clean
           df -h
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           show-progress: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
       - name: Download Antrea image from previous job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: antrea-ubuntu-cov
       - name: Load Antrea image
@@ -764,7 +838,7 @@ jobs:
         if: ${{ failure() }}
         run: tar -czf log.tar.gz log
       - name: Upload test log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: ${{ failure() }}
         with:
           name: api-compatible-with-client-version-n-1.tar.gz
@@ -781,14 +855,14 @@ jobs:
         run: |
           sudo apt-get clean
           df -h
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           show-progress: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
       - name: Download Antrea image from previous job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: antrea-ubuntu-cov
       - name: Load Antrea image
@@ -810,7 +884,7 @@ jobs:
         if: ${{ failure() }}
         run: tar -czf log.tar.gz log
       - name: Upload test log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: ${{ failure() }}
         with:
           name: api-compatible-with-client-version-n-2.tar.gz
@@ -826,14 +900,14 @@ jobs:
         run: |
           sudo apt-get clean
           df -h
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           show-progress: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
       - name: Download Antrea image from previous job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: antrea-ubuntu-cov
       - name: Load Antrea image
@@ -857,6 +931,8 @@ jobs:
       - name: Deploy Antrea
         run: |
           kubectl apply -f build/yamls/antrea.yml
+          kubectl rollout status --timeout=1m deployment/antrea-controller -n kube-system
+          kubectl rollout status --timeout=1m daemonset/antrea-agent -n kube-system
       - name: Run Post checks
         run: |
           ./bin/antctl-linux check installation
@@ -871,11 +947,11 @@ jobs:
         run: |
           sudo apt-get clean
           df -h
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           show-progress: false
       - name: Download Antrea image from previous job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: antrea-ubuntu-cov
       - name: Load Antrea image
@@ -907,6 +983,7 @@ jobs:
     - test-e2e-encap-all-features-enabled
     - test-e2e-noencap
     - test-e2e-hybrid
+    - test-e2e-hybrid-non-default
     - test-upgrade-from-N-1
     - test-upgrade-from-N-2
     - test-compatible-N-1
@@ -922,7 +999,7 @@ jobs:
         touch empty-artifact
     - name: Delete antrea-ubuntu-cov
       if: ${{ needs.build-antrea-coverage-image.result == 'success' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: antrea-ubuntu-cov
         path: empty-artifact
@@ -930,7 +1007,7 @@ jobs:
         overwrite: true
     - name: Delete flow-aggregator
       if: ${{ needs.build-flow-aggregator-coverage-image.result == 'success' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: flow-aggregator-cov
         path: empty-artifact

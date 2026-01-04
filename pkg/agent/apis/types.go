@@ -17,6 +17,7 @@ package apis
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -69,6 +70,28 @@ func (r AntreaAgentInfoResponse) GetTableRow(maxColumnLength int) []string {
 }
 
 func (r AntreaAgentInfoResponse) SortRows() bool {
+	return true
+}
+
+type FQDNCacheResponse struct {
+	FQDNName       string    `json:"fqdnName,omitempty"`
+	IPAddress      string    `json:"ipAddress,omitempty"`
+	ExpirationTime time.Time `json:"expirationTime,omitempty"`
+}
+
+func (r FQDNCacheResponse) GetTableHeader() []string {
+	return []string{"FQDN", "ADDRESS", "EXPIRATION TIME"}
+}
+
+func (r FQDNCacheResponse) GetTableRow(maxColumn int) []string {
+	return []string{
+		r.FQDNName,
+		r.IPAddress,
+		r.ExpirationTime.String(),
+	}
+}
+
+func (r FQDNCacheResponse) SortRows() bool {
 	return true
 }
 
@@ -193,18 +216,29 @@ func (r ServiceExternalIPInfo) SortRows() bool {
 
 // BGPPolicyResponse describes the response struct of bgppolicy command.
 type BGPPolicyResponse struct {
-	BGPPolicyName string `json:"name,omitempty"`
-	RouterID      string `json:"routerID,omitempty"`
-	LocalASN      int32  `json:"localASN,omitempty"`
-	ListenPort    int32  `json:"listenPort,omitempty"`
+	BGPPolicyName           string   `json:"name,omitempty"`
+	RouterID                string   `json:"routerID,omitempty"`
+	LocalASN                int32    `json:"localASN,omitempty"`
+	ListenPort              int32    `json:"listenPort,omitempty"`
+	ConfederationIdentifier int32    `json:"confederationIdentifier,omitempty"`
+	MemberASNs              []uint32 `json:"memberASNs,omitempty"`
 }
 
 func (r BGPPolicyResponse) GetTableHeader() []string {
-	return []string{"NAME", "ROUTER-ID", "LOCAL-ASN", "LISTEN-PORT"}
+	return []string{"NAME", "ROUTER-ID", "LOCAL-ASN", "LISTEN-PORT", "CONFEDERATION-IDENTIFIER", "MEMBER-ASNs"}
 }
 
-func (r BGPPolicyResponse) GetTableRow(_ int) []string {
-	return []string{r.BGPPolicyName, r.RouterID, strconv.Itoa(int(r.LocalASN)), strconv.Itoa(int(r.ListenPort))}
+func (r BGPPolicyResponse) GetTableRow(maxColumnLength int) []string {
+	confederationIdentifierStr := ""
+	memberASNs := []string{}
+	if r.ConfederationIdentifier != 0 {
+		confederationIdentifierStr = strconv.Itoa(int(r.ConfederationIdentifier))
+	}
+	for _, memberASN := range r.MemberASNs {
+		memberASNs = append(memberASNs, strconv.Itoa(int(memberASN)))
+	}
+	return []string{r.BGPPolicyName, r.RouterID, strconv.Itoa(int(r.LocalASN)), strconv.Itoa(int(r.ListenPort)),
+		confederationIdentifierStr, printers.GenerateTableElementWithSummary(memberASNs, maxColumnLength)}
 }
 
 func (r BGPPolicyResponse) SortRows() bool {

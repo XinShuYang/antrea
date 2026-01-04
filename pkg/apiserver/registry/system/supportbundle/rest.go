@@ -111,7 +111,11 @@ type supportBundleREST struct {
 	mode         string
 	statusLocker sync.RWMutex
 	cancelFunc   context.CancelFunc
-	cache        *systemv1beta1.SupportBundle
+	// cache stores the "current" or most recent SupportBundle resource. Because Get returns
+	// this value directly, it is important for the supportBundleREST implementation *not* to
+	// mutate fields in the SupportBundle object once it has been assigned to cache, in order to
+	// ensure thread-safety. Otherwise, we would have a race with Get callers.
+	cache *systemv1beta1.SupportBundle
 
 	ovsCtlClient ovsctl.OVSCtlClient
 	aq           agentquerier.AgentQuerier
@@ -144,17 +148,21 @@ func (r *supportBundleREST) Create(ctx context.Context, obj runtime.Object, _ re
 	go func(since string) {
 		var err error
 		var b *systemv1beta1.SupportBundle
-		if r.mode == modeAgent {
+		switch r.mode {
+		case modeAgent:
 			b, err = r.collectAgent(ctx, since)
-		} else if r.mode == modeController {
+		case modeController:
 			b, err = r.collectController(ctx, since)
 		}
 		func() {
 			r.statusLocker.Lock()
 			defer r.statusLocker.Unlock()
 			if err != nil {
-				klog.Errorf("Error when collecting supportBundle: %v", err)
-				r.cache.Status = systemv1beta1.SupportBundleStatusNone
+				klog.ErrorS(err, "Error when collecting supportBundle")
+				r.cache = &systemv1beta1.SupportBundle{
+					ObjectMeta: metav1.ObjectMeta{Name: r.mode},
+					Status:     systemv1beta1.SupportBundleStatusNone,
+				}
 				return
 			}
 			select {

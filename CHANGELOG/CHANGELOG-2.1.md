@@ -1,5 +1,41 @@
 # Changelog 2.1
 
+## 2.1.2 - 2025-08-06
+
+### Fixed
+
+- Periodically sync permanent neighbors to ensure route correctness for Antrea host gateway interface. ([#7238](https://github.com/antrea-io/antrea/pull/7238), [@hongliangl])
+- Sync affected groups in the Antrea Controller when a Pod goes into `Terminated` state, to ensure that the Pod is excluded from NetworkPolicy source and destination immediately. ([#7217](https://github.com/antrea-io/antrea/pull/7217), [@Dyanngg])
+- Fix rollback when `configureContainerLinkVeth` fails, to ensure subsequent retries can succeed. ([#7210](https://github.com/antrea-io/antrea/pull/7210) [#7213](https://github.com/antrea-io/antrea/pull/7213), [@tnqn])
+- Fix Agent crash when deleting the Secret storing BGP passwords. ([#7042](https://github.com/antrea-io/antrea/pull/7042), [@hongliangl])
+- Filter out the `hostNetwork` Pods locally on Linux to fix K8s compatibility issue, since the `spec.hostNetwork` field selector for Pods is not supported before K8s v1.28. ([#7012](https://github.com/antrea-io/antrea/pull/7012), [@wenyingd])
+- Add `-ComputerName localhost` explicitly for VMSwitch commands to avoid potential validation issues on Windows with Active Directory. ([#6985](https://github.com/antrea-io/antrea/pull/6985), [@XinShuYang])
+
+## 2.1.1 - 2025-02-19
+
+### Added
+
+- Add documentation for the `NodeLatencyMonitor` feature. ([#6561](https://github.com/antrea-io/antrea/pull/6561), [@antoninbas])
+
+### Changed
+
+- Close connection to IPFIX collector explicitly on Stop for `FlowAggregator`. ([#6635](https://github.com/antrea-io/antrea/pull/6635), [@antoninbas])
+- Run the `IPPool` webhook handler when `SecondaryNetwork` is enabled. ([#6691](https://github.com/antrea-io/antrea/pull/6691), [@luolanzone])
+
+### Fixed
+
+- On Windows, rely on PortStatus messages from OVS to install OpenFlow entries for a Pod instead of relying on a fixed timeout which can be hard to configure correctly; the code will now wait "indefinitely" but a `NetworkNotReady` event will be added to the Pod if the port is not ready after 30s. ([#6763](https://github.com/antrea-io/antrea/pull/6763) [#6889](https://github.com/antrea-io/antrea/pull/6889), [@wenyingd])
+- Reconcile Pods with `hostNetwork` after Antrea Agent is restarted on Windows. ([#6944](https://github.com/antrea-io/antrea/pull/6944), [@wenyingd])
+- Match `dstIP` in `ClassifierTable` to fix a potential source MAC and IP mismatch issue on Windows when `promiscuous` mode is enabled. ([#6528](https://github.com/antrea-io/antrea/pull/6528), [@XinShuYang])
+- Ensure that `promote_secondaries` is set on `IPAssigner` interfaces to avoid the automatic removal of all other IP addresses in the same subnet when the primary IP address is deleted. ([#6898](https://github.com/antrea-io/antrea/pull/6898) [#6900](https://github.com/antrea-io/antrea/pull/6900), [@antoninbas])
+- Fix audit logging for default deny all K8s NetworkPolicy rules. ([#6855](https://github.com/antrea-io/antrea/pull/6855), [@qiyueyao])
+- Improve memory copying logic to avoid a potential memory fault on Windows. ([#6664](https://github.com/antrea-io/antrea/pull/6664) [#6673](https://github.com/antrea-io/antrea/pull/6673), [@XinShuYang] [@tnqn])
+- More robust system Tier creation / update for Antrea-native policies. ([#6696](https://github.com/antrea-io/antrea/pull/6696), [@antoninbas])
+- Fix an issue with ipset or iptables chain removal during Antrea Node NetworkPolicy updates or deletions. ([#6707](https://github.com/antrea-io/antrea/pull/6707), [@hongliangl])
+- Fix invalid template ID error in IPFIX exporter for `FlowAggregator`. ([#6630](https://github.com/antrea-io/antrea/pull/6630), [@antoninbas])
+- Fix the checker image tag when running `antctl check cluster` with a released `antctl` binary. ([#6565](https://github.com/antrea-io/antrea/pull/6565), [@tnqn])
+- Update the `Finalizer` of `ResourceExport` to be a domain-qualified string. ([#6742](https://github.com/antrea-io/antrea/pull/6742), [@Dyanngg])
+
 ## 2.1.0 - 2024-07-26
 
 ### Added
@@ -65,6 +101,8 @@
 [@gran-vmv]: https://github.com/gran-vmv
 [@hongliangl]: https://github.com/hongliangl
 [@kanha-gupta]: https://github.com/kanha-gupta
+[@luolanzone]: https://github.com/luolanzone
+[@qiyueyao]: https://github.com/qiyueyao
 [@roopeshsn]: https://github.com/roopeshsn
 [@shikharish]: https://github.com/shikharish
 [@tnqn]: https://github.com/tnqn

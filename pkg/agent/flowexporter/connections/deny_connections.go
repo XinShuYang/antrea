@@ -20,22 +20,33 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"antrea.io/antrea/pkg/agent/flowexporter"
+	"antrea.io/antrea/pkg/agent/flowexporter/connection"
+	"antrea.io/antrea/pkg/agent/flowexporter/filter"
+	"antrea.io/antrea/pkg/agent/flowexporter/options"
 	"antrea.io/antrea/pkg/agent/flowexporter/priorityqueue"
 	"antrea.io/antrea/pkg/agent/metrics"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/proxy"
+	"antrea.io/antrea/pkg/querier"
 	"antrea.io/antrea/pkg/util/ip"
-	"antrea.io/antrea/pkg/util/podstore"
+	"antrea.io/antrea/pkg/util/objectstore"
 )
 
 type DenyConnectionStore struct {
 	connectionStore
+	protocolFilter filter.ProtocolFilter
 }
 
-func NewDenyConnectionStore(podStore podstore.Interface, proxier proxy.Proxier, o *flowexporter.FlowExporterOptions) *DenyConnectionStore {
+func NewDenyConnectionStore(
+	npQuerier querier.AgentNetworkPolicyInfoQuerier,
+	podStore objectstore.PodStore,
+	proxier proxy.ProxyQuerier,
+	o *options.FlowExporterOptions,
+	protocolFilter filter.ProtocolFilter,
+) *DenyConnectionStore {
 	return &DenyConnectionStore{
-		connectionStore: NewConnectionStore(podStore, proxier, o),
+		connectionStore: NewConnectionStore(npQuerier, podStore, proxier, o),
+		protocolFilter:  protocolFilter,
 	}
 }
 
@@ -48,7 +59,7 @@ func (ds *DenyConnectionStore) RunPeriodicDeletion(stopCh <-chan struct{}) {
 		case <-stopCh:
 			break
 		case <-pollTicker.C:
-			deleteIfStaleConn := func(key flowexporter.ConnectionKey, conn *flowexporter.Connection) error {
+			deleteIfStaleConn := func(key connection.ConnectionKey, conn *connection.Connection) error {
 				if conn.ReadyToDelete || time.Since(conn.LastExportTime) >= ds.staleConnectionTimeout {
 					if removedItem := ds.expirePriorityQueue.Remove(key); removedItem != nil {
 						// In case ReadyToDelete is true, item should already have been removed from pq
@@ -69,8 +80,8 @@ func (ds *DenyConnectionStore) RunPeriodicDeletion(stopCh <-chan struct{}) {
 
 // AddOrUpdateConn updates the connection if it is already present, i.e., update timestamp, counters etc.,
 // or adds a new connection with the resolved K8s metadata.
-func (ds *DenyConnectionStore) AddOrUpdateConn(conn *flowexporter.Connection, timeSeen time.Time, bytes uint64) {
-	connKey := flowexporter.NewConnectionKey(conn)
+func (ds *DenyConnectionStore) AddOrUpdateConn(conn *connection.Connection, timeSeen time.Time, bytes uint64) {
+	connKey := connection.NewConnectionKey(conn)
 	ds.mutex.Lock()
 	defer ds.mutex.Unlock()
 
@@ -91,6 +102,10 @@ func (ds *DenyConnectionStore) AddOrUpdateConn(conn *flowexporter.Connection, ti
 		}
 		klog.V(4).InfoS("Deny connection has been updated", "connection", conn)
 	} else {
+		if !ds.protocolFilter.Allow(conn.FlowKey.Protocol) {
+			return
+		}
+
 		conn.StartTime = timeSeen
 		conn.StopTime = timeSeen
 		conn.LastExportTime = timeSeen
@@ -108,6 +123,9 @@ func (ds *DenyConnectionStore) AddOrUpdateConn(conn *flowexporter.Connection, ti
 		if conn.Mark&openflow.ServiceCTMark.GetRange().ToNXRange().ToUint32Mask() == openflow.ServiceCTMark.GetValue() {
 			ds.fillServiceInfo(conn, serviceStr)
 		}
+		// For intra-Node flows which are denied by an ingress policy rule, we can retrieve
+		// egress policy information from the CT labels.
+		ds.addNetworkPolicyMetadata(conn)
 		metrics.TotalDenyConnections.Inc()
 		conn.IsActive = true
 		ds.connections[connKey] = conn
@@ -116,7 +134,7 @@ func (ds *DenyConnectionStore) AddOrUpdateConn(conn *flowexporter.Connection, ti
 	}
 }
 
-func (ds *DenyConnectionStore) GetExpiredConns(expiredConns []flowexporter.Connection, currTime time.Time, maxSize int) ([]flowexporter.Connection, time.Duration) {
+func (ds *DenyConnectionStore) GetExpiredConns(expiredConns []connection.Connection, currTime time.Time, maxSize int) ([]connection.Connection, time.Duration) {
 	ds.AcquireConnStoreLock()
 	defer ds.ReleaseConnStoreLock()
 	for i := 0; i < maxSize; i++ {
@@ -142,7 +160,7 @@ func (ds *DenyConnectionStore) GetExpiredConns(expiredConns []flowexporter.Conne
 
 // deleteConnWithoutLock deletes the connection from the connection map given
 // the connection key without grabbing the lock. Caller is expected to grab lock.
-func (ds *DenyConnectionStore) deleteConnWithoutLock(connKey flowexporter.ConnectionKey) error {
+func (ds *DenyConnectionStore) deleteConnWithoutLock(connKey connection.ConnectionKey) error {
 	_, exists := ds.connections[connKey]
 	if !exists {
 		return fmt.Errorf("connection with key %v doesn't exist in map", connKey)

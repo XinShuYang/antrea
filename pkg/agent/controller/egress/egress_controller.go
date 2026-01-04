@@ -82,7 +82,7 @@ const (
 	egressDummyDevice = "antrea-egress0"
 )
 
-var maxSubnetsPerNodes = types.MaxEgressRouteTable - types.MinEgressRouteTable + 1
+var maxSubnetsPerNodes = types.MaxRequestEgressRouteTable - types.MinRequestEgressRouteTable + 1
 
 var emptyWatch = watch.NewEmptyWatch()
 
@@ -229,6 +229,7 @@ func NewEgressController(
 	trafficShapingEnabled bool,
 	supportSeparateSubnet bool,
 	linkMonitor linkmonitor.Interface,
+	uniqueMACForSubInterfaces bool,
 ) (*EgressController, error) {
 	if trafficShapingEnabled && !openflow.OVSMetersAreSupported() {
 		klog.Info("EgressTrafficShaping feature gate is enabled, but it is ignored because OVS meters are not supported.")
@@ -281,7 +282,7 @@ func NewEgressController(
 	}
 	if supportSeparateSubnet {
 		c.egressRouteTables = map[crdv1b1.SubnetInfo]*egressRouteTable{}
-		c.tableAllocator = newIDAllocator(types.MinEgressRouteTable, types.MaxEgressRouteTable)
+		c.tableAllocator = newIDAllocator(types.MinRequestEgressRouteTable, types.MaxRequestEgressRouteTable)
 		externalIPPoolInformer.Informer().AddEventHandlerWithResyncPeriod(
 			cache.ResourceEventHandlerFuncs{
 				AddFunc:    c.addExternalIPPool,
@@ -290,7 +291,7 @@ func NewEgressController(
 			resyncPeriod,
 		)
 	}
-	ipAssigner, err := newIPAssigner(nodeTransportInterface, egressDummyDevice, linkMonitor)
+	ipAssigner, err := newIPAssigner(nodeTransportInterface, egressDummyDevice, linkMonitor, uniqueMACForSubInterfaces)
 	if err != nil {
 		return nil, fmt.Errorf("initializing egressIP assigner failed: %v", err)
 	}
@@ -517,7 +518,7 @@ func (c *EgressController) Run(stopCh <-chan struct{}) {
 	if err := c.replaceEgressIPs(); err != nil {
 		klog.ErrorS(err, "Failed to replace Egress IPs")
 	}
-	if err := c.routeClient.RestoreEgressRoutesAndRules(types.MinEgressRouteTable, types.MaxEgressRouteTable); err != nil {
+	if err := c.routeClient.RestoreEgressRoutesAndRules(types.MinRequestEgressRouteTable, types.MaxRequestEgressRouteTable); err != nil {
 		klog.ErrorS(err, "Failed to restore Egress routes and rules")
 	}
 
@@ -599,6 +600,8 @@ func (c *EgressController) installPolicyRoute(ipState *egressIPState, subnetInfo
 	if subnetInfo == nil {
 		return nil
 	}
+
+	subnetGateway := net.ParseIP(subnetInfo.Gateway)
 	// Get or create a route table for this subnet.
 	rt, exists := c.egressRouteTables[*subnetInfo]
 	if !exists {
@@ -613,14 +616,14 @@ func (c *EgressController) installPolicyRoute(ipState *egressIPState, subnetInfo
 		if !ok {
 			return fmt.Errorf("interface for subnet %v not found", subnetInfo)
 		}
-		if err := c.routeClient.AddEgressRoutes(tableID, devID, net.ParseIP(subnetInfo.Gateway), int(subnetInfo.PrefixLength)); err != nil {
+		if err := c.routeClient.AddEgressRoutes(tableID, devID, subnetGateway, int(subnetInfo.PrefixLength)); err != nil {
 			return fmt.Errorf("error creating route table for subnet %v: %w", subnetInfo, err)
 		}
 		rt = &egressRouteTable{tableID: tableID, marks: sets.New[uint32]()}
 		c.egressRouteTables[*subnetInfo] = rt
 	}
 	// Add an IP rule to make the marked Egress traffic look up the table.
-	if err := c.routeClient.AddEgressRule(rt.tableID, ipState.mark); err != nil {
+	if err := c.routeClient.AddEgressRule(rt.tableID, ipState.mark, subnetGateway.To4() == nil); err != nil {
 		return fmt.Errorf("error adding ip rule for mark %v: %w", ipState.mark, err)
 	}
 	// Track the route table's usage.
@@ -642,7 +645,8 @@ func (c *EgressController) uninstallPolicyRoute(ipState *egressIPState) error {
 	if !exists {
 		return nil
 	}
-	if err := c.routeClient.DeleteEgressRule(rt.tableID, ipState.mark); err != nil {
+	subnetGateway := net.ParseIP(ipState.subnetInfo.Gateway)
+	if err := c.routeClient.DeleteEgressRule(rt.tableID, ipState.mark, subnetGateway.To4() == nil); err != nil {
 		return fmt.Errorf("error deleting ip rule for mark %v: %w", ipState.mark, err)
 	}
 	rt.marks.Delete(ipState.mark)
@@ -674,7 +678,7 @@ func (c *EgressController) realizeEgressIP(egressName, egressIP string, subnetIn
 	if !exists {
 		ipState = &egressIPState{
 			egressIP:    net.ParseIP(egressIP),
-			egressNames: sets.New[string](egressName),
+			egressNames: sets.New(egressName),
 		}
 		c.egressIPStates[egressIP] = ipState
 	} else if !ipState.egressNames.Has(egressName) {
@@ -1245,19 +1249,17 @@ func (c *EgressController) watchEgressGroup() {
 	var initObjects []*cpv1b2.EgressGroup
 loop:
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				klog.Warningf("Result channel for EgressGroup was closed")
-				return
-			}
-			switch event.Type {
-			case watch.Added:
-				klog.V(2).Infof("Added EgressGroup (%#v)", event.Object)
-				initObjects = append(initObjects, event.Object.(*cpv1b2.EgressGroup))
-			case watch.Bookmark:
-				break loop
-			}
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			klog.Warningf("Result channel for EgressGroup was closed")
+			return
+		}
+		switch event.Type {
+		case watch.Added:
+			klog.V(2).Infof("Added EgressGroup (%#v)", event.Object)
+			initObjects = append(initObjects, event.Object.(*cpv1b2.EgressGroup))
+		case watch.Bookmark:
+			break loop
 		}
 	}
 	klog.Infof("Received %d init events for EgressGroup", len(initObjects))
@@ -1266,27 +1268,25 @@ loop:
 	c.replaceEgressGroups(initObjects)
 
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				return
-			}
-			switch event.Type {
-			case watch.Added:
-				c.addEgressGroup(event.Object.(*cpv1b2.EgressGroup))
-				klog.V(2).Infof("Added EgressGroup (%#v)", event.Object)
-			case watch.Modified:
-				c.patchEgressGroup(event.Object.(*cpv1b2.EgressGroupPatch))
-				klog.V(2).Infof("Updated EgressGroup (%#v)", event.Object)
-			case watch.Deleted:
-				c.deleteEgressGroup(event.Object.(*cpv1b2.EgressGroup))
-				klog.V(2).Infof("Removed EgressGroup (%#v)", event.Object)
-			default:
-				klog.Errorf("Unknown event: %v", event)
-				return
-			}
-			eventCount++
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			return
 		}
+		switch event.Type {
+		case watch.Added:
+			c.addEgressGroup(event.Object.(*cpv1b2.EgressGroup))
+			klog.V(2).Infof("Added EgressGroup (%#v)", event.Object)
+		case watch.Modified:
+			c.patchEgressGroup(event.Object.(*cpv1b2.EgressGroupPatch))
+			klog.V(2).Infof("Updated EgressGroup (%#v)", event.Object)
+		case watch.Deleted:
+			c.deleteEgressGroup(event.Object.(*cpv1b2.EgressGroup))
+			klog.V(2).Infof("Removed EgressGroup (%#v)", event.Object)
+		default:
+			klog.Errorf("Unknown event: %v", event)
+			return
+		}
+		eventCount++
 	}
 }
 
@@ -1366,10 +1366,11 @@ func (c *EgressController) GetEgressIPByMark(mark uint32) (string, error) {
 	return "", fmt.Errorf("no EgressIP associated with mark %v", mark)
 }
 
-// GetEgress returns effective EgressName, EgressIP and EgressNode name of Egress applied on a Pod.
-func (c *EgressController) GetEgress(ns, podName string) (string, string, string, error) {
+// GetEgress returns the Egress configuration applied to this Pod.
+// If no Egress is applied to the Pod, an error will be returned.
+func (c *EgressController) GetEgress(ns, podName string) (types.EgressConfig, error) {
 	if c == nil {
-		return "", "", "", fmt.Errorf("Egress is not enabled")
+		return types.EgressConfig{}, fmt.Errorf("Egress is not enabled")
 	}
 	pod := k8s.NamespacedName(ns, podName)
 	egressName, exists := func() (string, bool) {
@@ -1382,15 +1383,18 @@ func (c *EgressController) GetEgress(ns, podName string) (string, string, string
 		return binding.effectiveEgress, true
 	}()
 	if !exists {
-		return "", "", "", fmt.Errorf("no Egress applied to Pod %v", pod)
+		return types.EgressConfig{}, fmt.Errorf("no Egress applied to Pod %v", pod)
 	}
 	egress, err := c.egressLister.Get(egressName)
 	if err != nil {
-		return "", "", "", err
+		return types.EgressConfig{}, err
 	}
-	egressNode := egress.Status.EgressNode
-	egressIP := egress.Status.EgressIP
-	return egressName, egressIP, egressNode, nil
+	return types.EgressConfig{
+		Name:       egressName,
+		UID:        egress.UID,
+		EgressIP:   egress.Status.EgressIP,
+		EgressNode: egress.Status.EgressNode,
+	}, nil
 }
 
 // An Egress is schedulable if its Egress IP is allocated from ExternalIPPool.

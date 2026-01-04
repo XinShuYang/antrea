@@ -55,6 +55,13 @@ type AgentConfig struct {
 	// networkPolicyOnly: Antrea enforces NetworkPolicy only, and utilizes CNI chaining and delegates Pod
 	//                    IPAM and connectivity to the primary CNI.
 	TrafficEncapMode string `yaml:"trafficEncapMode,omitempty"`
+
+	// The aggregated cluster-wide Pod CIDRs (not the per-Node Pod CIDR).
+	// This field is applicable only in networkPolicyOnly mode and ignored in other traffic modes. It can be left empty,
+	// but it is recommended to specify the correct Pod CIDR, as some features may not function properly otherwise.
+	// Example: "10.10.0.0/16" for IPv4-only, or "10.10.0.0/16,fd00::/12" for dual-stack.
+	PodCIDRs string `yaml:"podCIDRs,omitempty"`
+
 	// Whether or not to SNAT (using the Node IP) the egress traffic from a Pod to the external network.
 	// This option is for the noEncap traffic mode only, and the default value is false. In the noEncap
 	// mode, if the cluster's Pod CIDR is reachable from the external network, then the Pod traffic to
@@ -208,6 +215,16 @@ type AgentConfig struct {
 	// second(pps) and the burst size will be automatically set to twice the rate.
 	// When the rate and burst size are exceeded, new packets will be dropped.
 	PacketInRate int `yaml:"packetInRate,omitempty"`
+	// HostNetworkAcceleration configures acceleration of Pod-to-Pod traffic in the Node's host network using nftables
+	// flowtable when traffic mode is hybrid or noEncap.
+	HostNetworkAcceleration HostNetworkAccelerationConfig `yaml:"hostNetworkAcceleration,omitempty"`
+	// HostNetworkMode determines how antrea-agent implements netfilter rules required by Antrea functionalities and
+	// features in the Node's host network. The default value is "iptables". If "nftables" is specified, the
+	// NFTablesHostNetworkMode feature gate must be enabled; otherwise, this option has no effect. If the above condition
+	// is met but nftables is not supported or unavailable on the Node, antrea-agent will fail to start. Currently,
+	// nftables support is limited to the following features:
+	//   - AntreaProxy (proxyAll)
+	HostNetworkMode string `yaml:"hostNetworkMode,omitempty"`
 }
 
 type AntreaProxyConfig struct {
@@ -228,7 +245,7 @@ type AntreaProxyConfig struct {
 	// capabilities (e.g. TLS termination) and it is desirable for Pod-to-ExternalIP traffic to be sent to the
 	// external LoadBalancer instead of being load-balanced to an Endpoint directly by AntreaProxy.
 	// Note that setting ProxyLoadBalancerIPs to false usually only makes sense when ProxyAll is set to true and
-	// kube-proxy is removed from the cluser, otherwise kube-proxy will still load-balance this traffic.
+	// kube-proxy is removed from the cluster, otherwise kube-proxy will still load-balance this traffic.
 	// Defaults to true.
 	ProxyLoadBalancerIPs *bool `yaml:"proxyLoadBalancerIPs,omitempty"`
 	// The value of service.kubernetes.io/service-proxy-name label for AntreaProxy to match. If it is set, then
@@ -247,6 +264,10 @@ type AntreaProxyConfig struct {
 	// conditions between kube-proxy and Antrea proxy, with both trying to bind to the same addresses, when proxyAll
 	// is enabled while kube-proxy has not been removed.
 	DisableServiceHealthCheckServer bool `yaml:"disableServiceHealthCheckServer,omitempty"`
+	// The value of the IP address and the port on which AntreaProxy health server listens when proxyAll is enabled. This
+	// server is functionally equivalent to the one of kube-proxy. If it is not specified, it will be automatically set
+	// to "0.0.0.0:10256".
+	ServiceHealthCheckServerBindAddress string `yaml:"serviceHealthCheckServerBindAddress,omitempty"`
 }
 
 type WireGuardConfig struct {
@@ -281,9 +302,9 @@ type FlowExporterConfig struct {
 	// "flow-aggregator/flow-aggregator" can be provided to connect to the Antrea
 	// Flow Aggregator Service.
 	// If PORT is empty, we default to 4739, the standard IPFIX port.
-	// If no PROTO is given, we consider "tcp" as default. We support "tcp" and
-	// "udp" L4 transport protocols.
-	// Defaults to "flow-aggregator/flow-aggregator:4739:tcp".
+	// If no PROTO is given, we consider "tls" as default. We support "grpc", "tls", "tcp"
+	// and "udp" protocols.
+	// Defaults to "flow-aggregator/flow-aggregator:4739:tls".
 	FlowCollectorAddr string `yaml:"flowCollectorAddr,omitempty"`
 	// Provide flow poll interval in format "0s". This determines how often flow
 	// exporter dumps connections in conntrack module. Flow poll interval should
@@ -306,6 +327,12 @@ type FlowExporterConfig struct {
 	// Defaults to "15s". Valid time units are "ns", "us" (or "µs"), "ms", "s",
 	// "m", "h".
 	IdleFlowExportTimeout string `yaml:"idleFlowExportTimeout,omitempty"`
+	// Provide the set of protocols to filter specific flows that will be
+	// exported. Invalid protocols do not error and instead warnings are
+	// logged on the antrea agent. By default the full set of supported
+	// protocols are exported which are:
+	// "tcp", "udp", "sctp"
+	ProtocolFilter []string `yaml:"protocolFilter,omitempty"`
 }
 
 type MulticastConfig struct {
@@ -334,6 +361,10 @@ type EgressConfig struct {
 	// same value as for the top-level snatFullyRandomPorts configuration, but this field can be
 	// used as an override.
 	SNATFullyRandomPorts *bool `yaml:"snatFullyRandomPorts,omitempty"`
+	// Enable Egress VLAN sub-interfaces to use unique MAC addresses instead of
+	// inheriting the parent interface’s MAC. Useful in cloud environments that require
+	// unique MAC addresses per interface.
+	UniqueMACForSubInterfaces *bool `yaml:"uniqueMACForSubInterfaces,omitempty"`
 }
 
 type IPsecConfig struct {
@@ -412,4 +443,15 @@ type OVSBridgeConfig struct {
 	BridgeName string `yaml:"bridgeName"`
 	// Names of physical interfaces to be connected to the bridge.
 	PhysicalInterfaces []string `yaml:"physicalInterfaces,omitempty"`
+	// Enable multicast snooping on the bridge, allowing the bridge to learn about multicast group memberships and
+	// forward multicast traffic only to ports that have interested receivers. When disabled, multicast traffic is
+	// flooded to all ports in the bridge.
+	// Defaults to false.
+	EnableMulticastSnooping bool `yaml:"enableMulticastSnooping,omitempty"`
+}
+
+type HostNetworkAccelerationConfig struct {
+	// Enable to accelerate Pod-to-Pod traffic in the Node's host network using nftables flowtable when traffic mode is
+	// noEncap or hybrid.
+	Enable *bool `yaml:"enable,omitempty"`
 }

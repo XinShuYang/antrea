@@ -15,7 +15,9 @@
 package connections
 
 import (
-	"antrea.io/antrea/pkg/agent/flowexporter"
+	"time"
+
+	"antrea.io/antrea/pkg/agent/flowexporter/connection"
 )
 
 // ConnTrackDumper is an interface that is used to dump connections from conntrack module. This supports dumping through
@@ -23,7 +25,16 @@ import (
 // In future, support will be extended to Windows.
 type ConnTrackDumper interface {
 	// DumpFlows returns a list of filtered connections and the number of total connections.
-	DumpFlows(zoneFilter uint16) ([]*flowexporter.Connection, int, error)
+	DumpFlows(zoneFilter uint16) ([]*connection.Connection, int, error)
 	// GetMaxConnections returns the size of the connection tracking table.
 	GetMaxConnections() (int, error)
+}
+
+type ConnectionStoreGetter interface {
+	GetConnByKey(connKey connection.ConnectionKey) (*connection.Connection, bool)
+}
+
+type DenyConnectionStoreUpdater interface {
+	ConnectionStoreGetter
+	AddOrUpdateConn(conn *connection.Connection, timeSeen time.Time, bytes uint64)
 }

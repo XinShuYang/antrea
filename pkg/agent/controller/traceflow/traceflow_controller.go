@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -97,10 +98,12 @@ type Controller struct {
 	ofClient               openflow.Client
 	networkPolicyQuerier   querier.AgentNetworkPolicyInfoQuerier
 	egressQuerier          querier.EgressQuerier
+	podSubnetChecker       PodSubnetChecker
 	interfaceStore         interfacestore.InterfaceStore
 	networkConfig          *config.NetworkConfig
 	nodeConfig             *config.NodeConfig
-	serviceCIDR            *net.IPNet // K8s Service ClusterIP CIDR
+	serviceCIDR            *net.IPNet   // K8s Service ClusterIP CIDR
+	podCIDRs               []*net.IPNet // Only used in networkPolicyOnly mode
 	queue                  workqueue.TypedRateLimitingInterface[string]
 	runningTraceflowsMutex sync.RWMutex
 	// runningTraceflows is a map for storing the running Traceflow state
@@ -119,10 +122,12 @@ func NewTraceflowController(
 	client openflow.Client,
 	npQuerier querier.AgentNetworkPolicyInfoQuerier,
 	egressQuerier querier.EgressQuerier,
+	podSubnetChecker PodSubnetChecker,
 	interfaceStore interfacestore.InterfaceStore,
 	networkConfig *config.NetworkConfig,
 	nodeConfig *config.NodeConfig,
 	serviceCIDR *net.IPNet,
+	podCIDRs []*net.IPNet,
 	enableAntreaProxy bool) *Controller {
 	c := &Controller{
 		kubeClient:            kubeClient,
@@ -133,10 +138,12 @@ func NewTraceflowController(
 		ofClient:              client,
 		networkPolicyQuerier:  npQuerier,
 		egressQuerier:         egressQuerier,
+		podSubnetChecker:      podSubnetChecker,
 		interfaceStore:        interfaceStore,
 		networkConfig:         networkConfig,
 		nodeConfig:            nodeConfig,
 		serviceCIDR:           serviceCIDR,
+		podCIDRs:              podCIDRs,
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
 			workqueue.TypedRateLimitingQueueConfig[string]{
@@ -606,4 +613,11 @@ func (c *Controller) cleanupTraceflow(tfName string) {
 			break
 		}
 	}
+}
+
+type PodSubnetChecker interface {
+	// LookupIPInPodSubnets returns two boolean values. The first one indicates whether the IP can be
+	// found in a PodCIDR for one of the cluster Nodes. The second one indicates whether the IP is used
+	// as a gateway IP. The second boolean value can only be true if the first one is true.
+	LookupIPInPodSubnets(ip netip.Addr) (isFound bool, isGWIP bool)
 }

@@ -16,6 +16,7 @@ package querier
 
 import (
 	"context"
+	"regexp"
 
 	v1 "k8s.io/api/core/v1"
 	apitypes "k8s.io/apimachinery/pkg/types"
@@ -47,6 +48,7 @@ type AgentNetworkPolicyInfoQuerier interface {
 	GetAppliedNetworkPolicies(pod, namespace string, npFilter *NetworkPolicyQueryFilter) []cpv1beta.NetworkPolicy
 	GetNetworkPolicyByRuleFlowID(ruleFlowID uint32) *cpv1beta.NetworkPolicyReference
 	GetRuleByFlowID(ruleFlowID uint32) *types.PolicyRule
+	GetFQDNCache(fqdnFilter *FQDNCacheFilter) []types.DnsCacheEntry
 }
 
 type AgentMulticastInfoQuerier interface {
@@ -68,7 +70,7 @@ type ControllerNetworkPolicyInfoQuerier interface {
 
 type EgressQuerier interface {
 	GetEgressIPByMark(mark uint32) (string, error)
-	GetEgress(podNamespace, podName string) (string, string, string, error)
+	GetEgress(podNamespace, podName string) (types.EgressConfig, error)
 }
 
 // GetSelfPod gets current pod.
@@ -99,6 +101,12 @@ func GetSelfNode(isAgent bool, node string) v1.ObjectReference {
 // GetVersion gets current version.
 func GetVersion() string {
 	return version.GetFullVersion()
+}
+
+// FQDNCacheFilter is used to filter the result while retrieving FQDN cache
+type FQDNCacheFilter struct {
+	// The Name or wildcard matching expression of the domain that is being filtered
+	DomainRegex *regexp.Regexp
 }
 
 // NetworkPolicyQueryFilter is used to filter the result while retrieve network policy
@@ -144,8 +152,9 @@ type ServiceExternalIPStatusQuerier interface {
 }
 
 type AgentBGPPolicyInfoQuerier interface {
-	// GetBGPPolicyInfo returns Name, RouterID, LocalASN and ListenPort of effective BGP Policy applied on the Node.
-	GetBGPPolicyInfo() (string, string, int32, int32)
+	// GetBGPPolicyInfo returns BGPPolicyInfo which includes BGPPolicyName, RouterID,
+	// LocalASN, ListenPort, ConfederationIdentier and MemberASNs of effective BGP Policy applied on the Node.
+	GetBGPPolicyInfo() *bgpcontroller.BGPPolicyInfo
 	// GetBGPPeerStatus returns current status of BGP Peers of effective BGP Policy applied on the Node.
 	GetBGPPeerStatus(ctx context.Context) ([]bgp.PeerStatus, error)
 	// GetBGPRoutes returns the advertised BGP routes.

@@ -26,9 +26,13 @@ import (
 	k8sproxy "antrea.io/antrea/third_party/proxy"
 )
 
+type EndpointInfo struct {
+	*k8sproxy.BaseEndpointInfo
+}
+
 // ServiceInfo is the internal struct for caching service information.
 type ServiceInfo struct {
-	*k8sproxy.BaseServiceInfo
+	*k8sproxy.BaseServicePortInfo
 	// cache for performance
 	OFProtocol openflow.Protocol
 	// IsNested means the Service's Endpoints could be another Service's ClusterIP.
@@ -52,22 +56,24 @@ func getLoadBalancerMode(service *corev1.Service) *config.LoadBalancerMode {
 }
 
 // NewServiceInfo returns a new k8sproxy.ServicePort which abstracts a serviceInfo.
-func NewServiceInfo(port *corev1.ServicePort, service *corev1.Service, baseInfo *k8sproxy.BaseServiceInfo) k8sproxy.ServicePort {
-	info := &ServiceInfo{BaseServiceInfo: baseInfo}
+func NewServiceInfo(port *corev1.ServicePort, service *corev1.Service, baseInfo *k8sproxy.BaseServicePortInfo) k8sproxy.ServicePort {
+	info := &ServiceInfo{BaseServicePortInfo: baseInfo}
 	info.IsNested = mccommon.IsMulticlusterService(service)
 	info.LoadBalancerMode = getLoadBalancerMode(service)
 	if utilnet.IsIPv6(baseInfo.ClusterIP()) {
 		info.OFProtocol = openflow.ProtocolTCPv6
-		if port.Protocol == corev1.ProtocolUDP {
+		switch port.Protocol {
+		case corev1.ProtocolUDP:
 			info.OFProtocol = openflow.ProtocolUDPv6
-		} else if port.Protocol == corev1.ProtocolSCTP {
+		case corev1.ProtocolSCTP:
 			info.OFProtocol = openflow.ProtocolSCTPv6
 		}
 	} else {
 		info.OFProtocol = openflow.ProtocolTCP
-		if port.Protocol == corev1.ProtocolUDP {
+		switch port.Protocol {
+		case corev1.ProtocolUDP:
 			info.OFProtocol = openflow.ProtocolUDP
-		} else if port.Protocol == corev1.ProtocolSCTP {
+		case corev1.ProtocolSCTP:
 			info.OFProtocol = openflow.ProtocolSCTP
 		}
 	}
@@ -75,8 +81,7 @@ func NewServiceInfo(port *corev1.ServicePort, service *corev1.Service, baseInfo 
 }
 
 // NewEndpointInfo returns a new k8sproxy.Endpoint which abstracts an endpointsInfo.
-func NewEndpointInfo(baseInfo *k8sproxy.BaseEndpointInfo) k8sproxy.Endpoint {
-	return baseInfo
+func NewEndpointInfo(baseInfo *k8sproxy.BaseEndpointInfo, _ *k8sproxy.ServicePortName) k8sproxy.Endpoint {
+	info := &EndpointInfo{BaseEndpointInfo: baseInfo}
+	return info
 }
-
-type EndpointsMap map[k8sproxy.ServicePortName]map[string]k8sproxy.Endpoint

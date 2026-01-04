@@ -35,7 +35,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -326,6 +325,36 @@ func (c *Controller) validatePacketCapture(spec *crdv1alpha1.PacketCaptureSpec) 
 				}
 			}
 		}
+		if spec.Packet.TransportHeader.ICMP != nil {
+			for _, f := range spec.Packet.TransportHeader.ICMP.Messages {
+				switch f.Type.Type {
+				case intstr.Int:
+					if f.Type.IntVal < 0 || f.Type.IntVal > 255 {
+						return fmt.Errorf("invalid ICMP type integer: %d; must be between 0 and 255", f.Type.IntVal)
+					}
+				case intstr.String:
+					if _, ok := capture.ICMPMsgTypeMap[crdv1alpha1.ICMPMsgType(strings.ToLower(f.Type.StrVal))]; !ok {
+						return fmt.Errorf("invalid ICMP type string: %q; supported values are: %v (case insensitive)",
+							f.Type.StrVal, slices.Collect(maps.Keys(capture.ICMPMsgTypeMap)))
+					}
+				}
+			}
+		}
+		if spec.Packet.TransportHeader.ICMPv6 != nil {
+			for _, f := range spec.Packet.TransportHeader.ICMPv6.Messages {
+				switch f.Type.Type {
+				case intstr.Int:
+					if f.Type.IntVal < 0 || f.Type.IntVal > 255 {
+						return fmt.Errorf("invalid ICMPv6 type integer: %d; must be between 0 and 255", f.Type.IntVal)
+					}
+				case intstr.String:
+					if _, ok := capture.ICMPv6MsgTypeMap[crdv1alpha1.ICMPv6MsgType(strings.ToLower(f.Type.StrVal))]; !ok {
+						return fmt.Errorf("invalid ICMPv6 type string: %q; supported values are: %v (case insensitive)",
+							f.Type.StrVal, slices.Collect(maps.Keys(capture.ICMPv6MsgTypeMap)))
+					}
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -368,16 +397,28 @@ func getPacketFile(filePath string) (afero.File, error) {
 // In the PacketCapture spec, at least one of `.Spec.Source.Pod` or `.Spec.Destination.Pod`
 // should be set.
 func (c *Controller) getTargetCaptureDevice(pc *crdv1alpha1.PacketCapture) string {
-	var pod, ns string
-	if pc.Spec.Source.Pod != nil {
-		pod = pc.Spec.Source.Pod.Name
-		ns = pc.Spec.Source.Pod.Namespace
-	} else {
-		pod = pc.Spec.Destination.Pod.Name
-		ns = pc.Spec.Destination.Pod.Namespace
+	// Set CapturePoint to 'Source' if a Source Pod is specified; otherwise, use 'Destination'.
+	if pc.Spec.CapturePoint == "" {
+		if pc.Spec.Source.Pod != nil {
+			pc.Spec.CapturePoint = crdv1alpha1.CapturePointSource
+		} else {
+			pc.Spec.CapturePoint = crdv1alpha1.CapturePointDestination
+		}
 	}
 
-	podInterfaces := c.interfaceStore.GetContainerInterfacesByPod(pod, ns)
+	var device string
+	switch pc.Spec.CapturePoint {
+	case crdv1alpha1.CapturePointSource:
+		device = c.getPodDevice(pc.Spec.Source.Pod)
+	case crdv1alpha1.CapturePointDestination:
+		device = c.getPodDevice(pc.Spec.Destination.Pod)
+	}
+	return device
+}
+
+// getPodDevice returns the network device name for the given PodReference using the interfaceStore.
+func (c *Controller) getPodDevice(pod *crdv1alpha1.PodReference) string {
+	podInterfaces := c.interfaceStore.GetContainerInterfacesByPod(pod.Name, pod.Namespace)
 	if len(podInterfaces) == 0 {
 		return ""
 	}
@@ -464,7 +505,7 @@ func (c *Controller) performCapture(
 	}
 	defer pcapngWriter.Flush()
 	updateRateLimiter := rate.NewLimiter(rate.Every(captureStatusUpdatePeriod), 1)
-	packets, err := c.captureInterface.Capture(ctx, device, snapLen, srcIP, dstIP, pc.Spec.Packet)
+	packets, err := c.captureInterface.Capture(ctx, device, snapLen, srcIP, dstIP, pc.Spec.Packet, pc.Spec.Direction)
 	if err != nil {
 		return false, err
 	}
@@ -503,11 +544,15 @@ func (c *Controller) performCapture(
 	}
 }
 
-func (c *Controller) getPodIP(ctx context.Context, podRef *crdv1alpha1.PodReference) (net.IP, error) {
+func (c *Controller) getPodIP(ctx context.Context, podRef *crdv1alpha1.PodReference, ipFamily v1.IPFamily) (net.IP, error) {
 	podInterfaces := c.interfaceStore.GetContainerInterfacesByPod(podRef.Name, podRef.Namespace)
 	var podIP net.IP
 	if len(podInterfaces) > 0 {
-		podIP = podInterfaces[0].GetIPv4Addr()
+		if ipFamily == v1.IPv6Protocol {
+			podIP = podInterfaces[0].GetIPv6Addr()
+		} else {
+			podIP = podInterfaces[0].GetIPv4Addr()
+		}
 	} else {
 		pod, err := c.kubeClient.CoreV1().Pods(podRef.Namespace).Get(ctx, podRef.Name, metav1.GetOptions{})
 		if err != nil {
@@ -517,17 +562,25 @@ func (c *Controller) getPodIP(ctx context.Context, podRef *crdv1alpha1.PodRefere
 		for i, ip := range pod.Status.PodIPs {
 			podIPs[i] = net.ParseIP(ip.IP)
 		}
-		podIP = util.GetIPv4Addr(podIPs)
+		if ipFamily == v1.IPv6Protocol {
+			podIP, _ = util.GetIPWithFamily(podIPs, util.FamilyIPv6)
+		} else {
+			podIP = util.GetIPv4Addr(podIPs)
+		}
 	}
 	if podIP == nil {
-		return nil, fmt.Errorf("cannot find IP with IPv4 address family for Pod %s/%s", podRef.Namespace, podRef.Name)
+		return nil, fmt.Errorf("cannot find IP with %s address family for Pod %s/%s", ipFamily, podRef.Namespace, podRef.Name)
 	}
 	return podIP, nil
 }
 
 func (c *Controller) parseIPs(ctx context.Context, pc *crdv1alpha1.PacketCapture) (srcIP, dstIP net.IP, err error) {
+	ipFamily := v1.IPv4Protocol
+	if pc.Spec.Packet != nil {
+		ipFamily = pc.Spec.Packet.IPFamily
+	}
 	if pc.Spec.Source.Pod != nil {
-		srcIP, err = c.getPodIP(ctx, pc.Spec.Source.Pod)
+		srcIP, err = c.getPodIP(ctx, pc.Spec.Source.Pod, ipFamily)
 		if err != nil {
 			return
 		}
@@ -539,7 +592,7 @@ func (c *Controller) parseIPs(ctx context.Context, pc *crdv1alpha1.PacketCapture
 		}
 	}
 	if pc.Spec.Destination.Pod != nil {
-		dstIP, err = c.getPodIP(ctx, pc.Spec.Destination.Pod)
+		dstIP, err = c.getPodIP(ctx, pc.Spec.Destination.Pod, ipFamily)
 		if err != nil {
 			return
 		}
@@ -689,7 +742,7 @@ func (c *Controller) updateStatus(ctx context.Context, pc *crdv1alpha1.PacketCap
 	desiredStatus.Conditions = conditions
 
 	if retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if packetCaptureStatusEqual(toUpdate.Status, desiredStatus) {
+		if crdv1alpha1.PacketCaptureStatusEqual(toUpdate.Status, desiredStatus) {
 			return nil
 		}
 
@@ -712,36 +765,6 @@ func (c *Controller) updateStatus(ctx context.Context, pc *crdv1alpha1.PacketCap
 	return nil
 }
 
-func conditionEqualsIgnoreLastTransitionTime(a, b crdv1alpha1.PacketCaptureCondition) bool {
-	a1 := a
-	a1.LastTransitionTime = metav1.Date(2018, 1, 1, 0, 0, 0, 0, time.UTC)
-	b1 := b
-	b1.LastTransitionTime = metav1.Date(2018, 1, 1, 0, 0, 0, 0, time.UTC)
-	return a1 == b1
-}
-
-var semanticIgnoreLastTransitionTime = conversion.EqualitiesOrDie(
-	conditionSliceEqualsIgnoreLastTransitionTime,
-)
-
-func packetCaptureStatusEqual(oldStatus, newStatus crdv1alpha1.PacketCaptureStatus) bool {
-	return semanticIgnoreLastTransitionTime.DeepEqual(oldStatus, newStatus)
-}
-
-func conditionSliceEqualsIgnoreLastTransitionTime(as, bs []crdv1alpha1.PacketCaptureCondition) bool {
-	if len(as) != len(bs) {
-		return false
-	}
-	for i := range as {
-		a := as[i]
-		b := bs[i]
-		if !conditionEqualsIgnoreLastTransitionTime(a, b) {
-			return false
-		}
-	}
-	return true
-}
-
 func mergeConditions(oldConditions, newConditions []crdv1alpha1.PacketCaptureCondition) []crdv1alpha1.PacketCaptureCondition {
 	finalConditions := make([]crdv1alpha1.PacketCaptureCondition, 0)
 	newConditionMap := make(map[crdv1alpha1.PacketCaptureConditionType]crdv1alpha1.PacketCaptureCondition)
@@ -756,7 +779,7 @@ func mergeConditions(oldConditions, newConditions []crdv1alpha1.PacketCaptureCon
 			continue
 		}
 		// Use the original Condition if the only change is about lastTransition time
-		if conditionEqualsIgnoreLastTransitionTime(newCondition, oldCondition) {
+		if crdv1alpha1.ConditionEqualsIgnoreLastTransitionTime(newCondition, oldCondition) {
 			finalConditions = append(finalConditions, oldCondition)
 		} else {
 			// Use the latest Condition.

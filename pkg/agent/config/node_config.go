@@ -55,7 +55,6 @@ const (
 const (
 	L7RedirectTargetPortName = "antrea-l7-tap0"
 	L7RedirectReturnPortName = "antrea-l7-tap1"
-	L7SuricataSocketPath     = "/var/run/suricata/suricata_eve.socket"
 )
 
 const (
@@ -82,6 +81,11 @@ var (
 	// - The IP is used as destination IP in host routing entry to forward DNATed NodePort packets to Antrea gateway
 	VirtualNodePortDNATIPv4 = net.ParseIP("169.254.0.252")
 	VirtualNodePortDNATIPv6 = net.ParseIP("fc01::aabb:ccdd:eefe")
+
+	// VirtualReplyEgressRouteNextHopIPv4 or VirtualReplyEgressRouteNextHopIPv6 is used as the next hop IP of the
+	// default route in the policy-routing table ReplyEgressRouteTable defined in pkg/agent/types/net.go.
+	VirtualReplyEgressRouteNextHopIPv4 = net.ParseIP("169.254.0.251")
+	VirtualReplyEgressRouteNextHopIPv6 = net.ParseIP("fc01::aabb:ccdd:eefd")
 )
 
 type NodeType uint8
@@ -229,6 +233,9 @@ type NetworkConfig struct {
 
 	EnableMulticlusterGW       bool
 	MulticlusterEncryptionMode TrafficEncryptionModeType
+
+	EnableHostNetworkAcceleration bool
+	HostNetworkMode               HostNetworkMode
 }
 
 // IsIPv4Enabled returns true if the cluster network supports IPv4. Legal cases are:
@@ -293,13 +300,14 @@ func (nc *NetworkConfig) NeedsDirectRoutingToPeer(peerIP net.IP, localIP *net.IP
 
 func (nc *NetworkConfig) getEncapMTUDeduction(isIPv6 bool) int {
 	var deduction int
-	if nc.TunnelType == ovsconfig.VXLANTunnel {
+	switch nc.TunnelType {
+	case ovsconfig.VXLANTunnel:
 		deduction = vxlanOverhead
-	} else if nc.TunnelType == ovsconfig.GeneveTunnel {
+	case ovsconfig.GeneveTunnel:
 		deduction = geneveOverhead
-	} else if nc.TunnelType == ovsconfig.GRETunnel {
+	case ovsconfig.GRETunnel:
 		deduction = greOverhead
-	} else {
+	default:
 		return 0
 	}
 	if isIPv6 {
@@ -326,10 +334,11 @@ func (nc *NetworkConfig) CalculateMTUDeduction(isIPv6 bool) int {
 	if nc.TrafficEncapMode.SupportsEncap() {
 		nc.MTUDeduction = nc.getEncapMTUDeduction(isIPv6)
 	}
-	if nc.TrafficEncryptionMode == TrafficEncryptionModeWireGuard {
+	switch nc.TrafficEncryptionMode {
+	case TrafficEncryptionModeWireGuard:
 		// When WireGuard is enabled, cross-node traffic will only be encrypted, just reduce MTU for encryption.
 		nc.MTUDeduction = nc.WireGuardMTUDeduction
-	} else if nc.TrafficEncryptionMode == TrafficEncryptionModeIPSec {
+	case TrafficEncryptionModeIPSec:
 		// When IPsec is enabled, cross-node traffic will be encapsulated and encrypted, we need to reduce MTU for both
 		// encapsulation and encryption.
 		nc.MTUDeduction += IPSecESPOverhead

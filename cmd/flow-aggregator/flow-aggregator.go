@@ -20,12 +20,9 @@ import (
 	"sync"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
-	coreinformers "k8s.io/client-go/informers/core/v1"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	aggregator "antrea.io/antrea/pkg/flowaggregator"
@@ -34,7 +31,7 @@ import (
 	"antrea.io/antrea/pkg/signals"
 	"antrea.io/antrea/pkg/util/cipher"
 	"antrea.io/antrea/pkg/util/k8s"
-	"antrea.io/antrea/pkg/util/podstore"
+	"antrea.io/antrea/pkg/util/objectstore"
 	"antrea.io/antrea/pkg/version"
 )
 
@@ -56,20 +53,16 @@ func run(configFile string) error {
 
 	k8sClient, err := createK8sClient()
 	if err != nil {
-		return fmt.Errorf("error when creating K8s client: %v", err)
+		return fmt.Errorf("error when creating K8s client: %w", err)
 	}
 
-	podInformer := coreinformers.NewFilteredPodInformer(
-		k8sClient,
-		metav1.NamespaceAll,
-		informerDefaultResync,
-		cache.Indexers{},
-		func(options *metav1.ListOptions) {
-			options.FieldSelector = fields.OneTermEqualSelector("spec.hostNetwork", "false").String()
-		},
-	)
-	podInformer.SetTransform(k8s.NewTrimmer(k8s.TrimPod))
-	podStore := podstore.NewPodStore(podInformer)
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(k8sClient, informerDefaultResync, informers.WithTransform(k8s.NewTrimmer(k8s.TrimPod, k8s.TrimNode)))
+	podInformer := informerFactory.Core().V1().Pods()
+	podStore := objectstore.NewPodStore(podInformer.Informer())
+	nodeInformer := informerFactory.Core().V1().Nodes()
+	nodeStore := objectstore.NewNodeStore(nodeInformer.Informer())
+	serviceInformer := informerFactory.Core().V1().Services()
+	serviceStore := objectstore.NewServiceStore(serviceInformer.Informer())
 
 	klog.InfoS("Retrieving Antrea cluster UUID")
 	clusterUUID, err := aggregator.GetClusterUUID(ctx, k8sClient)
@@ -82,12 +75,18 @@ func run(configFile string) error {
 		k8sClient,
 		clusterUUID,
 		podStore,
+		nodeStore,
+		serviceStore,
 		configFile,
 	)
-
 	if err != nil {
 		return err
 	}
+
+	go podStore.Run(stopCh)
+	go nodeStore.Run(stopCh)
+	go serviceStore.Run(stopCh)
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -97,7 +96,7 @@ func run(configFile string) error {
 
 	cipherSuites, err := cipher.GenerateCipherSuitesList(flowAggregator.APIServer.TLSCipherSuites)
 	if err != nil {
-		return fmt.Errorf("error generating Cipher Suite list: %v", err)
+		return fmt.Errorf("error generating Cipher Suite list: %w", err)
 	}
 	apiServer, err := apiserver.New(
 		flowAggregator,
@@ -105,11 +104,11 @@ func run(configFile string) error {
 		cipherSuites,
 		cipher.TLSVersionMap[flowAggregator.APIServer.TLSMinVersion])
 	if err != nil {
-		return fmt.Errorf("error when creating flow aggregator API server: %v", err)
+		return fmt.Errorf("error when creating flow aggregator API server: %w", err)
 	}
 	go apiServer.Run(ctx)
 
-	go podInformer.Run(stopCh)
+	informerFactory.Start(stopCh)
 
 	<-stopCh
 	klog.InfoS("Stopping Flow Aggregator")

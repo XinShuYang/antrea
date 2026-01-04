@@ -23,7 +23,7 @@ GIT_HOOKS          := $(shell find hack/git_client_side_hooks -type f -print)
 DOCKER_NETWORK     ?= default
 TRIVY_TARGET_IMAGE ?=
 
-GOLANGCI_LINT_VERSION := v1.60.3
+GOLANGCI_LINT_VERSION := v2.5.0
 GOLANGCI_LINT_BINDIR  := $(CURDIR)/.golangci-bin
 GOLANGCI_LINT_BIN     := $(GOLANGCI_LINT_BINDIR)/$(GOLANGCI_LINT_VERSION)/golangci-lint
 
@@ -37,14 +37,6 @@ TEST_ARGS ?=
 # If we have stdin we can run interactive so the tests running in docker can be interrupted.
 INTERACTIVE_ARGS := $(shell [ -t 0 ] && echo "-it")
 
-BUILD_TAG :=
-ifndef CUSTOM_BUILD_TAG
-	BUILD_TAG = $(shell build/images/build-tag.sh)
-else
-	BUILD_TAG = $(CUSTOM_BUILD_TAG)
-	DOCKER_IMG_VERSION = $(CUSTOM_BUILD_TAG)
-endif
-
 DOCKER_BUILD_ARGS :=
 ifeq ($(NO_PULL),)
 	DOCKER_BUILD_ARGS += --pull
@@ -57,7 +49,6 @@ ifneq ($(DOCKER_TARGETPLATFORM),)
 endif
 DOCKER_BUILD_ARGS += --build-arg OVS_VERSION=$(OVS_VERSION)
 DOCKER_BUILD_ARGS += --build-arg GO_VERSION=$(GO_VERSION)
-DOCKER_BUILD_ARGS += --build-arg BUILD_TAG=$(BUILD_TAG)
 
 export CGO_ENABLED
 
@@ -65,6 +56,17 @@ export CGO_ENABLED
 all: build
 
 include versioning.mk
+
+# This should be located after the include directive for versioning.mk,
+# so that we can override DOCKER_IMG_VERSION with CUSTOM_BUILD_TAG.
+BUILD_TAG :=
+ifndef CUSTOM_BUILD_TAG
+	BUILD_TAG = $(shell build/images/build-tag.sh)
+else
+	BUILD_TAG = $(CUSTOM_BUILD_TAG)
+	DOCKER_IMG_VERSION = $(CUSTOM_BUILD_TAG)
+endif
+DOCKER_BUILD_ARGS += --build-arg BUILD_TAG=$(BUILD_TAG)
 
 LDFLAGS += $(VERSION_LDFLAGS)
 
@@ -130,6 +132,11 @@ antrea-agent-instr-binary:
 antrea-controller:
 	@mkdir -p $(BINDIR)
 	GOOS=linux $(GO) build -o $(BINDIR) $(GOFLAGS) -ldflags '$(LDFLAGS)' antrea.io/antrea/cmd/antrea-controller
+
+.PHONY: antrea-sysctl-init
+antrea-sysctl-init:
+	@mkdir -p $(BINDIR)
+	GOOS=linux $(GO) build -o $(BINDIR) $(GOFLAGS) -ldflags '$(LDFLAGS)' antrea.io/antrea/cmd/antrea-sysctl-init
 
 .PHONY: .coverage
 .coverage:
@@ -289,9 +296,10 @@ add-copyright:
 .windows-test-unit: .coverage
 	@echo
 	@echo "==> Running unit tests <=="
-	CGO_ENABLED=1 $(GO) test $(TEST_ARGS) -race -coverpkg=antrea.io/antrea/cmd/...,antrea.io/antrea/pkg/... \
+	@pkgs=$$($(GO) list antrea.io/antrea/cmd/... antrea.io/antrea/pkg/... | grep -v antrea.io/antrea/pkg/controller); \
+	CGO_ENABLED=1 $(GO) test $(TEST_ARGS) -race -coverpkg=$$(echo "$$pkgs" | tr '\n' ',' | sed 's/,$$//') \
 	  -coverprofile=.coverage/coverage-unit.txt -covermode=atomic \
-	  antrea.io/antrea/cmd/... antrea.io/antrea/pkg/...
+	  $$pkgs
 
 .PHONY: tidy
 tidy:

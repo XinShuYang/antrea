@@ -1,4 +1,4 @@
-// Copyright 2024 Antrea Authors
+// Copyright 2025 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@ package testing
 import (
 	reflect "reflect"
 
+	v1alpha1 "antrea.io/antrea/pkg/apis/flow/v1alpha1"
 	options "antrea.io/antrea/pkg/flowaggregator/options"
-	entities "github.com/vmware/go-ipfix/pkg/entities"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -57,7 +57,7 @@ func (m *MockInterface) EXPECT() *MockInterfaceMockRecorder {
 }
 
 // AddRecord mocks base method.
-func (m *MockInterface) AddRecord(record entities.Record, isRecordIPv6 bool) error {
+func (m *MockInterface) AddRecord(record *v1alpha1.Flow, isRecordIPv6 bool) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "AddRecord", record, isRecordIPv6)
 	ret0, _ := ret[0].(error)
@@ -68,6 +68,20 @@ func (m *MockInterface) AddRecord(record entities.Record, isRecordIPv6 bool) err
 func (mr *MockInterfaceMockRecorder) AddRecord(record, isRecordIPv6 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddRecord", reflect.TypeOf((*MockInterface)(nil).AddRecord), record, isRecordIPv6)
+}
+
+// Flush mocks base method.
+func (m *MockInterface) Flush() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Flush")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Flush indicates an expected call of Flush.
+func (mr *MockInterfaceMockRecorder) Flush() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Flush", reflect.TypeOf((*MockInterface)(nil).Flush))
 }
 
 // Start mocks base method.

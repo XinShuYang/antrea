@@ -61,6 +61,7 @@ const (
 	ovsExternalIDPodName      = "pod-name"
 	ovsExternalIDPodNamespace = "pod-namespace"
 	ovsExternalIDIFDev        = "if-dev"
+	ovsExternalIDNetNS        = "net-ns"
 )
 
 const (
@@ -145,7 +146,7 @@ func parseContainerIPs(ipcs []*current.IPConfig) ([]net.IP, error) {
 }
 
 func buildContainerConfig(
-	interfaceName, containerID, podName, podNamespace string,
+	interfaceName, containerID, podName, podNamespace, netNS string,
 	containerIface *current.Interface,
 	ips []*current.IPConfig,
 	vlanID uint16) *interfacestore.InterfaceConfig {
@@ -159,6 +160,7 @@ func buildContainerConfig(
 		podName,
 		podNamespace,
 		containerIface.Name,
+		netNS,
 		containerMAC,
 		containerIPs,
 		vlanID)
@@ -168,6 +170,7 @@ func buildContainerConfig(
 // external_ids are used to compare and sync container interface configuration.
 func BuildOVSPortExternalIDs(containerConfig *interfacestore.InterfaceConfig) map[string]interface{} {
 	externalIDs := make(map[string]interface{})
+	externalIDs[interfacestore.AntreaInterfaceTypeKey] = interfacestore.AntreaContainer
 	externalIDs[ovsExternalIDMAC] = containerConfig.MAC.String()
 	externalIDs[ovsExternalIDContainerID] = containerConfig.ContainerID
 	externalIDs[ovsExternalIDIP] = getContainerIPsString(containerConfig.IPs)
@@ -177,7 +180,8 @@ func BuildOVSPortExternalIDs(containerConfig *interfacestore.InterfaceConfig) ma
 		// Save interface name for a secondary interface.
 		externalIDs[ovsExternalIDIFDev] = containerConfig.IFDev
 	}
-	externalIDs[interfacestore.AntreaInterfaceTypeKey] = interfacestore.AntreaContainer
+	// Save NetNS which is needed for secondary interface creation.
+	externalIDs[ovsExternalIDNetNS] = containerConfig.NetNS
 	return externalIDs
 }
 
@@ -218,9 +222,10 @@ func ParseOVSPortInterfaceConfig(portData *ovsconfig.OVSPortData, portConfig *in
 	if err != nil {
 		klog.ErrorS(err, "Failed to parse MAC address from OVS external config")
 	}
-	podName, _ := portData.ExternalIDs[ovsExternalIDPodName]
-	podNamespace, _ := portData.ExternalIDs[ovsExternalIDPodNamespace]
-	ifDev, _ := portData.ExternalIDs[ovsExternalIDIFDev]
+	podName := portData.ExternalIDs[ovsExternalIDPodName]
+	podNamespace := portData.ExternalIDs[ovsExternalIDPodNamespace]
+	ifDev := portData.ExternalIDs[ovsExternalIDIFDev]
+	netNS := portData.ExternalIDs[ovsExternalIDNetNS]
 
 	interfaceConfig := interfacestore.NewContainerInterface(
 		portData.Name,
@@ -228,6 +233,7 @@ func ParseOVSPortInterfaceConfig(portData *ovsconfig.OVSPortData, portConfig *in
 		podName,
 		podNamespace,
 		ifDev,
+		netNS,
 		containerMAC,
 		containerIPs,
 		portData.VLANID)
@@ -238,10 +244,10 @@ func ParseOVSPortInterfaceConfig(portData *ovsconfig.OVSPortData, portConfig *in
 func (pc *podConfigurator) configureInterfacesCommon(
 	podName, podNamespace, containerID, containerNetNS string,
 	containerIFDev string, mtu int, sriovVFDeviceID string,
-	result *ipam.IPAMResult, containerAccess *containerAccessArbitrator) error {
+	result *ipam.IPAMResult, containerAccess *containerAccessArbitrator, mac net.HardwareAddr) error {
 	err := pc.ifConfigurator.configureContainerLink(
 		podName, podNamespace, containerID, containerNetNS,
-		containerIFDev, mtu, sriovVFDeviceID, "", &result.Result, containerAccess)
+		containerIFDev, mtu, sriovVFDeviceID, "", &result.Result, containerAccess, mac)
 	if err != nil {
 		return err
 	}

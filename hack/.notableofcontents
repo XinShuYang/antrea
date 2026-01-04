@@ -21,7 +21,6 @@ docs/feature-gates.md
 docs/getting-started.md
 docs/gke-installation.md
 docs/kubernetes-installers.md
-docs/maintainers/antrea-docker-image.md
 docs/maintainers/build-kubemark.md
 docs/maintainers/getting-started-gif.md
 docs/maintainers/release.md
@@ -40,6 +39,5 @@ docs/os-issues.md
 docs/ovs-offload.md
 docs/packetcapture-guide.md
 docs/prometheus-integration.md
-docs/secondary-network.md
 docs/security.md
 docs/traffic-encryption.md

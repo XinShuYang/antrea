@@ -32,6 +32,7 @@ import (
 	npltesting "antrea.io/antrea/pkg/agent/nodeportlocal/testing"
 	"antrea.io/antrea/pkg/agent/nodeportlocal/types"
 	agentconfig "antrea.io/antrea/pkg/config/agent"
+	"antrea.io/antrea/pkg/features"
 )
 
 const (
@@ -54,14 +55,10 @@ func newExpectedNPLAnnotations(nplStartPort, nplEndPort int) *npltesting.Expecte
 	return npltesting.NewExpectedNPLAnnotations(nil, nplStartPort, nplEndPort)
 }
 
-func skipIfNodePortLocalDisabled(tb testing.TB, data *TestData) {
-	agentConf, err := data.GetAntreaAgentConf()
-	if err != nil {
-		tb.Fatalf("Error getting Antrea Agent configuration: %v:", err)
-	}
-	if !agentConf.NodePortLocal.Enable {
-		tb.Skipf("Skipping test because NodePortLocal is not enabled")
-	}
+func skipIfNodePortLocalDisabled(tb testing.TB) {
+	// We still check the FeatureGate: even though it is GA, it has not been
+	// locked nor removed, so it can still be set to False.
+	skipIfFeatureDisabled(tb, features.NodePortLocal, true, false)
 }
 
 func configureNPLForAgent(t *testing.T, data *TestData, startPort, endPort int) {
@@ -79,14 +76,13 @@ func configureNPLForAgent(t *testing.T, data *TestData, startPort, endPort int) 
 // NodePortLocal related test cases so they can share setup, teardown.
 func TestNodePortLocal(t *testing.T) {
 	skipIfNotIPv4Cluster(t)
+	skipIfNodePortLocalDisabled(t)
 
 	data, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("Error when setting up test: %v", err)
 	}
 	defer teardownTest(t, data)
-
-	skipIfNodePortLocalDisabled(t, data)
 
 	configureNPLForAgent(t, data, defaultStartPort, defaultEndPort)
 	t.Run("testNPLAddPod", func(t *testing.T) { testNPLAddPod(t, data) })
@@ -247,12 +243,12 @@ func checkForNPLRuleInNetNat(t *testing.T, data *TestData, r *require.Assertions
 			return false, nil
 		}
 		for _, rule := range rules {
-			cmd := fmt.Sprintf("Get-NetNatStaticMapping -NatName antrea-nat") +
+			cmd := "Get-NetNatStaticMapping -NatName antrea-nat" +
 				fmt.Sprintf("|? ExternalIPAddress -EQ %s", defaultnodeIP) +
 				fmt.Sprintf("|? ExternalPort -EQ %d", rule.nodePort) +
 				fmt.Sprintf("|? Protocol -EQ %s", rule.protocol) +
 				"| Format-Table -HideTableHeaders"
-			cmdpwsh := fmt.Sprintf(`powershell.exe -NoLogo -NoProfile -NonInteractive -Command `) +
+			cmdpwsh := `powershell.exe -NoLogo -NoProfile -NonInteractive -Command ` +
 				fmt.Sprintf(`'$ErrorActionPreference="Stop";try {%s} catch {Write-Host $_;os.Exit(1)}'`, cmd)
 			_, stdout, _, err := data.RunCommandOnNode(nodeName, cmdpwsh)
 			if err != nil {

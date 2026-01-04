@@ -1,4 +1,4 @@
-// Copyright 2024 Antrea Authors
+// Copyright 2025 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 package externalversions
 
 import (
-	"fmt"
+	fmt "fmt"
 
 	v1alpha1 "antrea.io/antrea/pkg/apis/crd/v1alpha1"
 	v1alpha2 "antrea.io/antrea/pkg/apis/crd/v1alpha2"
@@ -57,6 +57,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Crd().V1alpha1().BGPPolicies().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("externalnodes"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Crd().V1alpha1().ExternalNodes().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("flowexporterdestinations"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Crd().V1alpha1().FlowExporterDestinations().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("nodelatencymonitors"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Crd().V1alpha1().NodeLatencyMonitors().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("packetcaptures"):

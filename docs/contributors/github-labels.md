@@ -58,7 +58,7 @@ The labels in this list originated within Kubernetes at
 | area/OS/linux                      | Issues or PRs related to the Linux operating system | Any |
 | area/OS/windows                    | Issues or PRs related to the Windows operating system | Any |
 | area/provider/aws                  | Issues or PRs related to aws provider | Any |
-| area/provider/azure                | Issues or PRs related to azure provider | Any |
+| area/provider/azure                | Issues or PRs related to azure provider[^Disclaimer] | Any |
 | area/provider/gcp                  | Issues or PRs related to gcp provider | Any |
 | area/provider/vmware               | Issues or PRs related to vmware provider | Any |
 | area/proxy                         | Issues or PRs related to proxy functions in Antrea | Any |
@@ -84,6 +84,8 @@ The labels in this list originated within Kubernetes at
 | kind/api-change                    | Categorizes issue or PR as related to adding, removing, or otherwise changing an API. | Any |
 | kind/bug                           | Categorizes issue or PR as related to a bug.              | Any                |
 | kind/cherry-pick                   | Categorizes issue or PR as related to the cherry-pick of a bug fix from the main branch to a release branch | Any |
+| kind/cherry-pick-clean             | Categorizes a cherry-pick PR where patches applied cleanly without conflicts | Any |
+| kind/cherry-pick-conflicts         | Categorizes a cherry-pick PR where patches required manual conflict resolution | Any |
 | kind/cleanup                       | Categorizes issue or PR as related to cleaning up code, process, or technical debt | Any |
 | kind/deprecation                   | Categorizes issue or PR as related to feature marked for deprecation | Any |
 | kind/design                        | Categorizes issue or PR as related to design | Any |
@@ -113,6 +115,10 @@ The labels in this list originated within Kubernetes at
 | triage/unresolved                  | Indicates an issue that can not or will not be resolved. | Humans |
 | action/backport                    | Indicates a PR that requires backports. | Humans |
 | action/release-note                | Indicates a PR that should be included in release notes.  | Humans |
+
+[^Disclaimer]: Due to limited resources, Azure support is no longer tested starting with Antrea 2.5.
+  Azure-related code and features are provided as-is and are not verified.
+  Any issues related to Azure will be addressed on a best-effort basis.
 
 ## Labels that apply only to issues
 

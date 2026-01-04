@@ -145,7 +145,7 @@ const (
 
 	chainCNIConfStr = `{
 "cniVersion":"%s",
-"name":"azure",
+"name":"antrea",
 "type":"antrea",
 "prevResult":%s,
 "ipam":{"type":"unknown"}
@@ -270,7 +270,7 @@ func (tc testCase) createCmdArgs(targetNS ns.NetNS, dataDir string) *cnimsg.CniC
 	}
 }
 
-func (tc testCase) createCheckCmdArgs(targetNS ns.NetNS, config *Net, dataDir string) *cnimsg.CniCmdRequest {
+func (tc testCase) createCheckCmdArgs(targetNS ns.NetNS, config *Net) *cnimsg.CniCmdRequest {
 	conf, err := json.Marshal(config)
 	require.Nil(tc.t, err)
 
@@ -493,12 +493,12 @@ func buildOneConfig(name, cniVersion string, orig *Net, prevResult types.Result)
 
 }
 
-func (tester *cmdAddDelTester) cmdCheckTest(tc testCase, conf *Net, dataDir string) {
+func (tester *cmdAddDelTester) cmdCheckTest(tc testCase, conf *Net) {
 	testRequire := require.New(tc.t)
 	var err error
 
 	// Generate network config and command arguments.
-	tester.request = tc.createCheckCmdArgs(tester.targetNS, conf, dataDir)
+	tester.request = tc.createCheckCmdArgs(tester.targetNS, conf)
 
 	// Execute cmdCHECK on the plugin.
 	err = tester.testNS.Do(func(ns.NetNS) error {
@@ -581,6 +581,7 @@ func newTester() *cmdAddDelTester {
 		false, false, false, false, &config.NetworkConfig{InterfaceMTU: 1450},
 		tester.podNetworkWait.Increment(),
 		tester.flowRestoreCompleteWait,
+		nil,
 	)
 	tester.server.Initialize(ovsServiceMock, ofServiceMock, ifaceStore, channel.NewSubscribableChannel("PodUpdate", 100))
 	ctx := context.Background()
@@ -641,7 +642,7 @@ func cmdAddDelCheckTest(testNS ns.NetNS, tc testCase, dataDir string) {
 	testRequire.Nil(err)
 
 	// Test CHECK
-	tester.cmdCheckTest(tc, newConf, dataDir)
+	tester.cmdCheckTest(tc, newConf)
 
 	// Test delete
 	ovsServiceMock.EXPECT().DeletePort(ovsPortUUID).Return(nil).AnyTimes()
@@ -748,7 +749,7 @@ func setupChainTest(
 			k8sFake.NewSimpleClientset(),
 			routeMock,
 			true, false, false, false, &config.NetworkConfig{InterfaceMTU: 1450},
-			podNetworkWait, flowRestoreCompleteWait)
+			podNetworkWait, flowRestoreCompleteWait, nil)
 	} else {
 		server = inServer
 	}
@@ -939,7 +940,7 @@ func TestCNIServerGCForHostLocalIPAM(t *testing.T) {
 		k8sClient,
 		routeMock,
 		false, false, false, false, &config.NetworkConfig{InterfaceMTU: 1450},
-		podNetworkWait, flowRestoreCompleteWait,
+		podNetworkWait, flowRestoreCompleteWait, nil,
 	)
 
 	// call Initialize, which will run reconciliation and perform host-local IPAM garbage collection

@@ -15,6 +15,8 @@
 package cniserver
 
 import (
+	"net"
+
 	cnitypes "github.com/containernetworking/cni/pkg/types"
 	current "github.com/containernetworking/cni/pkg/types/100"
 )
@@ -23,7 +25,8 @@ type postInterfaceCreateHook func() error
 
 // podInterfaceConfigurator is for testing.
 type podInterfaceConfigurator interface {
-	configureContainerLink(podName string, podNamespace string, containerID string, containerNetNS string, containerIfaceName string, mtu int, brSriovVFDeviceID string, podSriovVFDeviceID string, result *current.Result, containerAccess *containerAccessArbitrator) error
+	configureContainerLink(podName string, podNamespace string, containerID string, containerNetNS string, containerIfaceName string, mtu int, brSriovVFDeviceID string, podSriovVFDeviceID string, result *current.Result, containerAccess *containerAccessArbitrator, mac net.HardwareAddr) error
+	recoverVFInterfaceName(containerIfaceName string, containerNetNS string) error
 	removeContainerLink(containerID, hostInterfaceName string) error
 	advertiseContainerAddr(containerNetNS string, containerIfaceName string, result *current.Result) error
 	validateVFRepInterface(sriovVFDeviceID string) (string, error)
@@ -35,9 +38,9 @@ type podInterfaceConfigurator interface {
 }
 
 type SriovNet interface {
-	GetNetDevicesFromPci(pciAddress string) ([]string, error)
+	GetNetDevicesFromPCI(pciAddress string) ([]string, error)
 	GetUplinkRepresentor(pciAddress string) (string, error)
-	GetVfIndexByPciAddress(vfPciAddress string) (int, error)
-	GetVfRepresentor(uplink string, vfIndex int) (string, error)
+	GetVFIndexByPCIAddress(vfPCIAddress string) (int, error)
+	GetVFRepresentor(uplink string, vfIndex int) (string, error)
 	GetVFLinkNames(pciAddr string) (string, error)
 }

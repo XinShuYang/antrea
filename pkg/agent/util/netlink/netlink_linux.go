@@ -28,6 +28,8 @@ type Interface interface {
 
 	RuleList(family int) ([]netlink.Rule, error)
 
+	RouteAdd(route *netlink.Route) error
+
 	RouteReplace(route *netlink.Route) error
 
 	RouteList(link netlink.Link, family int) ([]netlink.Route, error)
@@ -46,6 +48,8 @@ type Interface interface {
 
 	NeighList(linkIndex, family int) ([]netlink.Neigh, error)
 
+	NeighListExecute(msg netlink.Ndmsg) ([]netlink.Neigh, error)
+
 	NeighSet(neigh *netlink.Neigh) error
 
 	NeighDel(neigh *netlink.Neigh) error
@@ -63,6 +67,8 @@ type Interface interface {
 	LinkSetHardwareAddr(link netlink.Link, hwaddr net.HardwareAddr) error
 
 	LinkSetName(link netlink.Link, name string) error
+
+	LinkSetAlias(link netlink.Link, name string) error
 
 	LinkAddAltName(link netlink.Link, name string) error
 

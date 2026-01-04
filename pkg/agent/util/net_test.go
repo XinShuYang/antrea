@@ -42,7 +42,7 @@ var (
 
 	testMACAddr, _ = net.ParseMAC("aa:bb:cc:dd:ee:ff")
 
-	testInvalidErr = fmt.Errorf("invalid")
+	errTestInvalid = fmt.Errorf("invalid")
 )
 
 func TestGenerateContainerInterfaceName(t *testing.T) {
@@ -210,7 +210,7 @@ func TestGetIPNetDeviceFromIP(t *testing.T) {
 		},
 		{
 			name:                "Invalid",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 		},
 	}
 
@@ -251,7 +251,7 @@ func TestGetIPNetDeviceByName(t *testing.T) {
 		{
 			name:                 "Invalid",
 			testNetInterfaceName: "0",
-			testNetInterfaceErr:  testInvalidErr,
+			testNetInterfaceErr:  errTestInvalid,
 		},
 	}
 
@@ -303,7 +303,7 @@ func TestGetIPNetDeviceByCIDRs(t *testing.T) {
 		},
 		{
 			name:                "Invalid",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 		},
 	}
 
@@ -442,7 +442,7 @@ func TestGetAllNodeAddresses(t *testing.T) {
 		},
 		{
 			name:                "Invalid",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 		},
 	}
 
@@ -450,7 +450,13 @@ func TestGetAllNodeAddresses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			defer mockNetInterfaceGet(testNetInterfaces, tc.testNetInterfaceErr)()
 			defer mockNetInterfaceAddrsMultiple(testNetInterfaces, true, nil)()
-			gotNodeAddrsIPv4, gotNodeAddrsIPv6, gotErr := GetAllNodeAddresses(tc.excludeDevices)
+			excludeDeviceMatchers := make([]func(string) bool, 0)
+			for _, device := range tc.excludeDevices {
+				excludeDeviceMatchers = append(excludeDeviceMatchers, func(name string) bool {
+					return name == device
+				})
+			}
+			gotNodeAddrsIPv4, gotNodeAddrsIPv6, gotErr := GetAllNodeAddresses(excludeDeviceMatchers)
 			assert.Equal(t, tc.wantNodeAddrsIPv4, gotNodeAddrsIPv4)
 			assert.Equal(t, tc.wantNodeAddrsIPv6, gotNodeAddrsIPv6)
 			assert.Equal(t, tc.testNetInterfaceErr, gotErr)
@@ -495,7 +501,7 @@ func TestGetIPNetsByLink(t *testing.T) {
 		},
 		{
 			name:                "Invalid",
-			testNetInterfaceErr: testInvalidErr,
+			testNetInterfaceErr: errTestInvalid,
 		},
 	}
 

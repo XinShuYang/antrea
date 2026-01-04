@@ -45,6 +45,7 @@ var (
 type fakeInterfaceConfigurator struct {
 	configureContainerLinkError         error
 	removeContainerLinkError            error
+	recoverVFInterfaceNameError         error
 	advertiseContainerAddrError         error
 	ovsInterfaceTypeMapping             string
 	validateVFRepInterfaceError         error
@@ -58,7 +59,14 @@ type fakeInterfaceConfigurator struct {
 	containerVFLink                     interface{}
 }
 
-func (c *fakeInterfaceConfigurator) configureContainerLink(podName string, podNamespace string, containerID string, containerNetNS string, containerIfaceName string, mtu int, brSriovVFDeviceID string, podSriovVFDeviceID string, result *current.Result, containerAccess *containerAccessArbitrator) error {
+func (c *fakeInterfaceConfigurator) recoverVFInterfaceName(containerNetNS string, containerIfaceName string) error {
+	if c.recoverVFInterfaceNameError != nil {
+		return c.recoverVFInterfaceNameError
+	}
+	return nil
+}
+
+func (c *fakeInterfaceConfigurator) configureContainerLink(podName string, podNamespace string, containerID string, containerNetNS string, containerIfaceName string, mtu int, brSriovVFDeviceID string, podSriovVFDeviceID string, result *current.Result, containerAccess *containerAccessArbitrator, mac net.HardwareAddr) error {
 	if c.configureContainerLinkError != nil {
 		return c.configureContainerLinkError
 	}
@@ -267,7 +275,8 @@ func TestCreateOVSPort(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			testIfaceConfigurator := &fakeInterfaceConfigurator{ovsInterfaceTypeMapping: tc.portName}
 			podConfigurator := createPodConfigurator(controller, testIfaceConfigurator)
-			containerConfig := buildContainerConfig(tc.portName, containerID, podName, podNamespace, &current.Interface{Mac: "01:02:03:04:05:06"}, ipamResult.IPs, tc.vlanID)
+			containerConfig := buildContainerConfig(tc.portName, containerID, podName, podNamespace,
+				"netns1", &current.Interface{Mac: "01:02:03:04:05:06"}, ipamResult.IPs, tc.vlanID)
 			attachInfo := BuildOVSPortExternalIDs(containerConfig)
 			if tc.createOVSPort {
 				mockOVSBridgeClient.EXPECT().CreatePort(tc.portName, tc.portName, attachInfo).Times(1).Return(generateUUID(), nil)
@@ -470,7 +479,7 @@ func TestCheckHostInterface(t *testing.T) {
 	containeIPs := ipamResult.IPs
 	ifaceMAC, _ := net.ParseMAC("01:02:03:04:05:06")
 	containerInterface := interfacestore.NewContainerInterface(hostIfaceName, containerID,
-		"pod1", testPodNamespace, "eth0", ifaceMAC, []net.IP{containerIP}, 1)
+		"pod1", testPodNamespace, "eth0", "netns1", ifaceMAC, []net.IP{containerIP}, 1)
 	containerInterface.OVSPortConfig = &interfacestore.OVSPortConfig{
 		PortUUID: generateUUID(),
 		OFPort:   int32(10),
@@ -553,6 +562,7 @@ func TestConfigureSriovSecondaryInterface(t *testing.T) {
 					PodName:      podName,
 					PodNamespace: testPodNamespace,
 					IFDev:        "eth0",
+					NetNS:        containerNS,
 				},
 			},
 		}, {
@@ -566,6 +576,7 @@ func TestConfigureSriovSecondaryInterface(t *testing.T) {
 					PodName:      podName,
 					PodNamespace: testPodNamespace,
 					IFDev:        "eth0",
+					NetNS:        containerNS,
 				},
 			},
 		},
@@ -600,7 +611,7 @@ func newTestContainerInterfaceConfig(podName, containerID, ifDev string, vlan in
 	podIPv6 := net.ParseIP("3ffe:ffff:10:1ff::111")
 	containerConfig := interfacestore.NewContainerInterface(
 		hostIfaceName, containerID, podName, testPodNamespace,
-		ifDev, podMAC, []net.IP{podIP, podIPv6}, uint16(vlan))
+		ifDev, "containerNS", podMAC, []net.IP{podIP, podIPv6}, uint16(vlan))
 	containerConfig.OVSPortConfig = &interfacestore.OVSPortConfig{PortUUID: fakePortUUID, OFPort: 0}
 	return containerConfig
 }
@@ -630,7 +641,7 @@ func TestConfigureVLANSecondaryInterface(t *testing.T) {
 	mockOVSBridgeClient.EXPECT().CreateAccessPort(
 		containerCfg1.InterfaceName, containerCfg1.InterfaceName,
 		gomock.Any(), uint16(100)).Return(containerCfg1.PortUUID, nil).Times(1)
-	assert.NoError(t, pc.ConfigureVLANSecondaryInterface(podName, testPodNamespace, containerID, containerNS, "eth1", 1500, ipamResult))
+	assert.NoError(t, pc.ConfigureVLANSecondaryInterface(podName, testPodNamespace, containerID, containerNS, "eth1", 1500, ipamResult, nil))
 	assert.Equal(t, 1, ifaceStore.Len())
 	intfConfig, _ := ifaceStore.GetContainerInterface(containerID)
 	assert.Equal(t, containerCfg1, intfConfig)
@@ -641,7 +652,7 @@ func TestConfigureVLANSecondaryInterface(t *testing.T) {
 	mockOVSBridgeClient.EXPECT().CreatePort(
 		containerCfg2.InterfaceName, containerCfg2.InterfaceName,
 		gomock.Any()).Return(containerCfg2.PortUUID, nil).Times(1)
-	assert.NoError(t, pc.ConfigureVLANSecondaryInterface(podName, testPodNamespace, containerID, containerNS, "eth2", 1600, ipamResult))
+	assert.NoError(t, pc.ConfigureVLANSecondaryInterface(podName, testPodNamespace, containerID, containerNS, "eth2", 1600, ipamResult, nil))
 	assert.Equal(t, 2, ifaceStore.Len())
 	intfConfigs := ifaceStore.GetContainerInterfacesByPod(podName, testPodNamespace)
 	assert.Len(t, intfConfigs, 2)

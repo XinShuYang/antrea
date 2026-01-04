@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -78,7 +79,7 @@ func newTestController() (*Controller, *fake.Clientset, *mockReconciler) {
 	groupIDAllocator := openflow.NewGroupAllocator()
 	groupCounters := []proxytypes.GroupCounter{proxytypes.NewGroupCounter(groupIDAllocator, ch2)}
 	fs := afero.NewMemMapFs()
-	l7reconciler := l7engine.NewReconciler()
+	l7reconciler := l7engine.NewReconciler(nil)
 	controller, _ := NewNetworkPolicyController(&antreaClientGetter{clientset},
 		nil,
 		nil,
@@ -96,7 +97,7 @@ func newTestController() (*Controller, *fake.Clientset, *mockReconciler) {
 		true,
 		false,
 		nil,
-		testAsyncDeleteInterval,
+		MinAllocatorAsyncDeleteInterval,
 		"8.8.8.8:53",
 		config.K8sNode,
 		true,
@@ -159,7 +160,6 @@ func (r *mockReconciler) Forget(ruleID string) error {
 }
 
 func (r *mockReconciler) RunIDAllocatorWorker(_ <-chan struct{}) {
-	return
 }
 
 func (r *mockReconciler) RegisterFQDNController(fc *fqdnController) {
@@ -902,4 +902,66 @@ func TestValidate(t *testing.T) {
 	if item.RuleAction != v1beta1.RuleActionDrop {
 		t.Fatalf("groupAddress %s expect %v, but got %v", groupAddress2, v1beta1.RuleActionDrop, item.RuleAction)
 	}
+}
+
+func TestGetFqdnCache(t *testing.T) {
+	controller, _, _ := newTestController()
+	expectedEntryList := []agenttypes.DnsCacheEntry{}
+	assert.Equal(t, expectedEntryList, controller.GetFQDNCache(nil))
+	expirationTime := time.Now().Add(1 * time.Hour).UTC()
+
+	controller.fqdnController.dnsEntryCache = map[string]dnsMeta{
+		"example.com": {
+			responseIPs: map[string]ipWithExpiration{
+				"10.0.0.1": {
+					ip:             net.ParseIP("10.0.0.1"),
+					expirationTime: expirationTime,
+				},
+				"10.0.0.2": {
+					ip:             net.ParseIP("10.0.0.2"),
+					expirationTime: expirationTime,
+				},
+				"10.0.0.3": {
+					ip:             net.ParseIP("10.0.0.3"),
+					expirationTime: expirationTime,
+				},
+			},
+		},
+		"antrea.io": {
+			responseIPs: map[string]ipWithExpiration{
+				"10.0.0.4": {
+					ip:             net.ParseIP("10.0.0.4"),
+					expirationTime: expirationTime,
+				},
+			},
+		},
+	}
+
+	expectedEntryList = []agenttypes.DnsCacheEntry{
+		{
+			FQDNName:       "example.com",
+			IPAddress:      net.ParseIP("10.0.0.1"),
+			ExpirationTime: expirationTime,
+		},
+		{
+			FQDNName:       "example.com",
+			IPAddress:      net.ParseIP("10.0.0.2"),
+			ExpirationTime: expirationTime,
+		},
+		{
+			FQDNName:       "example.com",
+			IPAddress:      net.ParseIP("10.0.0.3"),
+			ExpirationTime: expirationTime,
+		},
+		{
+			FQDNName:       "antrea.io",
+			IPAddress:      net.ParseIP("10.0.0.4"),
+			ExpirationTime: expirationTime,
+		},
+	}
+	returnedList := controller.GetFQDNCache(nil)
+	assert.ElementsMatch(t, expectedEntryList, returnedList)
+	pattern := regexp.MustCompile("^.*[.]io$")
+	returnedList = controller.GetFQDNCache(&querier.FQDNCacheFilter{DomainRegex: pattern})
+	assert.ElementsMatch(t, []agenttypes.DnsCacheEntry{expectedEntryList[3]}, returnedList)
 }

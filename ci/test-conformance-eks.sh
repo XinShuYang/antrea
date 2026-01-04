@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -exu
+set -eu
 
 function echoerr {
     >&2 echo "$@"
@@ -22,7 +22,7 @@ function echoerr {
 
 CLUSTER=""
 REGION="us-west-2"
-K8S_VERSION="1.27"
+K8S_VERSION="1.31"
 AWS_NODE_TYPE="t3.medium"
 SSH_KEY_PATH="$HOME/.ssh/id_rsa.pub"
 SSH_PRIVATE_KEY_PATH="$HOME/.ssh/id_rsa"
@@ -35,10 +35,10 @@ TEST_SCRIPT_RC=0
 KUBE_CONFORMANCE_IMAGE_VERSION=auto
 INSTALL_EKSCTL=true
 AWS_SERVICE_USER_ROLE_ARN=""
-AWS_SERVICE_USER_NAME=""
+AWS_DURATION_SECONDS=7200
 
 _usage="Usage: $0 [--cluster-name <EKSClusterNameToUse>] [--kubeconfig <KubeconfigSavePath>] [--k8s-version <ClusterVersion>]\
-                  [--aws-access-key <AccessKey>] [--aws-secret-key <SecretKey>] [--aws-region <Region>] [--aws-service-user <ServiceUserName>]\
+                  [--aws-access-key <AccessKey>] [--aws-secret-key <SecretKey>] [--aws-region <Region>]\
                   [--aws-service-user-role-arn <ServiceUserRoleARN>] [--ssh-key <SSHKey] [--ssh-private-key <SSHPrivateKey] [--log-mode <SonobuoyResultLogLevel>]\
                   [--setup-only] [--cleanup-only]
 
@@ -50,7 +50,6 @@ Setup a EKS cluster to run K8s e2e community tests (Conformance & Network Policy
         --aws-access-key              AWS Acess Key for logging in to awscli.
         --aws-secret-key              AWS Secret Key for logging in to awscli.
         --aws-service-user-role-arn   AWS Service User Role ARN for logging in to awscli.
-        --aws-service-user            AWS Service User Name for logging in to awscli.
         --aws-region                  The AWS region where the cluster will be initiated. Defaults to us-east-2.
         --ssh-key                     The path of key to be used for ssh access to worker nodes.
         --log-mode                    Use the flag to set either 'report', 'detail', or 'dump' level data for sonobuoy results.
@@ -85,10 +84,6 @@ case $key in
     ;;
     --aws-service-user-role-arn)
     AWS_SERVICE_USER_ROLE_ARN="$2"
-    shift 2
-    ;;
-    --aws-service-user)
-    AWS_SERVICE_USER_NAME="$2"
     shift 2
     ;;
     --aws-region)
@@ -187,35 +182,39 @@ function setup_eks() {
     aws --version
 
     set +e
-    if [[ "$AWS_SERVICE_USER_ROLE_ARN" != "" ]] && [[ "$AWS_SERVICE_USER_NAME" != "" ]]; then
-        mkdir -p ~/.aws
-        cat > ~/.aws/config <<EOF
-[default]
-region = $REGION
-role_arn = $AWS_SERVICE_USER_ROLE_ARN
-source_profile = $AWS_SERVICE_USER_NAME
-output = json
-EOF
-        cat > ~/.aws/credentials <<EOF
-[$AWS_SERVICE_USER_NAME]
-aws_access_key_id = $AWS_ACCESS_KEY
-aws_secret_access_key = $AWS_SECRET_KEY
-EOF
-    elif [[ "$AWS_SERVICE_USER_ROLE_ARN" = "" ]] && [[ "$AWS_SERVICE_USER_NAME" = "" ]]; then
-        mkdir -p ~/.aws
-        cat > ~/.aws/config <<EOF
-[default]
-region = $REGION
-output = json
-EOF
-        cat > ~/.aws/credentials <<EOF
-[default]
-aws_access_key_id = $AWS_ACCESS_KEY
-aws_secret_access_key = $AWS_SECRET_KEY
-EOF
-    else
-        echo "Invalid input either specify both aws-service-user-role-arn and aws-service-user or none."
-        exit 1
+    export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY
+    export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY
+
+    export AWS_DEFAULT_OUTPUT=json
+    export AWS_DEFAULT_REGION=$REGION
+    if [[ "$AWS_SERVICE_USER_ROLE_ARN" != "" ]]; then
+      # Use AWS CLI to assume an IAM role and obtain temporary security credentials
+      # Source: AWS CLI Command Reference - https://docs.aws.amazon.com/cli/latest/reference/sts/assume-role.html
+      # When --duration-seconds is NOT specified, AWS uses DEFAULT VALUE: 3600 seconds (1 hour)
+      # Source: AWS STS AssumeRole API Documentation -
+      # https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html#API_AssumeRole_RequestParameters
+      # "By default, the value is set to 3600 seconds."
+      # From previous observations, this Jenkins job process has taken over an hour, usually within 1 hour and 10 minutes,
+      # so it's set to 2 hours here.
+        TEMP_CRED=$(aws sts assume-role \
+          --role-arn "$AWS_SERVICE_USER_ROLE_ARN" \
+          --role-session-name "aws-cli-session-$(date +%s)" \
+          --duration-seconds $AWS_DURATION_SECONDS \
+          --query "Credentials" \
+          --output json)
+
+        # Handle assume-role errors immediately
+        if [ $? -ne 0 ] || [ -z "$TEMP_CRED" ]; then
+          echo "ERROR: Failed to assume role $AWS_SERVICE_USER_ROLE_ARN"
+          exit 1
+        fi
+
+        export AWS_ACCESS_KEY_ID=$(echo "$TEMP_CRED" | jq -r .AccessKeyId)
+        export AWS_SECRET_ACCESS_KEY=$(echo "$TEMP_CRED" | jq -r .SecretAccessKey)
+        export AWS_SESSION_TOKEN=$(echo "$TEMP_CRED" | jq -r .SessionToken)
+
+        # Clear sensitive variables from memory
+        unset AWS_ACCESS_KEY AWS_SECRET_KEY TEMP_CRED
     fi
 
     if [[ "$INSTALL_EKSCTL" == true ]]; then
@@ -361,14 +360,33 @@ pushd "$THIS_DIR" > /dev/null
 
 source ${THIS_DIR}/jenkins/utils.sh
 
+function start_timeout_watcher() {
+    local timeout_seconds=$1
+    local parent_pid=$2
+
+    local safe_timeout=$((timeout_seconds - 300))
+
+    echo "Timeout watcher started. Will signal after ${safe_timeout} seconds."
+
+    sleep $safe_timeout
+
+    echo "Process timed out before AWS credential expiration! Sending termination signal to main process (PID: $parent_pid)"
+    kill -SIGTERM $parent_pid 2>/dev/null || true
+}
+
+start_timeout_watcher "$AWS_DURATION_SECONDS" $$ &
+timeout_watcher_pid=$!
+
+if [[ "$RUN_SETUP_ONLY" != true ]]; then
+    trap "kill -9 $timeout_watcher_pid 2>/dev/null ; cleanup_cluster" EXIT
+else
+    trap "kill -9 $timeout_watcher_pid 2>/dev/null || true" EXIT
+fi
+
 if [[ "$RUN_ALL" == true || "$RUN_SETUP_ONLY" == true ]]; then
     setup_eks
     deliver_antrea_to_eks
     run_conformance
-fi
-
-if [[ "$RUN_ALL" == true || "$RUN_CLEANUP_ONLY" == true ]]; then
-    cleanup_cluster
 fi
 
 if [[ "$RUN_CLEANUP_ONLY" == false && $TEST_SCRIPT_RC -ne 0 ]]; then

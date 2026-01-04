@@ -29,6 +29,7 @@ import (
 	"github.com/containernetworking/cni/pkg/version"
 	"github.com/containernetworking/plugins/pkg/ip"
 	"google.golang.org/grpc"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -39,6 +40,7 @@ import (
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/route"
+	agenttypes "antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/agent/util"
 	cnipb "antrea.io/antrea/pkg/apis/cni/v1beta1"
 	"antrea.io/antrea/pkg/cni"
@@ -120,6 +122,7 @@ type CNIServer struct {
 	enableBridgingMode bool
 	// Enable AntreaIPAM for secondary networks implemented by other CNIs.
 	enableSecondaryNetworkIPAM bool
+	cniDeleteChecker           agenttypes.CNIDeleteChecker
 	disableTXChecksumOffload   bool
 	networkConfig              *config.NetworkConfig
 	// podNetworkWait notifies that the network is ready so new Pods can be created. Therefore, CmdAdd waits for it.
@@ -520,6 +523,7 @@ func (s *CNIServer) CmdAdd(ctx context.Context, request *cnipb.CniCmdRequest) (*
 		result,
 		isInfraContainer,
 		s.containerAccess,
+		nil,
 	); err != nil {
 		klog.ErrorS(err, "Failed to configure interfaces for container", "container", cniConfig.ContainerId)
 		return s.configInterfaceFailureResponse(err), nil
@@ -554,6 +558,21 @@ func (s *CNIServer) cmdDel(_ context.Context, cniConfig *CNIConfig) (*cnipb.CniC
 		return s.configInterfaceFailureResponse(err), nil
 	}
 	klog.InfoS("Deleted interfaces for container", "container", cniConfig.ContainerId)
+
+	// Ensure all SR-IOV devices in a Pod are detached before removing the primary interface.
+	// If the primary interface is deleted without checking SR-IOV devices, the container's
+	// network namespace will be deleted soon, and then SecondaryNetwork controller will not
+	// be able to restore the SR-IOV devices' names, as it won't find devices in the container
+	// network namespace.
+	// We observed the first CNI del can fail due to un-detached SR-IOV devices, when a Pod has two
+	// or more SR-IOV devices attached. In the future, we may improve the implementation to detach
+	// SR-IOV devices first and avoid the CNI del failure and retry.
+	if s.cniDeleteChecker != nil {
+		if !s.cniDeleteChecker.AllowCNIDelete(string(cniConfig.K8S_POD_NAME), string(cniConfig.K8S_POD_NAMESPACE)) {
+			klog.ErrorS(nil, "The container still has SR-IOV devices attached, retrying cmdDel()")
+			return s.tryAgainLaterResponse(), nil
+		}
+	}
 
 	// Release IP to IPAM driver
 	if err := ipam.ExecIPAMDelete(cniConfig.CniCmdArgs, cniConfig.K8sArgs, cniConfig.IPAM.Type, infraContainer); err != nil {
@@ -635,6 +654,7 @@ func New(
 	isChaining, enableBridgingMode, enableSecondaryNetworkIPAM, disableTXChecksumOffload bool,
 	networkConfig *config.NetworkConfig,
 	podNetworkWait, flowRestoreCompleteWait *wait.Group,
+	cniDeleteChecker agenttypes.CNIDeleteChecker,
 ) *CNIServer {
 	return &CNIServer{
 		cniSocket:                  cniSocket,
@@ -652,6 +672,7 @@ func New(
 		networkConfig:              networkConfig,
 		podNetworkWait:             podNetworkWait,
 		flowRestoreCompleteWait:    flowRestoreCompleteWait.Increment(),
+		cniDeleteChecker:           cniDeleteChecker,
 	}
 }
 
@@ -763,12 +784,18 @@ func (s *CNIServer) interceptCheck(cniConfig *CNIConfig) (*cnipb.CniCmdResponse,
 // | Windows HostProcess Pod          | true             | true                       | No                    | Yes                        |
 func (s *CNIServer) reconcile() error {
 	klog.InfoS("Starting reconciliation for CNI server")
-	pods, err := s.kubeClient.CoreV1().Pods("").List(context.TODO(), s.getPodsListOptions())
+	podListOption := metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", s.nodeConfig.Name),
+		// For performance reasons, use ResourceVersion="0" in the ListOptions to ensure the request is served from
+		// the watch cache in kube-apiserver.
+		ResourceVersion: "0",
+	}
+	pods, err := s.kubeClient.CoreV1().Pods("").List(context.TODO(), podListOption)
 	if err != nil {
 		return fmt.Errorf("failed to list Pods running on Node %s: %v", s.nodeConfig.Name, err)
 	}
-
-	return s.podConfigurator.reconcile(pods.Items, s.containerAccess, s.podNetworkWait, s.flowRestoreCompleteWait)
+	filteredPods := s.filterPodsForReconcile(pods)
+	return s.podConfigurator.reconcile(filteredPods, s.containerAccess, s.podNetworkWait, s.flowRestoreCompleteWait)
 }
 
 func init() {

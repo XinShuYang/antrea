@@ -68,7 +68,7 @@ var (
 	fakeL7NPTargetOFPort = uint32(10)
 	fakeL7NPReturnOFPort = uint32(11)
 
-	defaultPacketInRate = 500
+	defaultPacketInRate = 5000
 )
 
 func skipTest(tb testing.TB, skipLinux, skipWindows bool) {
@@ -93,7 +93,6 @@ type clientOptions struct {
 	enableTrafficControl       bool
 	enableMulticluster         bool
 	enableL7NetworkPolicy      bool
-	enableL7FlowExporter       bool
 	trafficEncryptionMode      config.TrafficEncryptionModeType
 }
 
@@ -415,7 +414,6 @@ func newFakeClientWithBridge(
 		o.connectUplinkToBridge,
 		o.enableMulticast,
 		o.enableTrafficControl,
-		o.enableL7FlowExporter,
 		o.enableMulticluster,
 		NewGroupAllocator(),
 		false,
@@ -681,6 +679,37 @@ func Test_client_InstallNodeFlows(t *testing.T) {
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,nw_dst=10.10.1.0/24 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:aa:bb:cc:dd:ee:ff->eth_dst,set_field:192.168.77.101->tun_dst,set_field:0x10/0xf0->reg0,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg3=0xa0a0100/0xffffff00,reg4=0x2000000/0x2000000 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:aa:bb:cc:dd:ee:ff->eth_dst,set_field:192.168.77.101->tun_dst,set_field:0x10/0xf0->reg0,goto_table:L3DecTTL",
 				"cookie=0x1040000000000, table=EgressMark, priority=210,ip,nw_dst=192.168.77.101 actions=set_field:0x20/0xf0->reg0,goto_table:L2ForwardingCalc",
+			},
+		},
+		{
+			name:             "IPv4 Hybrid",
+			enableIPv4:       true,
+			skipWindows:      true,
+			peerConfigs:      map[*net.IPNet]net.IP{peerPodCIDRv4: peerGwIPv4},
+			tunnelPeerIPs:    &utilip.DualStackIPs{IPv4: tunnelPeerIPv4},
+			ipsecTunOFPort:   uint32(100),
+			trafficEncapMode: config.TrafficEncapModeHybrid,
+			expectedFlows: []string{
+				"cookie=0x1010000000000, table=ARPResponder, priority=200,arp,arp_tpa=10.10.1.1,arp_op=1 actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],set_field:aa:bb:cc:dd:ee:ff->eth_src,set_field:2->arp_op,move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],set_field:aa:bb:cc:dd:ee:ff->arp_sha,move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],set_field:10.10.1.1->arp_spa,IN_PORT",
+				"cookie=0x1010000000000, table=Classifier, priority=200,in_port=100 actions=set_field:0x1/0xf->reg0,set_field:0x200/0x200->reg0,goto_table:UnSNAT",
+				"cookie=0x1010000000000, table=L3Forwarding, priority=201,ct_mark=0x1/0xf,ip,reg0=0x2/0xf,nw_dst=10.10.1.0/24 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:aa:bb:cc:dd:ee:ff->eth_dst,set_field:192.168.77.101->tun_dst,set_field:0x10/0xf0->reg0,goto_table:L3DecTTL",
+				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,nw_dst=10.10.1.0/24 actions=set_field:0a:00:00:00:00:01->eth_dst,set_field:0x20/0xf0->reg0,goto_table:L3DecTTL",
+				"cookie=0x1040000000000, table=EgressMark, priority=210,ip,nw_dst=192.168.77.101 actions=set_field:0x20/0xf0->reg0,goto_table:L2ForwardingCalc",
+			},
+		},
+		{
+			name:             "IPv6 Hybrid",
+			enableIPv6:       true,
+			skipWindows:      true,
+			peerConfigs:      map[*net.IPNet]net.IP{peerPodCIDRv6: peerGwIPv6},
+			tunnelPeerIPs:    &utilip.DualStackIPs{IPv6: tunnelPeerIPv6},
+			ipsecTunOFPort:   uint32(100),
+			trafficEncapMode: config.TrafficEncapModeHybrid,
+			expectedFlows: []string{
+				"cookie=0x1010000000000, table=Classifier, priority=200,in_port=100 actions=set_field:0x1/0xf->reg0,set_field:0x200/0x200->reg0,goto_table:UnSNAT",
+				"cookie=0x1040000000000, table=EgressMark, priority=210,ipv6,ipv6_dst=fec0:192:168:77::101 actions=set_field:0x20/0xf0->reg0,goto_table:L2ForwardingCalc",
+				"cookie=0x1010000000000, table=L3Forwarding, priority=201,ct_mark=0x1/0xf,ipv6,reg0=0x2/0xf,ipv6_dst=fec0:10:10:1::/80 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:aa:bb:cc:dd:ee:ff->eth_dst,set_field:fec0:192:168:77::101->tun_ipv6_dst,set_field:0x10/0xf0->reg0,goto_table:L3DecTTL",
+				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ipv6,ipv6_dst=fec0:10:10:1::/80 actions=set_field:0a:00:00:00:00:01->eth_dst,set_field:0x20/0xf0->reg0,goto_table:L3DecTTL",
 			},
 		},
 	}
@@ -1036,8 +1065,8 @@ func Test_client_InstallServiceGroup(t *testing.T) {
 		{
 			name: "IPv4 Endpoints",
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo("10.10.0.100", "node1", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo("10.10.0.101", "node2", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo("10.10.0.100", 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo("10.10.0.101", 80, true, true, false, false, nil, nil),
 			},
 			expectedGroup: "group_id=100,type=select," +
 				"bucket=bucket_id:0,weight:100,actions=set_field:0x4000000/0x4000000->reg4,set_field:0xa0a0064->reg3,set_field:0x50/0xffff->reg4,resubmit:EndpointDNAT," +
@@ -1046,8 +1075,8 @@ func Test_client_InstallServiceGroup(t *testing.T) {
 		{
 			name: "IPv6 Endpoints",
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo("fec0:10:10::100", "node1", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo("fec0:10:10::101", "node2", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo("fec0:10:10::100", 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo("fec0:10:10::101", 80, true, true, false, false, nil, nil),
 			},
 			expectedGroup: "group_id=100,type=select," +
 				"bucket=bucket_id:0,weight:100,actions=set_field:0x4000000/0x4000000->reg4,set_field:0xfec00010001000000000000000000100->xxreg3,set_field:0x50/0xffff->reg4,resubmit:EndpointDNAT," +
@@ -1057,8 +1086,8 @@ func Test_client_InstallServiceGroup(t *testing.T) {
 			name:                "IPv4 Endpoints,SessionAffinity",
 			withSessionAffinity: true,
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo("10.10.0.100", "node1", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo("10.10.0.101", "node2", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo("10.10.0.100", 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo("10.10.0.101", 80, true, true, false, false, nil, nil),
 			},
 			expectedGroup: "group_id=100,type=select," +
 				"bucket=bucket_id:0,weight:100,actions=set_field:0x4000000/0x4000000->reg4,set_field:0xa0a0064->reg3,set_field:0x50/0xffff->reg4,resubmit:ServiceLB," +
@@ -1068,8 +1097,8 @@ func Test_client_InstallServiceGroup(t *testing.T) {
 			name:                "IPv6 Endpoints,SessionAffinity",
 			withSessionAffinity: true,
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo("fec0:10:10::100", "node1", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo("fec0:10:10::101", "node2", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo("fec0:10:10::100", 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo("fec0:10:10::101", 80, true, true, false, false, nil, nil),
 			},
 			expectedGroup: "group_id=100,type=select," +
 				"bucket=bucket_id:0,weight:100,actions=set_field:0x4000000/0x4000000->reg4,set_field:0xfec00010001000000000000000000100->xxreg3,set_field:0x50/0xffff->reg4,resubmit:ServiceLB," +
@@ -1078,8 +1107,8 @@ func Test_client_InstallServiceGroup(t *testing.T) {
 		{
 			name: "delete group failed for IPv4 Endpoints",
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo("10.10.0.100", "node1", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo("10.10.0.101", "node2", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo("10.10.0.100", 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo("10.10.0.101", 80, true, true, false, false, nil, nil),
 			},
 			expectedGroup: "group_id=100,type=select," +
 				"bucket=bucket_id:0,weight:100,actions=set_field:0x4000000/0x4000000->reg4,set_field:0xa0a0064->reg3,set_field:0x50/0xffff->reg4,resubmit:EndpointDNAT," +
@@ -1138,78 +1167,78 @@ func Test_client_InstallEndpointFlows(t *testing.T) {
 			name:     "TCPv4 Endpoints",
 			protocol: binding.ProtocolTCP,
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo(ep1IPv4, "", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo(ep2IPv4, "", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo(ep1IPv4, 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo(ep2IPv4, 80, true, true, false, false, nil, nil),
 			},
 			expectedFlows: []string{
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp,reg3=0xa0a0064,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.100:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp,reg3=0xa0a0065,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.101:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ip,nw_src=10.10.0.101,nw_dst=10.10.0.101 actions=ct(commit,table=SNAT,zone=65520,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp,reg3=0xa0a0064,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.100:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp,reg3=0xa0a0065,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.101:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ip,nw_src=10.10.0.101,nw_dst=10.10.0.101 actions=ct(commit,table=SNAT,zone=65520,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
 			},
 		},
 		{
 			name:     "TCPv6 Endpoints",
 			protocol: binding.ProtocolTCPv6,
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo(ep1IPv6, "", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo(ep2IPv6, "", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo(ep1IPv6, 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo(ep2IPv6, 80, true, true, false, false, nil, nil),
 			},
 			expectedFlows: []string{
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000100 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::100]:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000101 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::101]:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ipv6,ipv6_src=fec0:10:10::101,ipv6_dst=fec0:10:10::101 actions=ct(commit,table=SNAT,zone=65510,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000100 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::100]:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000101 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::101]:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ipv6,ipv6_src=fec0:10:10::101,ipv6_dst=fec0:10:10::101 actions=ct(commit,table=SNAT,zone=65510,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
 			},
 		},
 		{
 			name:     "UDPv4 Endpoints",
 			protocol: binding.ProtocolUDP,
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo(ep1IPv4, "", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo(ep2IPv4, "", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo(ep1IPv4, 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo(ep2IPv4, 80, true, true, false, false, nil, nil),
 			},
 			expectedFlows: []string{
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,udp,reg3=0xa0a0064,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.100:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,udp,reg3=0xa0a0065,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.101:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ip,nw_src=10.10.0.101,nw_dst=10.10.0.101 actions=ct(commit,table=SNAT,zone=65520,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,udp,reg3=0xa0a0064,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.100:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,udp,reg3=0xa0a0065,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.101:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ip,nw_src=10.10.0.101,nw_dst=10.10.0.101 actions=ct(commit,table=SNAT,zone=65520,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
 			},
 		},
 		{
 			name:     "UDPv6 Endpoints",
 			protocol: binding.ProtocolUDPv6,
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo(ep1IPv6, "", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo(ep2IPv6, "", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo(ep1IPv6, 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo(ep2IPv6, 80, true, true, false, false, nil, nil),
 			},
 			expectedFlows: []string{
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,udp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000100 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::100]:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,udp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000101 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::101]:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ipv6,ipv6_src=fec0:10:10::101,ipv6_dst=fec0:10:10::101 actions=ct(commit,table=SNAT,zone=65510,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,udp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000100 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::100]:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,udp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000101 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::101]:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ipv6,ipv6_src=fec0:10:10::101,ipv6_dst=fec0:10:10::101 actions=ct(commit,table=SNAT,zone=65510,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
 			},
 		},
 		{
 			name:     "SCTPv4 Endpoints",
 			protocol: binding.ProtocolSCTP,
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo(ep1IPv4, "", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo(ep2IPv4, "", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo(ep1IPv4, 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo(ep2IPv4, 80, true, true, false, false, nil, nil),
 			},
 			expectedFlows: []string{
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,sctp,reg3=0xa0a0064,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.100:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,sctp,reg3=0xa0a0065,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.101:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ip,nw_src=10.10.0.101,nw_dst=10.10.0.101 actions=ct(commit,table=SNAT,zone=65520,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,sctp,reg3=0xa0a0064,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.100:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,sctp,reg3=0xa0a0065,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.101:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ip,nw_src=10.10.0.101,nw_dst=10.10.0.101 actions=ct(commit,table=SNAT,zone=65520,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
 			},
 		},
 		{
 			name:     "SCTPv6 Endpoints",
 			protocol: binding.ProtocolSCTPv6,
 			endpoints: []proxy.Endpoint{
-				proxy.NewBaseEndpointInfo(ep1IPv6, "", "", 80, false, true, false, false, nil),
-				proxy.NewBaseEndpointInfo(ep2IPv6, "", "", 80, true, true, false, false, nil),
+				proxy.NewBaseEndpointInfo(ep1IPv6, 80, false, true, false, false, nil, nil),
+				proxy.NewBaseEndpointInfo(ep2IPv6, 80, true, true, false, false, nil, nil),
 			},
 			expectedFlows: []string{
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,sctp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000100 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::100]:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,sctp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000101 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::101]:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
-				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ipv6,ipv6_src=fec0:10:10::101,ipv6_dst=fec0:10:10::101 actions=ct(commit,table=SNAT,zone=65510,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,sctp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000100 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::100]:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,sctp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000101 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::101]:80),exec(set_field:0x10/0x10->ct_mark))",
+				"cookie=0x1030000000000, table=SNATMark, priority=190,ct_state=+new+trk,ipv6,ipv6_src=fec0:10:10::101,ipv6_dst=fec0:10:10::101 actions=ct(commit,table=SNAT,zone=65510,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
 			},
 		},
 	}
@@ -1227,7 +1256,7 @@ func Test_client_InstallEndpointFlows(t *testing.T) {
 			assert.NoError(t, fc.InstallEndpointFlows(tc.protocol, tc.endpoints))
 			var flows []string
 			for _, ep := range tc.endpoints {
-				endpointPort, _ := ep.Port()
+				endpointPort := ep.Port()
 				cacheKey := generateEndpointFlowCacheKey(ep.IP(), endpointPort, tc.protocol)
 				fCacheI, ok := fc.featureService.cachedFlows.Load(cacheKey)
 				require.True(t, ok)
@@ -1237,7 +1266,7 @@ func Test_client_InstallEndpointFlows(t *testing.T) {
 
 			assert.NoError(t, fc.UninstallEndpointFlows(tc.protocol, tc.endpoints))
 			for _, ep := range tc.endpoints {
-				endpointPort, _ := ep.Port()
+				endpointPort := ep.Port()
 				cacheKey := generateEndpointFlowCacheKey(ep.IP(), endpointPort, tc.protocol)
 				_, ok := fc.featureService.cachedFlows.Load(cacheKey)
 				require.False(t, ok)
@@ -1507,8 +1536,8 @@ func Test_client_GetServiceFlowKeys(t *testing.T) {
 	svcPort := uint16(80)
 	bindingProtocol := binding.ProtocolTCP
 	endpoints := []proxy.Endpoint{
-		proxy.NewBaseEndpointInfo("10.10.0.11", "", "", 80, false, true, false, false, nil),
-		proxy.NewBaseEndpointInfo("10.10.0.12", "", "", 80, true, true, false, false, nil),
+		proxy.NewBaseEndpointInfo("10.10.0.11", 80, false, true, false, false, nil, nil),
+		proxy.NewBaseEndpointInfo("10.10.0.12", 80, true, true, false, false, nil, nil),
 	}
 
 	assert.NoError(t, fc.InstallServiceFlows(&types.ServiceConfig{
@@ -2031,7 +2060,7 @@ func Test_client_setBasePacketOutBuilder(t *testing.T) {
 }
 
 func prepareSetBasePacketOutBuilder(ctrl *gomock.Controller, success bool) *client {
-	ofClient := NewClient(bridgeName, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, true, false, false, false, false, false, false, false, false, false, false, false, nil, false, defaultPacketInRate)
+	ofClient := NewClient(bridgeName, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, true, false, false, false, false, false, false, false, false, false, false, nil, false, defaultPacketInRate)
 	m := ovsoftest.NewMockBridge(ctrl)
 	ofClient.bridge = m
 	bridge := binding.OFBridge{}
@@ -2239,9 +2268,10 @@ func Test_client_SendPacketOut(t *testing.T) {
 					nil))
 			case binding.ProtocolIGMP:
 				mockPacketOutBuilder.EXPECT().SetL4Packet(tc.igmp).Return(mockPacketOutBuilder)
-				if tc.name == "SendIGMPQueryPacketOut" {
+				switch tc.name {
+				case "SendIGMPQueryPacketOut":
 					assert.NoError(t, fc.SendIGMPQueryPacketOut(dstMAC, dstIP, outPort, tc.igmp))
-				} else if tc.name == "SendIGMPRemoteReportPacketOut" {
+				case "SendIGMPRemoteReportPacketOut":
 					assert.NoError(t, fc.SendIGMPRemoteReportPacketOut(dstMAC, dstIP, tc.igmp))
 				}
 			}
@@ -2644,8 +2674,8 @@ func Test_client_InstallMulticlusterGatewayFlows(t *testing.T) {
 				"cookie=0x1060000000000, table=L3Forwarding, priority=200,ip,nw_dst=10.97.0.0/16 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:aa:bb:cc:dd:ee:f0->eth_dst,set_field:192.168.78.101->tun_dst,set_field:0x10/0xf0->reg0,goto_table:L3DecTTL",
 				"cookie=0x1060000000000, table=L3Forwarding, priority=200,ct_state=+rpl+trk,ip,nw_dst=192.168.78.101 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:aa:bb:cc:dd:ee:f0->eth_dst,set_field:192.168.78.101->tun_dst,set_field:0x10/0xf0->reg0,goto_table:L3DecTTL",
 				"cookie=0x1060000000000, table=L3Forwarding, priority=199,ip,reg0=0x2000/0x2000,nw_dst=192.168.78.101 actions=set_field:0a:00:00:00:00:01->eth_src,set_field:aa:bb:cc:dd:ee:f0->eth_dst,set_field:192.168.78.101->tun_dst,set_field:0x10/0xf0->reg0,goto_table:L3DecTTL",
-				"cookie=0x1060000000000, table=SNATMark, priority=210,ct_state=+new+trk,ip,nw_dst=10.97.0.0/16 actions=ct(commit,table=SNAT,zone=65520,exec(set_field:0x20/0x20->ct_mark))",
-				"cookie=0x1060000000000, table=SNAT, priority=200,ct_state=+new+trk,ip,nw_dst=10.97.0.0/16 actions=ct(commit,table=L2ForwardingCalc,zone=65521,nat(src=192.168.77.100))",
+				"cookie=0x1060000000000, table=SNATMark, priority=210,ct_state=+new+trk,ip,nw_dst=10.97.0.0/16 actions=ct(commit,table=SNAT,zone=65520,exec(set_field:0x20/0x20->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
+				"cookie=0x1060000000000, table=SNAT, priority=200,ct_state=+new+trk,ip,nw_dst=10.97.0.0/16 actions=ct(commit,table=L2ForwardingCalc,zone=65521,nat(src=192.168.77.100),exec(set_field:0x20/0x20->ct_mark))",
 			},
 		},
 		//TODO: IPv6
@@ -2719,7 +2749,7 @@ func Test_client_ReplayFlows(t *testing.T) {
 
 	expectedFlows := append(pipelineDefaultFlows(true /* egressTrafficShapingEnabled */, false /* externalNodeEnabled */, true /* isEncap */, true /* isIPv4 */), egressInitFlows(true)...)
 	expectedFlows = append(expectedFlows, multicastInitFlows(true)...)
-	expectedFlows = append(expectedFlows, networkPolicyInitFlows(true, false, false)...)
+	expectedFlows = append(expectedFlows, networkPolicyInitFlows(true, false)...)
 	expectedFlows = append(expectedFlows, podConnectivityInitFlows(config.TrafficEncapModeEncap, config.TrafficEncryptionModeNone, false, true, true, true)...)
 	expectedFlows = append(expectedFlows, serviceInitFlows(true, true, false, false)...)
 
@@ -2812,7 +2842,7 @@ func Test_client_ReplayFlows(t *testing.T) {
 	// Feature Service replays flows.
 	addFlowInCache(fc.featureService.cachedFlows, "endpointFlow", []binding.Flow{fc.featureService.endpointDNATFlow(podIP, uint16(80), binding.ProtocolTCP)})
 	replayedFlows = append(replayedFlows,
-		"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp,reg3=0xa0a0042,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.66:80),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
+		"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp,reg3=0xa0a0042,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.66:80),exec(set_field:0x10/0x10->ct_mark))",
 	)
 
 	expectedFlows = append(expectedFlows, replayedFlows...)
@@ -2916,4 +2946,31 @@ func TestSubscribeOFPortStatusMessage(t *testing.T) {
 	}
 	bridge.EXPECT().SubscribePortStatusConsumer(ch).Times(1)
 	c.SubscribeOFPortStatusMessage(ch)
+}
+
+func Test_client_InstallL7NetworkPolicyFlows(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := opstest.NewMockOFEntryOperations(ctrl)
+
+	fc := newFakeClient(m, true, false, config.K8sNode, config.TrafficEncapModeEncap, enableL7NetworkPolicy)
+	defer resetPipelines()
+
+	expectedFlows := []string{
+		"cookie=0x1020000000000, table=Classifier, priority=200,in_port=11,vlan_tci=0x1000/0x1000 actions=pop_vlan,set_field:0x7/0xf->reg0,goto_table:UnSNAT",
+		"cookie=0x1020000000000, table=ConntrackZone, priority=212,ip,reg0=0x0/0x800000 actions=set_field:0x800000/0x800000->reg0,ct(table=ConntrackZone,zone=65520)",
+		"cookie=0x1020000000000, table=ConntrackZone, priority=210,ct_state=+rpl+trk,ct_mark=0x80/0x80,ip actions=goto_table:Output",
+		"cookie=0x1020000000000, table=ConntrackZone, priority=211,ct_state=+rpl+trk,ip,reg0=0x7/0xf actions=ct(table=L3Forwarding,zone=65520,nat)",
+		"cookie=0x1020000000000, table=ConntrackZone, priority=211,ct_state=-rpl+trk,ip,reg0=0x7/0xf actions=goto_table:L3Forwarding",
+		"cookie=0x1020000000000, table=ConntrackZone, priority=210,ct_state=-rpl+trk,ct_mark=0x80/0x80,ip actions=ct(table=ConntrackState,zone=65520,nat)",
+		"cookie=0x1020000000000, table=TrafficControl, priority=210,reg0=0x7/0xf actions=goto_table:Output",
+		"cookie=0x1020000000000, table=Output, priority=213,reg0=0x7/0xf actions=output:NXM_NX_REG1[]",
+		"cookie=0x1020000000000, table=Output, priority=212,ct_mark=0x80/0x80 actions=push_vlan:0x8100,move:NXM_NX_CT_LABEL[64..75]->OXM_OF_VLAN_VID[0..11],output:10",
+	}
+
+	m.EXPECT().AddAll(gomock.Any()).Return(nil).Times(1)
+	cacheKey := "l7_np_flows"
+	require.NoError(t, fc.InstallL7NetworkPolicyFlows())
+	fCacheI, ok := fc.featureNetworkPolicy.cachedFlows.Load(cacheKey)
+	require.True(t, ok)
+	assert.ElementsMatch(t, expectedFlows, getFlowStrings(fCacheI))
 }

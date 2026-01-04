@@ -39,6 +39,7 @@ rules:
       - pods/status
     verbs:
       - patch
+      - update
   - apiGroups:
       - ""
     resources:
@@ -147,6 +148,17 @@ rules:
       - get
       - watch
       - list
+  {{- if eq .Values.trafficEncapMode "networkPolicyOnly" }}
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - kube-proxy
+      - kubeadm-config
+    verbs:
+      - get
+  {{- end }}
   - apiGroups:
       - crd.antrea.io
     resources:
@@ -206,6 +218,14 @@ rules:
       - ippools/status
     verbs:
       - update
+  - apiGroups:
+      - crd.antrea.io
+    resources:
+      - flowexporterdestinations
+    verbs:
+      - get
+      - watch
+      - list
   - apiGroups:
       - k8s.cni.cncf.io
     resources:

@@ -30,39 +30,40 @@ edit the Agent configuration in the
 
 ## List of Available Features
 
-| Feature Name                  | Component          | Default | Stage | Alpha Release | Beta Release | GA Release | Extra Requirements | Notes                                         |
-| ----------------------------- | ------------------ | ------- | ----- | ------------- | ------------ | ---------- | ------------------ | --------------------------------------------- |
-| `AntreaProxy`                 | Agent              | `true`  | GA    | v0.8          | v0.11        | v1.14      | Yes                | Must be enabled for Windows.                  |
-| `EndpointSlice`               | Agent              | `true`  | GA    | v0.13.0       | v1.11        | v1.14      | Yes                |                                               |
-| `TopologyAwareHints`          | Agent              | `true`  | Beta  | v1.8          | v1.12        | N/A        | Yes                |                                               |
-| `ServiceTrafficDistribution`  | Agent              | `true`  | Beta  | N/A           | v2.2         | N/A        | Yes                |                                               |
-| `CleanupStaleUDPSvcConntrack` | Agent              | `true`  | Beta  | v1.13         | v2.1         | N/A        | Yes                |                                               |
-| `LoadBalancerModeDSR`         | Agent              | `false` | Alpha | v1.13         | N/A          | N/A        | Yes                |                                               |
-| `AntreaPolicy`                | Agent + Controller | `true`  | Beta  | v0.8          | v1.0         | N/A        | No                 | Agent side config required from v0.9.0+.      |
-| `Traceflow`                   | Agent + Controller | `true`  | Beta  | v0.8          | v0.11        | N/A        | Yes                |                                               |
-| `FlowExporter`                | Agent              | `false` | Alpha | v0.9          | N/A          | N/A        | Yes                |                                               |
-| `NetworkPolicyStats`          | Agent + Controller | `true`  | Beta  | v0.10         | v1.2         | N/A        | No                 |                                               |
-| `NodePortLocal`               | Agent              | `true`  | GA    | v0.13         | v1.4         | v1.14      | Yes                | Important user-facing change in v1.2.0        |
-| `Egress`                      | Agent + Controller | `true`  | Beta  | v1.0          | v1.6         | N/A        | Yes                |                                               |
-| `NodeIPAM`                    | Controller         | `true`  | Beta  | v1.4          | v1.12        | N/A        | Yes                |                                               |
-| `AntreaIPAM`                  | Agent + Controller | `false` | Alpha | v1.4          | N/A          | N/A        | Yes                |                                               |
-| `Multicast`                   | Agent + Controller | `true`  | Beta  | v1.5          | v1.12        | N/A        | Yes                |                                               |
-| `SecondaryNetwork`            | Agent              | `false` | Alpha | v1.5          | N/A          | N/A        | Yes                |                                               |
-| `ServiceExternalIP`           | Agent + Controller | `false` | Beta  | v1.5          | v2.3         | N/A        | Yes                |                                               |
-| `TrafficControl`              | Agent              | `false` | Alpha | v1.7          | N/A          | N/A        | No                 |                                               |
-| `Multicluster`                | Agent + Controller | `false` | Alpha | v1.7          | N/A          | N/A        | Yes                | Controller side feature gate added in v1.10.0 |
-| `IPsecCertAuth`               | Agent + Controller | `false` | Alpha | v1.7          | N/A          | N/A        | No                 |                                               |
-| `ExternalNode`                | Agent              | `false` | Alpha | v1.8          | N/A          | N/A        | Yes                |                                               |
-| `SupportBundleCollection`     | Agent + Controller | `false` | Alpha | v1.10         | N/A          | N/A        | Yes                |                                               |
-| `L7NetworkPolicy`             | Agent + Controller | `false` | Alpha | v1.10         | N/A          | N/A        | Yes                |                                               |
-| `AdminNetworkPolicy`          | Controller         | `false` | Alpha | v1.13         | N/A          | N/A        | Yes                |                                               |
-| `EgressTrafficShaping`        | Agent              | `false` | Alpha | v1.14         | N/A          | N/A        | Yes                | OVS meters should be supported                |
-| `EgressSeparateSubnet`        | Agent              | `true`  | Beta  | v1.15         | v2.3         | N/A        | No                 |                                               |
-| `NodeNetworkPolicy`           | Agent              | `false` | Alpha | v1.15         | N/A          | N/A        | Yes                |                                               |
-| `L7FlowExporter`              | Agent              | `false` | Alpha | v1.15         | N/A          | N/A        | Yes                |                                               |
-| `BGPPolicy`                   | Agent              | `false` | Alpha | v2.1          | N/A          | N/A        | No                 |                                               |
-| `NodeLatencyMonitor`          | Agent              | `false` | Alpha | v2.1          | N/A          | N/A        | No                 |                                               |
-| `PacketCapture`               | Agent              | `false` | Alpha | v2.2          | N/A          | N/A        | No                 |                                               |
+| Feature Name                    | Component          | Default | Stage      | Alpha Release | Beta Release | GA Release | Extra Requirements | Notes                                                  |
+|---------------------------------|--------------------|---------|------------|---------------|--------------|------------|--------------------|--------------------------------------------------------|
+| `AntreaProxy`                   | Agent              | `true`  | GA         | v0.8          | v0.11        | v1.14      | Yes                | Must be enabled for Windows.                           |
+| `EndpointSlice`                 | Agent              | `true`  | GA         | v0.13.0       | v1.11        | v1.14      | Yes                | Locked to `true` (cannot be disabled).                 |
+| `TopologyAwareHints`            | Agent              | `true`  | GA         | v1.8          | v1.12        | v2.5       | Yes                | Locked to `true` (cannot be disabled).                 |
+| `ServiceTrafficDistribution`    | Agent              | `true`  | GA         | N/A           | v2.2         | v2.5       | Yes                | Locked to `true` (cannot be disabled).                 |
+| `PreferSameTrafficDistribution` | Agent              | `false` | Alpha      | v2.5          | N/A          | N/A        | Yes                |                                                        |
+| `CleanupStaleUDPSvcConntrack`   | Agent              | `true`  | Beta       | v1.13         | v2.1         | N/A        | Yes                |                                                        |
+| `LoadBalancerModeDSR`           | Agent              | `false` | Alpha      | v1.13         | N/A          | N/A        | Yes                |                                                        |
+| `AntreaPolicy`                  | Agent + Controller | `true`  | Beta       | v0.8          | v1.0         | N/A        | No                 | Agent side config required from v0.9.0+.               |
+| `Traceflow`                     | Agent + Controller | `true`  | Beta       | v0.8          | v0.11        | N/A        | Yes                |                                                        |
+| `FlowExporter`                  | Agent              | `false` | Alpha      | v0.9          | N/A          | N/A        | Yes                |                                                        |
+| `NetworkPolicyStats`            | Agent + Controller | `true`  | Beta       | v0.10         | v1.2         | N/A        | No                 |                                                        |
+| `NodePortLocal`                 | Agent              | `true`  | GA         | v0.13         | v1.4         | v1.14      | Yes                | Important user-facing change in v1.2.0                 |
+| `Egress`                        | Agent + Controller | `true`  | Beta       | v1.0          | v1.6         | N/A        | Yes                |                                                        |
+| `NodeIPAM`                      | Controller         | `true`  | Beta       | v1.4          | v1.12        | N/A        | Yes                |                                                        |
+| `AntreaIPAM`                    | Agent + Controller | `false` | Alpha      | v1.4          | N/A          | N/A        | Yes                |                                                        |
+| `Multicast`                     | Agent + Controller | `true`  | Beta       | v1.5          | v1.12        | N/A        | Yes                |                                                        |
+| `SecondaryNetwork`              | Agent              | `false` | Alpha      | v1.5          | N/A          | N/A        | Yes                |                                                        |
+| `ServiceExternalIP`             | Agent + Controller | `false` | Beta       | v1.5          | v2.3         | N/A        | Yes                |                                                        |
+| `TrafficControl`                | Agent              | `false` | Alpha      | v1.7          | N/A          | N/A        | No                 |                                                        |
+| `Multicluster`                  | Agent + Controller | `false` | Alpha      | v1.7          | N/A          | N/A        | Yes                | Controller side feature gate added in v1.10.0          |
+| `IPsecCertAuth`                 | Agent + Controller | `false` | Alpha      | v1.7          | N/A          | N/A        | No                 |                                                        |
+| `ExternalNode`                  | Agent              | `false` | Alpha      | v1.8          | N/A          | N/A        | Yes                |                                                        |
+| `SupportBundleCollection`       | Agent + Controller | `false` | Alpha      | v1.10         | N/A          | N/A        | Yes                |                                                        |
+| `L7NetworkPolicy`               | Agent + Controller | `false` | Alpha      | v1.10         | N/A          | N/A        | Yes                |                                                        |
+| `AdminNetworkPolicy`            | Controller         | `false` | Alpha      | v1.13         | N/A          | N/A        | Yes                |                                                        |
+| `EgressTrafficShaping`          | Agent              | `false` | Alpha      | v1.14         | N/A          | N/A        | Yes                | OVS meters should be supported                         |
+| `EgressSeparateSubnet`          | Agent              | `true`  | Beta       | v1.15         | v2.3         | N/A        | No                 |                                                        |
+| `NodeNetworkPolicy`             | Agent              | `false` | Alpha      | v1.15         | N/A          | N/A        | Yes                |                                                        |
+| `BGPPolicy`                     | Agent              | `false` | Alpha      | v2.1          | N/A          | N/A        | No                 |                                                        |
+| `NodeLatencyMonitor`            | Agent              | `false` | Alpha      | v2.1          | N/A          | N/A        | No                 |                                                        |
+| `PacketCapture`                 | Agent              | `false` | Alpha      | v2.2          | N/A          | N/A        | No                 |                                                        |
+| `NFTablesHostNetworkMode`       | Agent              | `false` | Alpha      | v2.5          | N/A          | N/A        | Yes                |                                                        |
 
 ## Description and Requirements of Features
 
@@ -85,14 +86,12 @@ opposed to >= 4.4 without this feature).
 ### EndpointSlice
 
 `EndpointSlice` enables Service EndpointSlice support in Antrea Proxy. The EndpointSlice API was introduced in Kubernetes
-1.16 (alpha) and it is enabled by default in Kubernetes 1.17 (beta), promoted to GA in Kubernetes 1.21. The EndpointSlice
-feature will take no effect if Antrea Proxy is not enabled. Refer to this [link](https://kubernetes.io/docs/tasks/administer-cluster/enabling-endpointslices/)
-for more information about EndpointSlice. If this feature is enabled but the EndpointSlice v1 API is not available
-(Kubernetes version is lower than 1.21), Antrea Agent will log a message and fallback to the Endpoints API.
+1.16 (alpha) and it is enabled by default in Kubernetes 1.17 (beta), promoted to GA in Kubernetes 1.21.
+
+Starting from Antrea v2.5.0, the feature is locked to `true` and cannot be disabled.
 
 #### Requirements for this Feature
 
-- EndpointSlice v1 API is available (Kubernetes version >=1.21).
 - Option `antreaProxy.enable` is set to true.
 
 ### TopologyAwareHints
@@ -101,10 +100,11 @@ for more information about EndpointSlice. If this feature is enabled but the End
 Endpoint which is closer to where it originated when this feature is enabled. Prior to Kubernetes 1.27, this feature was known as Topology Aware Hints.
 Refer to this [link](https://kubernetes.io/docs/concepts/services-networking/topology-aware-routing/) for more information about Topology Aware Routing.
 
+Starting from Antrea v2.5.1, the feature is locked to `true` and cannot be disabled.
+
 #### Requirements for this Feature
 
 - Option `antreaProxy.enable` is set to true.
-- EndpointSlice API version v1 is available in Kubernetes.
 
 ### ServiceTrafficDistribution
 
@@ -112,11 +112,26 @@ Refer to this [link](https://kubernetes.io/docs/concepts/services-networking/top
 flexible and intelligent routing decisions by considering both topology and non-topology factors. For more details,
 refer to this [link](https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/4444-service-traffic-distribution).
 
+Starting from Antrea v2.5.1, the feature is locked to `true` and cannot be disabled.
+
 #### Requirements for this Feature
 
 - Option `antreaProxy.enable` is set to true.
-- EndpointSlice API version v1 is available in Kubernetes.
 - Kubernetes must be version 1.30 or higher, with the `ServiceTrafficDistribution` feature gate (a Kubernetes-specific
+  feature gate) enabled.
+
+### PreferSameTrafficDistribution
+
+`PreferSameTrafficDistribution` enables AntreaProxy to honor the Service's trafficDistribution settings
+(PreferSameZone / PreferSameNode) when selecting backend Pods.
+
+For additional background, see the upstream enhancement proposal:
+[KEP 3015 – Prefer Same Node](https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/3015-prefer-same-node).
+
+#### Requirements for this Feature
+
+- Option `antreaProxy.enable` is set to true.
+- Kubernetes must be version 1.33 or higher, with the `PreferSameTrafficDistribution` feature gate (a Kubernetes-specific
   feature gate) enabled.
 
 ### LoadBalancerModeDSR
@@ -261,8 +276,7 @@ this [document](node-port-local.md) for more information.
 
 #### Requirements for this Feature
 
-This feature is currently only supported for Nodes running Linux with IPv4 addresses. Only TCP & UDP Service ports are
-supported (not SCTP).
+This feature currently only supports IPv4. Only TCP & UDP Service ports are supported (not SCTP).
 
 ### Egress
 
@@ -274,7 +288,7 @@ this [document](egress.md) for more information.
 
 #### Requirements for this Feature
 
-This feature is currently only supported for Nodes running Linux and "encap"
+This feature is currently only supported for Nodes running Linux and "encap" / "hybrid"
 mode. The support for Windows and other traffic modes will be added in the future.
 
 ### NodeIPAM
@@ -324,7 +338,7 @@ This feature is only supported:
 
 * on Linux Nodes
 * for IPv4 traffic
-* in `noEncap` and `encap` traffic modes
+* in `hybrid`, `noEncap` and `encap` traffic modes
 
 ### SecondaryNetwork
 
@@ -442,15 +456,6 @@ to be supported in the datapath.
 `EgressSeparateSubnet` allows users to allocate Egress IPs from a different subnet from the default Node subnet.
 Refer to this [document](egress.md#subnetinfo) for more information.
 
-### L7FlowExporter
-
-`L7FlowExporter` enables users to export application-layer flow data using Pod or Namespace annotations.
-Refer to this [document](network-flow-visibility.md#l7-visibility) for more information.
-
-#### Requirements for this Feature
-
-- Linux Nodes only.
-
 ### BGPPolicy
 
 `BGPPolicy` allows users to initiate BGP process on selected Kubernetes Nodes and advertise Service IPs (e.g.,
@@ -539,3 +544,20 @@ Refer to this [document](packetcapture-guide.md) for more information.
 #### Requirements for this Feature
 
 This feature is only supported on Linux for now.
+
+### NFTablesHostNetworkMode
+
+This feature enables Antrea to use nftables instead of iptables to implement Node host network netfilter rules required
+by functionalities and features that rely on netfilter. Currently, nftables support is limited to the following features:
+
+- AntreaProxy (proxyAll)
+
+#### Requirements for this Feature
+
+This feature is only supported on Linux.
+
+## Removed Features
+
+| Feature Name                    | Component          | Alpha Release | Beta Release | GA Release | Deprecated Release | Removed Release |
+| ------------------------------- | ------------------ | ------------- | ------------ | ---------- | ------------------ | --------------- |
+| `L7FlowExporter`                | Agent              | v1.15         | N/A          | N/A        | v2.5               | v2.6            |

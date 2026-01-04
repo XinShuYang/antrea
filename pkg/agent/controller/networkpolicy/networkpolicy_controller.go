@@ -153,7 +153,7 @@ type Controller struct {
 	fullSyncGroup         sync.WaitGroup
 	ifaceStore            interfacestore.InterfaceStore
 	// denyConnStore is for storing deny connections for flow exporter.
-	denyConnStore  *connections.DenyConnectionStore
+	denyConnStore  connections.DenyConnectionStoreUpdater
 	gwPort         uint32
 	tunPort        uint32
 	nodeConfig     *config.NodeConfig
@@ -538,6 +538,19 @@ func NewNetworkPolicyController(antreaClientGetter client.AntreaClientProvider,
 	return c, nil
 }
 
+func (c *Controller) GetFQDNCache(fqdnFilter *querier.FQDNCacheFilter) []types.DnsCacheEntry {
+	cacheEntryList := []types.DnsCacheEntry{}
+	for fqdn, dnsMeta := range c.fqdnController.dnsEntryCache {
+		for _, ipWithExpiration := range dnsMeta.responseIPs {
+			if fqdnFilter == nil || fqdnFilter.DomainRegex.MatchString(fqdn) {
+				entry := types.DnsCacheEntry{FQDNName: fqdn, IPAddress: ipWithExpiration.ip, ExpirationTime: ipWithExpiration.expirationTime}
+				cacheEntryList = append(cacheEntryList, entry)
+			}
+		}
+	}
+	return cacheEntryList
+}
+
 func (c *Controller) GetNetworkPolicyNum() int {
 	return c.ruleCache.GetNetworkPolicyNum()
 }
@@ -581,7 +594,7 @@ func (c *Controller) GetNetworkPolicyByRuleFlowID(ruleFlowID uint32) *v1beta2.Ne
 func (c *Controller) GetRuleByFlowID(ruleFlowID uint32) *types.PolicyRule {
 	rule, exists, err := c.podReconciler.GetRuleByFlowID(ruleFlowID)
 	if err != nil {
-		klog.Errorf("Error when getting network policy by rule flow ID: %v", err)
+		klog.ErrorS(err, "Error when getting network policy by rule flow ID")
 		return nil
 	}
 	if !exists {
@@ -595,7 +608,7 @@ func (c *Controller) GetControllerConnectionStatus() bool {
 	return c.addressGroupWatcher.isConnected() && c.appliedToGroupWatcher.isConnected() && c.networkPolicyWatcher.isConnected()
 }
 
-func (c *Controller) SetDenyConnStore(denyConnStore *connections.DenyConnectionStore) {
+func (c *Controller) SetDenyConnStore(denyConnStore connections.DenyConnectionStoreUpdater) {
 	c.denyConnStore = denyConnStore
 }
 
@@ -1002,19 +1015,17 @@ func (w *watcher) watch() {
 	var initObjects []runtime.Object
 loop:
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				klog.Warningf("Result channel for %s was closed", w.objectType)
-				return
-			}
-			switch event.Type {
-			case watch.Added:
-				klog.V(2).Infof("Added %s (%#v)", w.objectType, event.Object)
-				initObjects = append(initObjects, event.Object)
-			case watch.Bookmark:
-				break loop
-			}
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			klog.Warningf("Result channel for %s was closed", w.objectType)
+			return
+		}
+		switch event.Type {
+		case watch.Added:
+			klog.V(2).Infof("Added %s (%#v)", w.objectType, event.Object)
+			initObjects = append(initObjects, event.Object)
+		case watch.Bookmark:
+			break loop
 		}
 	}
 	klog.Infof("Received %d init events for %s", len(initObjects), w.objectType)
@@ -1027,33 +1038,31 @@ loop:
 	w.onFullSync()
 
 	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				return
-			}
-			klog.V(2).InfoS("Received event", "eventType", event.Type, "objectType", w.objectType, "object", event.Object)
-			switch event.Type {
-			case watch.Added:
-				if err := w.AddFunc(event.Object); err != nil {
-					klog.Errorf("Failed to handle added event: %v", err)
-					return
-				}
-			case watch.Modified:
-				if err := w.UpdateFunc(event.Object); err != nil {
-					klog.Errorf("Failed to handle modified event: %v", err)
-					return
-				}
-			case watch.Deleted:
-				if err := w.DeleteFunc(event.Object); err != nil {
-					klog.Errorf("Failed to handle deleted event: %v", err)
-					return
-				}
-			default:
-				klog.Errorf("Unknown event: %v", event)
-				return
-			}
-			eventCount++
+		event, ok := <-watcher.ResultChan()
+		if !ok {
+			return
 		}
+		klog.V(2).InfoS("Received event", "eventType", event.Type, "objectType", w.objectType, "object", event.Object)
+		switch event.Type {
+		case watch.Added:
+			if err := w.AddFunc(event.Object); err != nil {
+				klog.Errorf("Failed to handle added event: %v", err)
+				return
+			}
+		case watch.Modified:
+			if err := w.UpdateFunc(event.Object); err != nil {
+				klog.Errorf("Failed to handle modified event: %v", err)
+				return
+			}
+		case watch.Deleted:
+			if err := w.DeleteFunc(event.Object); err != nil {
+				klog.Errorf("Failed to handle deleted event: %v", err)
+				return
+			}
+		default:
+			klog.Errorf("Unknown event: %v", event)
+			return
+		}
+		eventCount++
 	}
 }

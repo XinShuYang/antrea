@@ -29,6 +29,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 
+	"antrea.io/antrea/pkg/antctl/raw"
 	"antrea.io/antrea/pkg/antctl/raw/check"
 )
 
@@ -37,6 +38,7 @@ func Command() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "installation",
 		Short: "Runs post installation checks",
+		Args:  cobra.NoArgs, // Disables positional arguments
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return Run(o)
 		},
@@ -44,6 +46,7 @@ func Command() *cobra.Command {
 	command.Flags().StringVarP(&o.antreaNamespace, "namespace", "n", o.antreaNamespace, "Configure Namespace in which Antrea is running")
 	command.Flags().StringVar(&o.runFilter, "run", o.runFilter, "Run only the tests that match the provided regex")
 	command.Flags().StringVar(&o.testImage, "test-image", o.testImage, "Container image override for the installation checker")
+	command.Flags().StringVar(&o.networkPolicyDelay, "network-policy-delay", o.networkPolicyDelay, "Maximum time to wait for a policy to be realized / enforced, as a Go duration string")
 	return command
 }
 
@@ -51,13 +54,15 @@ type options struct {
 	antreaNamespace string
 	runFilter       string
 	// Container image for the installation checker.
-	testImage string
+	testImage          string
+	networkPolicyDelay string
 }
 
 func newOptions() *options {
 	return &options{
-		antreaNamespace: "kube-system",
-		testImage:       check.DefaultTestImage,
+		antreaNamespace:    "kube-system",
+		testImage:          check.DefaultTestImage,
+		networkPolicyDelay: "2s",
 	}
 }
 
@@ -69,7 +74,11 @@ const (
 	kindEchoName                = "echo"
 	kindClientName              = "client"
 	agentDaemonSetName          = "antrea-agent"
+	controllerDeploymentName    = "antrea-controller"
 	podReadyTimeout             = 1 * time.Minute
+	minNetworkPolicyDelay       = 1 * time.Second
+	controllerAvailableTimeout  = 1 * time.Minute
+	agentAvailableTimeout       = 5 * time.Minute
 )
 
 type notRunnableError struct {
@@ -111,7 +120,8 @@ type testContext struct {
 	// A nil regex indicates that all the tests should be run.
 	runFilterRegex *regexp.Regexp
 	// Container image for the installation checker.
-	testImage string
+	testImage          string
+	networkPolicyDelay time.Duration
 }
 
 type testStats struct {
@@ -141,12 +151,20 @@ func Run(o *options) error {
 		return err
 	}
 
+	networkPolicyDelay, err := time.ParseDuration(o.networkPolicyDelay)
+	if err != nil {
+		return fmt.Errorf("NetworkPolicy delay is not a valid duration string: %w", err)
+	}
+	if networkPolicyDelay < minNetworkPolicyDelay {
+		return fmt.Errorf("NetworkPolicy delay should not be less than %v", minNetworkPolicyDelay)
+	}
+
 	client, config, clusterName, err := check.NewClient()
 	if err != nil {
 		return fmt.Errorf("unable to create Kubernetes client: %w", err)
 	}
 	ctx := context.Background()
-	testContext := NewTestContext(client, config, clusterName, o.antreaNamespace, runFilterRegex, o.testImage)
+	testContext := NewTestContext(client, config, clusterName, o.antreaNamespace, runFilterRegex, o.testImage, networkPolicyDelay)
 	defer check.Teardown(ctx, testContext.Logger, testContext.client, testContext.namespace)
 	if err := testContext.setup(ctx); err != nil {
 		return err
@@ -191,27 +209,31 @@ func NewTestContext(
 	antreaNamespace string,
 	runFilterRegex *regexp.Regexp,
 	testImage string,
+	networkPolicyDelay time.Duration,
 ) *testContext {
 	return &testContext{
-		Logger:          check.NewLogger(fmt.Sprintf("[%s] ", clusterName)),
-		client:          client,
-		config:          config,
-		clusterName:     clusterName,
-		antreaNamespace: antreaNamespace,
-		namespace:       check.GenerateRandomNamespace(testNamespacePrefix),
-		runFilterRegex:  runFilterRegex,
-		testImage:       testImage,
+		Logger:             check.NewLogger(fmt.Sprintf("[%s] ", clusterName)),
+		client:             client,
+		config:             config,
+		clusterName:        clusterName,
+		antreaNamespace:    antreaNamespace,
+		namespace:          check.GenerateRandomNamespace(testNamespacePrefix),
+		runFilterRegex:     runFilterRegex,
+		testImage:          testImage,
+		networkPolicyDelay: networkPolicyDelay,
 	}
 }
 
 func (t *testContext) setup(ctx context.Context) error {
 	t.Log("Test starting....")
-	_, err := t.client.AppsV1().DaemonSets(t.antreaNamespace).Get(ctx, agentDaemonSetName, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("unable to determine status of Antrea DaemonSet: %w", err)
+	if err := check.WaitForDeploymentsReady(ctx, time.Second, controllerAvailableTimeout, true, t.client, t.clusterName, t.antreaNamespace, controllerDeploymentName); err != nil {
+		return fmt.Errorf("error when checking Antrea Controller status: %w", err)
+	}
+	if err := check.WaitForDaemonSetReady(ctx, time.Second, agentAvailableTimeout, true, t.client, t.clusterName, t.antreaNamespace, agentDaemonSetName); err != nil {
+		return fmt.Errorf("error when checking Antrea Agent status: %w", err)
 	}
 	t.Log("Creating Namespace %s for post installation tests...", t.namespace)
-	_, err = t.client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: t.namespace, Labels: map[string]string{"app": "antrea", "component": "installation-checker"}}}, metav1.CreateOptions{})
+	_, err := t.client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: t.namespace, Labels: map[string]string{"app": "antrea", "component": "installation-checker"}}}, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("unable to create Namespace %s: %s", t.namespace, err)
 	}
@@ -310,7 +332,7 @@ func (t *testContext) setup(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("unable to create Deployment %s: %s", echoOtherNodeDeploymentName, err)
 		}
-		if err := check.WaitForDeploymentsReady(ctx, time.Second, podReadyTimeout, t.client, t.clusterName, t.namespace, clientDeploymentName, echoSameNodeDeploymentName, echoOtherNodeDeploymentName); err != nil {
+		if err := check.WaitForDeploymentsReady(ctx, time.Second, podReadyTimeout, false, t.client, t.clusterName, t.namespace, clientDeploymentName, echoSameNodeDeploymentName, echoOtherNodeDeploymentName); err != nil {
 			return err
 		}
 		podList, err := t.client.CoreV1().Pods(t.namespace).List(ctx, metav1.ListOptions{LabelSelector: "name=" + echoOtherNodeDeploymentName})
@@ -322,7 +344,7 @@ func (t *testContext) setup(ctx context.Context) error {
 		}
 	} else {
 		t.Log("skipping other Node Deployments as multiple Nodes are not available")
-		if err := check.WaitForDeploymentsReady(ctx, time.Second, podReadyTimeout, t.client, t.clusterName, t.namespace, clientDeploymentName, echoSameNodeDeploymentName); err != nil {
+		if err := check.WaitForDeploymentsReady(ctx, time.Second, podReadyTimeout, false, t.client, t.clusterName, t.namespace, clientDeploymentName, echoSameNodeDeploymentName); err != nil {
 			return err
 		}
 	}
@@ -367,7 +389,7 @@ func (t *testContext) runTests(ctx context.Context) testStats {
 
 func (t *testContext) tcpProbe(ctx context.Context, clientPodName string, container string, target string, targetPort int) error {
 	cmd := tcpProbeCommand(target, targetPort)
-	_, stderr, err := check.ExecInPod(ctx, t.client, t.config, t.namespace, clientPodName, container, cmd)
+	_, stderr, err := raw.ExecInPod(ctx, t.client, t.config, t.namespace, clientPodName, container, cmd)
 	if err != nil {
 		// We log the contents of stderr here for troubleshooting purposes.
 		t.Log("tcp probe command '%s' failed: %v", strings.Join(cmd, " "), err)

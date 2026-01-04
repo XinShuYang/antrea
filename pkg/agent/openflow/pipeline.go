@@ -20,6 +20,7 @@ import (
 	"net"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"antrea.io/libOpenflow/openflow15"
@@ -266,7 +267,7 @@ func GetFlowTableID(tableName string) uint8 {
 	if len(objs) == 0 {
 		return binding.TableIDAll
 	}
-	return objs[0].(binding.Table).GetID()
+	return objs[0].(*Table).ofTable.GetID()
 }
 
 func GetTableList() []binding.Table {
@@ -403,7 +404,6 @@ type client struct {
 	enableEgressTrafficShaping bool
 	enableMulticast            bool
 	enableTrafficControl       bool
-	enableL7FlowExporter       bool
 	enableMulticluster         bool
 	enablePrometheusMetrics    bool
 	connectUplinkToBridge      bool
@@ -439,6 +439,8 @@ type client struct {
 	l7NetworkPolicyConfig *config.L7NetworkPolicyConfig
 	// ovsMetersAreSupported indicates whether the OVS datapath supports OpenFlow meters.
 	ovsMetersAreSupported bool
+	// ovsMeterPacketDrops tracks the number of packets dropped by each OVS meter, keyed by meter ID.
+	ovsMeterPacketDrops map[int]*atomic.Int64
 	// packetInRate defines the OVS controller packet rate limits for different
 	// features. All features will apply this rate-limit individually on packet-in
 	// messages sent to antrea-agent. The number stands for the rate as packets per
@@ -580,10 +582,8 @@ func (f *featurePodConnectivity) podClassifierFlow(podOFPort uint32, isAntreaFle
 func (f *featurePodConnectivity) podUplinkClassifierFlows(dstMAC net.HardwareAddr, vlanID uint16) []binding.Flow {
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	var flows []binding.Flow
-	nonVLAN := true
-	if vlanID > 0 {
-		nonVLAN = false
-	}
+	nonVLAN := vlanID <= 0
+
 	for _, ipProtocol := range f.ipProtocols {
 		flows = append(flows,
 			// This generates the flow to mark the packets from uplink port.
@@ -650,15 +650,19 @@ func (f *featurePodConnectivity) conntrackFlows() []binding.Flow {
 				MatchCTStateTrk(true).
 				Action().Drop().
 				Done(),
-			// This generates the flow to match the first packet of non-Service connection and mark the source of the connection
-			// by copying PktSourceField to ConnSourceCTMarkField.
+			// This flow matches the first packet of all non-SNAT connections to commit them to the main /
+			// DNAT CtZone and to mark the source of the connection by copying PktSourceField to
+			// ConnSourceCTMarkField. SNAT connections have already been committed to the main / DNAT
+			// CtZone, prior to being committed to the SNAT CtZone.
+			// Note that matching on ct_state=-snat with MatchCTStateSNAT(false) does not work because of
+			// https://github.com/openvswitch/ovs-issues/issues/370. Matching on ct_zone only supports exact
+			// match, so it is not ideal.
 			ConntrackCommitTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
 				MatchCTStateNew(true).
 				MatchCTStateTrk(true).
-				MatchCTStateSNAT(false).
-				MatchCTMark(NotServiceCTMark).
+				MatchCTMark(NotConnSNATCTMark).
 				Action().CT(true, ConntrackCommitTable.GetNext(), f.ctZones[ipProtocol], f.ctZoneSrcField).
 				MoveToCtMarkField(PktSourceField, ConnSourceCTMarkField).
 				CTDone().
@@ -753,7 +757,7 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 				MatchCTMark(HairpinCTMark).
 				Action().CT(true, SNATTable.GetNext(), f.snatCtZones[ipProtocol], nil).
 				SNAT(&binding.IPRange{StartIP: virtualIP, EndIP: virtualIP}, nil).
-				LoadToCtMark(ServiceCTMark, HairpinCTMark).
+				LoadToCtMark(ServiceCTMark, ConnSNATCTMark, HairpinCTMark).
 				CTDone().
 				Done(),
 			// This generates the flow to unSNAT reply packets of connections committed in SNAT CT zone by the above flow.
@@ -777,7 +781,7 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 				MatchCTMark(HairpinCTMark).
 				Action().CT(true, SNATTable.GetNext(), f.snatCtZones[ipProtocol], nil).
 				SNAT(&binding.IPRange{StartIP: gatewayIP, EndIP: gatewayIP}, nil).
-				LoadToCtMark(ServiceCTMark, HairpinCTMark).
+				LoadToCtMark(ServiceCTMark, ConnSNATCTMark, HairpinCTMark).
 				CTDone().
 				Done(),
 			// This generates the flow to match the first packet of NodePort / LoadBalancer connection (non-hairpin) initiated
@@ -791,7 +795,7 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 				MatchCTMark(ConnSNATCTMark).
 				Action().CT(true, SNATTable.GetNext(), f.snatCtZones[ipProtocol], nil).
 				SNAT(&binding.IPRange{StartIP: gatewayIP, EndIP: gatewayIP}, nil).
-				LoadToCtMark(ServiceCTMark).
+				LoadToCtMark(ServiceCTMark, ConnSNATCTMark).
 				CTDone().
 				Done(),
 			// This generates the flow to unSNAT reply packets of connections committed in SNAT CT zone by the above flows.
@@ -969,43 +973,22 @@ func (f *featurePodConnectivity) flowsToTrace(dataplaneTag uint8,
 		}
 		return fb
 	}
+	// Output the packets if traffic mode is noEncap or hybrid.
+	ifSupportsNoEncap := func(fb binding.FlowBuilder) binding.FlowBuilder {
+		if f.networkConfig.TrafficEncapMode.SupportsNoEncap() {
+			fb = fb.Action().OutputToRegField(TargetOFPortField)
+		}
+		return fb
+	}
 
 	// This generates Traceflow specific flows that outputs traceflow non-hairpin packets to OVS port and Antrea Agent after
 	// L2 forwarding calculation.
 	for _, ipProtocol := range f.ipProtocols {
-		if f.networkConfig.TrafficEncapMode.SupportsEncap() {
-			if f.tunnelPort != 0 {
-				// SendToController and Output if output port is tunnel port.
-				fb := OutputTable.ofTable.BuildFlow(priorityNormal+3).
-					Cookie(cookieID).
-					MatchRegFieldWithValue(TargetOFPortField, f.tunnelPort).
-					MatchProtocol(ipProtocol).
-					MatchRegMark(OutputToOFPortRegMark).
-					MatchIPDSCP(dataplaneTag).
-					SetHardTimeout(timeout).
-					Action().OutputToRegField(TargetOFPortField)
-				fb = ifDroppedOnly(fb)
-				flows = append(flows, fb.Done())
-			}
-			// For injected packets, only SendToController if output port is local gateway. In encapMode, a Traceflow
-			// packet going out of the gateway port (i.e. exiting the overlay) essentially means that the Traceflow
-			// request is complete.
-			fb := OutputTable.ofTable.BuildFlow(priorityNormal+2).
+		if f.tunnelPort != 0 {
+			// SendToController and Output if output port is tunnel port.
+			fb := OutputTable.ofTable.BuildFlow(priorityNormal+3).
 				Cookie(cookieID).
-				MatchRegFieldWithValue(TargetOFPortField, f.gatewayPort).
-				MatchProtocol(ipProtocol).
-				MatchRegMark(OutputToOFPortRegMark).
-				MatchIPDSCP(dataplaneTag).
-				SetHardTimeout(timeout)
-			fb = ifDroppedOnly(fb)
-			fb = ifLiveTraffic(fb)
-			flows = append(flows, fb.Done())
-		} else {
-			// SendToController and Output if output port is local gateway. Unlike in encapMode, inter-Node Pod-to-Pod
-			// traffic is expected to go out of the gateway port on the way to its destination.
-			fb := OutputTable.ofTable.BuildFlow(priorityNormal+2).
-				Cookie(cookieID).
-				MatchRegFieldWithValue(TargetOFPortField, f.gatewayPort).
+				MatchRegFieldWithValue(TargetOFPortField, f.tunnelPort).
 				MatchProtocol(ipProtocol).
 				MatchRegMark(OutputToOFPortRegMark).
 				MatchIPDSCP(dataplaneTag).
@@ -1014,6 +997,23 @@ func (f *featurePodConnectivity) flowsToTrace(dataplaneTag uint8,
 			fb = ifDroppedOnly(fb)
 			flows = append(flows, fb.Done())
 		}
+		// For injected packets, SendToController and Output depending on traffic mode if output port is local gateway.
+		// - In encap mode, a Traceflow packet going out of the gateway port (i.e. exiting the overlay) essentially means
+		//   that the Traceflow request is complete. only SendToController if output port is local gateway.
+		// - In noEncap or hybrid mode, inter-Node Pod-to-Pod traffic is expected to go out of the gateway port on the
+		//   way to its destination.
+		fb := OutputTable.ofTable.BuildFlow(priorityNormal+2).
+			Cookie(cookieID).
+			MatchRegFieldWithValue(TargetOFPortField, f.gatewayPort).
+			MatchProtocol(ipProtocol).
+			MatchRegMark(OutputToOFPortRegMark).
+			MatchIPDSCP(dataplaneTag).
+			SetHardTimeout(timeout)
+		fb = ifSupportsNoEncap(fb)
+		fb = ifDroppedOnly(fb)
+		fb = ifLiveTraffic(fb)
+		flows = append(flows, fb.Done())
+
 		// Only SendToController if output port is local gateway and destination IP is gateway.
 		gatewayIP := f.gatewayIPs[ipProtocol]
 		if gatewayIP != nil {
@@ -1030,7 +1030,7 @@ func (f *featurePodConnectivity) flowsToTrace(dataplaneTag uint8,
 			flows = append(flows, fb.Done())
 		}
 		// Only SendToController if output port is Pod port.
-		fb := OutputTable.ofTable.BuildFlow(priorityNormal + 2).
+		fb = OutputTable.ofTable.BuildFlow(priorityNormal + 2).
 			Cookie(cookieID).
 			MatchProtocol(ipProtocol).
 			MatchRegMark(OutputToOFPortRegMark).
@@ -1194,10 +1194,12 @@ func (f *featurePodConnectivity) l2ForwardCalcFlow(dstMAC net.HardwareAddr, ofPo
 }
 
 // l2ForwardOutputHairpinServiceFlow generates the flow to output the packet of hairpin Service connection with IN_PORT
-// action.
+// action. It matches OutputToOFPortRegMark to ensure only packets explicitly marked for output are processed, excluding
+// packets intended for packet-in to the controller.
 func (f *featureService) l2ForwardOutputHairpinServiceFlow() binding.Flow {
 	return OutputTable.ofTable.BuildFlow(priorityHigh).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
+		MatchRegMark(OutputToOFPortRegMark).
 		MatchCTMark(HairpinCTMark).
 		Action().OutputInPort().
 		Done()
@@ -1361,6 +1363,26 @@ func (f *featurePodConnectivity) l3FwdFlowsToRemoteViaTun(localGatewayMAC net.Ha
 		// TODO: MatchXXReg must support mask to support IPv6.
 	}
 	return flows
+}
+
+// l3FwdFlowEgressReturnViaTun generates the flow to match the packets sourced from the Antrea gateway and destined for
+// remote Pods and forward them via tunnel. This flow is installed only in hybrid mode for matching reply packets of
+// Egress connections originated from tunnel and these packets should be sent to remote Pods via tunnel.
+func (f *featurePodConnectivity) l3FwdFlowEgressReturnViaTun(localGatewayMAC net.HardwareAddr, peerSubnet net.IPNet, tunnelPeer net.IP) binding.Flow {
+	ipProtocol := getIPProtocol(peerSubnet.IP)
+	flow := L3ForwardingTable.ofTable.BuildFlow(priorityNormal + 1).
+		Cookie(f.cookieAllocator.Request(f.category).Raw()).
+		MatchProtocol(ipProtocol).
+		MatchRegMark(FromGatewayRegMark). // Match packets received on local gateway only, ensuring they are reply Egress packets.
+		MatchCTMark(FromTunnelCTMark).    // Match packets from connections originated from tunnel.
+		MatchDstIPNet(peerSubnet).
+		Action().SetSrcMAC(localGatewayMAC).  // Rewrite src MAC to local gateway MAC.
+		Action().SetDstMAC(GlobalVirtualMAC). // Rewrite dst MAC to virtual MAC.
+		Action().SetTunnelDst(tunnelPeer).    // Flow based tunnel. Set tunnel destination.
+		Action().LoadRegMark(ToTunnelRegMark).
+		Action().GotoTable(L3DecTTLTable.GetID()).
+		Done()
+	return flow
 }
 
 // l3FwdFlowToRemoteViaGW generates the flow to match the packets destined for remote Pods via the Antrea gateway. It is
@@ -2522,7 +2544,6 @@ func (f *featureService) endpointDNATFlow(endpointIP net.IP, endpointPort uint16
 			&binding.PortRange{StartPort: endpointPort, EndPort: endpointPort},
 		).
 		LoadToCtMark(ServiceCTMark).
-		MoveToCtMarkField(PktSourceField, ConnSourceCTMarkField).
 		CTDone().
 		Done()
 }
@@ -2537,9 +2558,6 @@ func (f *featureService) dsrServiceNoDNATFlows() []binding.Flow {
 			MatchRegMark(DSRServiceRegMark).
 			Action().
 			CT(true, EndpointDNATTable.GetNext(), f.dnatCtZones[ipProtocol], f.ctZoneSrcField).
-			// Note that the ct mark cannot be read from conntrack by ct action because the connection is in invalid state.
-			// We load it more for consistency.
-			MoveToCtMarkField(PktSourceField, ConnSourceCTMarkField).
 			CTDone().
 			Done())
 	}
@@ -2567,19 +2585,20 @@ func (f *featureService) serviceEndpointGroup(groupID binding.GroupIDType, withS
 		resubmitTableID = ServiceLBTable.GetNext() // It will be EndpointDNATTable if DSR is not enabled, otherwise DSRServiceMarkTable.
 	}
 	for _, endpoint := range endpoints {
-		endpointPort, _ := endpoint.Port()
+		endpointPort := endpoint.Port()
 		endpointIP := net.ParseIP(endpoint.IP())
 		portVal := util.PortToUint16(endpointPort)
 		ipProtocol := getIPProtocol(endpointIP)
 		bucketBuilder := group.Bucket().Weight(100)
 		// Load RemoteEndpointRegMark for remote non-hostNetwork Endpoints.
-		if !endpoint.GetIsLocal() && endpoint.GetNodeName() != "" && !f.nodeIPChecker.IsNodeIP(endpoint.IP()) {
+		if !endpoint.IsLocal() && !f.nodeIPChecker.IsNodeIP(endpoint.IP()) {
 			bucketBuilder = bucketBuilder.LoadRegMark(RemoteEndpointRegMark)
 		}
-		if ipProtocol == binding.ProtocolIP {
+		switch ipProtocol {
+		case binding.ProtocolIP:
 			ipVal := binary.BigEndian.Uint32(endpointIP.To4())
 			bucketBuilder = bucketBuilder.LoadToRegField(EndpointIPField, ipVal)
-		} else if ipProtocol == binding.ProtocolIPv6 {
+		case binding.ProtocolIPv6:
 			ipVal := []byte(endpointIP)
 			bucketBuilder = bucketBuilder.LoadXXReg(EndpointIP6Field.GetRegID(), ipVal)
 		}
@@ -2834,7 +2853,6 @@ func NewClient(bridgeName string,
 	connectUplinkToBridge bool,
 	enableMulticast bool,
 	enableTrafficControl bool,
-	enableL7FlowExporter bool,
 	enableMulticluster bool,
 	groupIDAllocator GroupAllocator,
 	enablePrometheusMetrics bool,
@@ -2854,7 +2872,6 @@ func NewClient(bridgeName string,
 		enableEgressTrafficShaping: enableEgressTrafficShaping,
 		enableMulticast:            enableMulticast,
 		enableTrafficControl:       enableTrafficControl,
-		enableL7FlowExporter:       enableL7FlowExporter,
 		enableMulticluster:         enableMulticluster,
 		enablePrometheusMetrics:    enablePrometheusMetrics,
 		connectUplinkToBridge:      connectUplinkToBridge,
@@ -2866,6 +2883,14 @@ func NewClient(bridgeName string,
 		groupIDAllocator:           groupIDAllocator,
 	}
 	c.ofEntryOperations = operations.NewOFEntryOperations(bridge)
+	if c.ovsMetersAreSupported {
+		// Pre-initialize the map with all possible keys to avoid concurrent updates and potential race conditions later.
+		c.ovsMeterPacketDrops = map[int]*atomic.Int64{
+			PacketInMeterIDNP:  {},
+			PacketInMeterIDTF:  {},
+			PacketInMeterIDDNS: {},
+		}
+	}
 	return c
 }
 
@@ -3060,6 +3085,7 @@ func (f *featureService) podHairpinSNATFlow(endpoint net.IP) binding.Flow {
 		MatchDstIP(endpoint).
 		Action().CT(true, SNATMarkTable.GetNext(), f.dnatCtZones[ipProtocol], f.ctZoneSrcField).
 		LoadToCtMark(ConnSNATCTMark, HairpinCTMark).
+		MoveToCtMarkField(PktSourceField, ConnSourceCTMarkField).
 		CTDone().
 		Done()
 }
@@ -3080,6 +3106,7 @@ func (f *featureService) gatewaySNATFlows() []binding.Flow {
 			MatchRegMark(FromGatewayRegMark, ToGatewayRegMark).
 			Action().CT(true, SNATMarkTable.GetNext(), f.dnatCtZones[ipProtocol], f.ctZoneSrcField).
 			LoadToCtMark(ConnSNATCTMark, HairpinCTMark).
+			MoveToCtMarkField(PktSourceField, ConnSourceCTMarkField).
 			CTDone().
 			Done())
 
@@ -3102,6 +3129,7 @@ func (f *featureService) gatewaySNATFlows() []binding.Flow {
 				MatchRegMark(FromGatewayRegMark, pktDstRegMark, ToExternalAddressRegMark, NotDSRServiceRegMark). // Do not SNAT DSR traffic.
 				Action().CT(true, SNATMarkTable.GetNext(), f.dnatCtZones[ipProtocol], f.ctZoneSrcField).
 				LoadToCtMark(ConnSNATCTMark).
+				MoveToCtMarkField(PktSourceField, ConnSourceCTMarkField).
 				CTDone().
 				Done())
 		}

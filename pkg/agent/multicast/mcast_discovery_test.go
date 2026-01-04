@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Copyright 2022 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -57,14 +59,12 @@ func (v *snooperValidator) processPackets(expectedPackets int) {
 		return groupNodes
 	}
 	for i := 0; i < expectedPackets; i++ {
-		select {
-		case e := <-v.eventCh:
-			groupKey := e.group.String()
-			if e.eType == groupJoin {
-				v.groupJoinedNodes = appendSrcNode(groupKey, v.groupJoinedNodes, e.srcNode)
-			} else {
-				v.groupLeftNodes = appendSrcNode(groupKey, v.groupLeftNodes, e.srcNode)
-			}
+		e := <-v.eventCh
+		groupKey := e.group.String()
+		if e.eType == groupJoin {
+			v.groupJoinedNodes = appendSrcNode(groupKey, v.groupJoinedNodes, e.srcNode)
+		} else {
+			v.groupLeftNodes = appendSrcNode(groupKey, v.groupLeftNodes, e.srcNode)
 		}
 	}
 }
@@ -145,9 +145,14 @@ func TestParseIGMPPacket(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			igmpMsg, err := parseIGMPPacket(tc.packet)
-			assert.Equal(t, tc.igmpMsg, igmpMsg)
-			assert.Equal(t, tc.err, err)
+			ipPacket, err := parseIPv4Packet(&tc.packet)
+			if err != nil {
+				assert.Equal(t, tc.err, err)
+			} else {
+				igmpMsg, err := parseIGMPPacket(ipPacket)
+				assert.Equal(t, tc.igmpMsg, igmpMsg)
+				assert.Equal(t, tc.err, err)
+			}
 		})
 	}
 }
@@ -239,16 +244,13 @@ func generatePacketWithMatches(m util.Message, ofport uint32, srcNodeIP net.IP, 
 	for i := range matches {
 		pkt.Match.AddField(matches[i])
 	}
-	if srcNodeIP != nil {
-		matchTunSrc := openflow15.NewTunnelIpv4SrcField(srcNodeIP, nil)
-		pkt.Match.AddField(*matchTunSrc)
-	}
 	ipPacket := &protocol.IPv4{
 		Version:  0x4,
 		IHL:      5,
 		Protocol: IGMPProtocolNumber,
 		Length:   20 + m.Len(),
 		Data:     m,
+		NWSrc:    srcNodeIP,
 	}
 	ethernetPkt := protocol.NewEthernet()
 	ethernetPkt.HWDst = pktInDstMAC

@@ -59,7 +59,7 @@ jobs:
         run: |
           sudo apt-get clean
           df -h
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.antrea-version }}
           fetch-depth: 0
@@ -86,7 +86,7 @@ jobs:
       - name: Get Kind version
         id: get_kind_version
         run: |
-          KIND_VERSION=$(head -n1 ./ci/kind/version || echo v0.23.0)
+          KIND_VERSION=$(head -n1 ./ci/kind/version || echo v0.28.0)
           echo "kind_version=${KIND_VERSION}" >> $GITHUB_OUTPUT
       - name: Install Kind
         uses: helm/kind-action@v1
@@ -112,7 +112,7 @@ jobs:
             git clone --depth 1 --branch ${{ inputs.k8s-version }} https://github.com/kubernetes/kubernetes.git /tmp/kubernetes
             echo "Building Kind Node image with Kubernetes version ${{ inputs.k8s-version }}"
             kind build node-image --image kindest/node:${{ inputs.k8s-version }} /tmp/kubernetes
-            rm -rf /tmp/kubernetes
+            sudo rm -rf /tmp/kubernetes
           fi
       - name: Create K8s cluster
         run: |
@@ -149,7 +149,7 @@ jobs:
         run: |
           ./ci/run-k8s-e2e-tests.sh "--e2e-${{ inputs.test-suite }}"
       - name: Upload test log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: ${{ failure() || inputs.always-upload-logs }}
         with:
           name: sonobuoy.tar.gz

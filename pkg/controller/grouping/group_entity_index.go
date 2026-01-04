@@ -29,6 +29,7 @@ import (
 
 	"antrea.io/antrea/pkg/apis/crd/v1alpha2"
 	"antrea.io/antrea/pkg/controller/types"
+	"antrea.io/antrea/pkg/util/k8s"
 	utilsets "antrea.io/antrea/pkg/util/sets"
 )
 
@@ -233,15 +234,15 @@ func (i *GroupEntityIndex) GetEntities(groupType GroupType, name string) ([]*v1.
 	}
 
 	// Get the selectorItem the group is associated with.
-	sItem, _ := i.selectorItems[gItem.selectorItemKey]
+	sItem := i.selectorItems[gItem.selectorItemKey]
 	var pods []*v1.Pod
 	var externalEntities []*v1alpha2.ExternalEntity
 	// Get the keys of the labelItems the selectorItem matches.
 	for lKey := range sItem.labelItemKeys {
-		lItem, _ := i.labelItems[lKey]
+		lItem := i.labelItems[lKey]
 		// Collect the entityItems that share the labelItem.
 		for entityItemKey := range lItem.entityItemKeys {
-			eItem, _ := i.entityItems[entityItemKey]
+			eItem := i.entityItems[entityItemKey]
 			switch entity := eItem.entity.(type) {
 			case *v1.Pod:
 				pods = append(pods, entity)
@@ -274,13 +275,13 @@ func (i *GroupEntityIndex) getGroups(entityType entityType, namespace, name stri
 	}
 
 	groups := map[GroupType][]string{}
-	lItem, _ := i.labelItems[eItem.labelItemKey]
+	lItem := i.labelItems[eItem.labelItemKey]
 	// Get the keys of the selectorItems the labelItem matches.
 	for sKey := range lItem.selectorItemKeys {
-		sItem, _ := i.selectorItems[sKey]
+		sItem := i.selectorItems[sKey]
 		// Collect the groupItems that share the selectorItem.
 		for gKey := range sItem.groupItemKeys {
-			gItem, _ := i.groupItems[gKey]
+			gItem := i.groupItems[gKey]
 			groups[gItem.groupType] = append(groups[gItem.groupType], gItem.name)
 		}
 	}
@@ -337,7 +338,7 @@ func (i *GroupEntityIndex) DeleteNamespace(namespace *v1.Namespace) {
 // deleteEntityFromLabelItem disconnects an entityItem from a labelItem.
 // The labelItem will be deleted if it's no longer used by any entityItem.
 func (i *GroupEntityIndex) deleteEntityFromLabelItem(label, entity string) *labelItem {
-	lItem, _ := i.labelItems[label]
+	lItem := i.labelItems[label]
 	lItem.entityItemKeys.Delete(entity)
 	// If the labelItem is still used by any entities, keep it. Otherwise delete it.
 	if len(lItem.entityItemKeys) > 0 {
@@ -392,10 +393,10 @@ func (i *GroupEntityIndex) createLabelItem(entityType entityType, eItem *entityI
 		}
 	}
 	// SelectorItems in the same Namespace may match the labelItem.
-	localSelectorItemKeys, _ := i.selectorItemIndex[entityType][eItem.entity.GetNamespace()]
+	localSelectorItemKeys := i.selectorItemIndex[entityType][eItem.entity.GetNamespace()]
 	scanSelectorItems(localSelectorItemKeys)
 	// Cluster scoped selectorItems may match the labelItem.
-	clusterSelectorItemKeys, _ := i.selectorItemIndex[entityType][emptyNamespace]
+	clusterSelectorItemKeys := i.selectorItemIndex[entityType][emptyNamespace]
 	scanSelectorItems(clusterSelectorItemKeys)
 	return lItem
 }
@@ -508,7 +509,7 @@ func (i *GroupEntityIndex) deleteEntity(entityType entityType, entity metav1.Obj
 // deleteGroupFromSelectorItem disconnects a groupItem from a selectorItem.
 // The selectorItem will be deleted if it's no longer used by any groupItem.
 func (i *GroupEntityIndex) deleteGroupFromSelectorItem(sKey, gKey string) *selectorItem {
-	sItem, _ := i.selectorItems[sKey]
+	sItem := i.selectorItems[sKey]
 	sItem.groupItemKeys.Delete(gKey)
 	// If the selectorItem is still used by any groups, keep it. Otherwise delete it.
 	if len(sItem.groupItemKeys) > 0 {
@@ -560,7 +561,7 @@ func (i *GroupEntityIndex) createSelectorItem(gItem *groupItem) *selectorItem {
 	// Scan potential labelItems and associates the new selectorItem with the matched ones.
 	if sItem.selector.Namespace != "" {
 		// The selector is Namespace scoped, it can only match labelItems in this Namespace.
-		labelItemKeys, _ := i.labelItemIndex[entityType][sItem.selector.Namespace]
+		labelItemKeys := i.labelItemIndex[entityType][sItem.selector.Namespace]
 		i.scanLabelItems(labelItemKeys, sItem)
 	} else if sItem.selector.NamespaceSelector != nil && !sItem.selector.NamespaceSelector.Empty() {
 		// The selector is Cluster scoped and has non-empty NamespaceSelector, scan labelItems in a Namespace only if
@@ -744,12 +745,18 @@ func entityAttrsUpdated(oldEntity, newEntity metav1.Object) bool {
 	switch oldValue := oldEntity.(type) {
 	case *v1.Pod:
 		// For Pod, we only care about PodIP and NodeName update.
+		// Also, when a Pod is updated to terminated state, the selectorItems need to be
+		// notified so that they are excluded from any Network Policy computations in
+		// appliedTo or address groups.
 		// Some other attributes we care about are immutable, e.g. the named ContainerPort.
 		newValue := newEntity.(*v1.Pod)
 		if oldValue.Status.PodIP != newValue.Status.PodIP {
 			return true
 		}
 		if oldValue.Spec.NodeName != newValue.Spec.NodeName {
+			return true
+		}
+		if k8s.IsPodTerminated(oldValue) != k8s.IsPodTerminated(newValue) {
 			return true
 		}
 		return false

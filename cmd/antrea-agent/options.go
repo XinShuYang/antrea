@@ -37,6 +37,8 @@ import (
 	"antrea.io/antrea/pkg/util/env"
 	"antrea.io/antrea/pkg/util/flowexport"
 	"antrea.io/antrea/pkg/util/ip"
+	"antrea.io/antrea/pkg/util/k8s"
+	"antrea.io/antrea/pkg/util/validation"
 	"antrea.io/antrea/pkg/util/yaml"
 )
 
@@ -60,7 +62,7 @@ const (
 	defaultAuditLogsMaxBackups     = 3
 	defaultAuditLogsMaxAge         = 28
 	defaultAuditLogsCompressed     = true
-	defaultPacketInRate            = 500
+	defaultPacketInRate            = 5000
 )
 
 var defaultIGMPQueryVersions = []int{1, 2, 3}
@@ -158,7 +160,9 @@ func (o *Options) validate(args []string) error {
 	if o.config.FQDNCacheMinTTL < 0 {
 		return fmt.Errorf("fqdnCacheMinTTL must be greater than or equal to 0")
 	}
-
+	if err := validation.ValidatePort(o.config.APIPort); err != nil {
+		return fmt.Errorf("apiPort is invalid: %w", err)
+	}
 	if o.config.NodeType == config.ExternalNode.String() {
 		o.nodeType = config.ExternalNode
 		return o.validateExternalNodeOptions()
@@ -256,6 +260,19 @@ func (o *Options) validateAntreaProxyConfig(encapMode config.TrafficEncapModeTyp
 				return fmt.Errorf("invalid NodePort IP address `%s`: %w", nodePortAddress, err)
 			}
 		}
+
+		if addr := o.config.AntreaProxy.ServiceHealthCheckServerBindAddress; addr != "" {
+			hostStr, portStr, err := net.SplitHostPort(addr)
+			if err != nil {
+				return fmt.Errorf("invalid health server bind address %q: %w", addr, err)
+			}
+			if net.ParseIP(hostStr) == nil {
+				return fmt.Errorf("invalid IP address in health server bind address: %q", hostStr)
+			}
+			if err := validation.ValidatePortString(portStr); err != nil {
+				return fmt.Errorf("invalid port in health server bind address: %q: %w", portStr, err)
+			}
+		}
 	}
 
 	ok, defaultLoadBalancerMode := config.GetLoadBalancerModeFromStr(o.config.AntreaProxy.DefaultLoadBalancerMode)
@@ -275,7 +292,10 @@ func (o *Options) validateAntreaProxyConfig(encapMode config.TrafficEncapModeTyp
 }
 
 func (o *Options) validateFlowExporterConfig() error {
-	if features.DefaultFeatureGate.Enabled(features.FlowExporter) {
+	if features.DefaultFeatureGate.Enabled(features.FlowExporter) && o.config.FlowExporter.Enable {
+		if features.DefaultFeatureGate.Enabled(features.AntreaIPAM) {
+			klog.InfoS("The FlowExporter feature does not support AntreaIPAM Pods")
+		}
 		host, port, proto, err := flowexport.ParseFlowCollectorAddr(o.config.FlowExporter.FlowCollectorAddr, defaultFlowCollectorPort, defaultFlowCollectorTransport)
 		if err != nil {
 			return err
@@ -328,11 +348,14 @@ func (o *Options) validateFlowExporterConfig() error {
 	return nil
 }
 
-func (o *Options) validateMulticastConfig(encryptionMode config.TrafficEncryptionModeType) error {
+func (o *Options) validateMulticastConfig(encapMode config.TrafficEncapModeType, encryptionMode config.TrafficEncryptionModeType) error {
 	if features.DefaultFeatureGate.Enabled(features.Multicast) && o.config.Multicast.Enable {
 		var err error
 		if encryptionMode != config.TrafficEncryptionModeNone {
 			return fmt.Errorf("Multicast feature doesn't work with the current encryption mode '%s'", encryptionMode)
+		}
+		if encapMode.IsNetworkPolicyOnly() {
+			return fmt.Errorf("Multicast feature doesn't work with the networkPolicyOnly mode")
 		}
 		if o.config.Multicast.IGMPQueryInterval != "" {
 			o.igmpQueryInterval, err = time.ParseDuration(o.config.Multicast.IGMPQueryInterval)
@@ -392,6 +415,12 @@ func (o *Options) validateMulticlusterConfig(encapMode config.TrafficEncapModeTy
 	if encapMode.SupportsEncap() && encryptionMode == config.TrafficEncryptionModeWireGuard {
 		return fmt.Errorf("Multi-cluster Gateway doesn't support in-cluster WireGuard encryption")
 	}
+
+	if multiclusterEncryptionMode == config.TrafficEncryptionModeWireGuard {
+		if err := validation.ValidatePort(o.config.Multicluster.WireGuard.Port); err != nil {
+			return fmt.Errorf("multicluster.wireGuard.port is invalid: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -419,6 +448,9 @@ func (o *Options) setK8sNodeDefaultOptions() {
 	}
 	if o.config.AntreaProxy.ProxyLoadBalancerIPs == nil {
 		o.config.AntreaProxy.ProxyLoadBalancerIPs = ptr.To(true)
+	}
+	if o.config.AntreaProxy.ServiceHealthCheckServerBindAddress == "" {
+		o.config.AntreaProxy.ServiceHealthCheckServerBindAddress = net.JoinHostPort(net.IPv4zero.String(), fmt.Sprint(apis.AntreaProxyHealthServerPort))
 	}
 	if o.config.ServiceCIDR == "" {
 		//It's okay to set the default value of this field even when AntreaProxy is enabled and the field is not used.
@@ -503,14 +535,23 @@ func (o *Options) setK8sNodeDefaultOptions() {
 	if o.config.Egress.SNATFullyRandomPorts == nil {
 		o.config.Egress.SNATFullyRandomPorts = ptr.To(o.config.SNATFullyRandomPorts)
 	}
+	if o.config.Egress.UniqueMACForSubInterfaces == nil {
+		o.config.Egress.UniqueMACForSubInterfaces = ptr.To(true)
+	}
+	if o.config.HostNetworkAcceleration.Enable == nil {
+		o.config.HostNetworkAcceleration.Enable = ptr.To(true)
+	}
+	if o.config.HostNetworkMode == "" {
+		o.config.HostNetworkMode = config.HostNetworkModeIPTables.String()
+	}
 }
 
 func (o *Options) validateEgressConfig(encapMode config.TrafficEncapModeType) error {
 	if !features.DefaultFeatureGate.Enabled(features.Egress) {
 		return nil
 	}
-	if encapMode != config.TrafficEncapModeEncap {
-		klog.InfoS("The Egress feature gate is enabled, but it won't work because it is only applicable to the encap mode")
+	if !encapMode.SupportsEncap() {
+		klog.InfoS("The Egress feature gate is enabled, but it won't work because it requires either encap or hybrid mode")
 		return nil
 	}
 	for _, cidr := range o.config.Egress.ExceptCIDRs {
@@ -531,9 +572,30 @@ func (o *Options) validateK8sNodeOptions() error {
 		o.config.TunnelType != ovsconfig.GRETunnel && o.config.TunnelType != ovsconfig.STTTunnel {
 		return fmt.Errorf("tunnel type %s is invalid", o.config.TunnelType)
 	}
+
+	if len(o.config.KubeAPIServerOverride) != 0 {
+		_, port := k8s.ParseKubeAPIServerOverride(o.config.KubeAPIServerOverride)
+		if err := validation.ValidatePortString(port); err != nil {
+			return fmt.Errorf("error in kubeAPIServerOverride '%s': %w", o.config.KubeAPIServerOverride, err)
+		}
+	}
+	if err := validation.ValidatePort(o.config.ClusterMembershipPort); err != nil {
+		return fmt.Errorf("clusterPort is invalid: %w", err)
+	}
+	// Zero for tunnelPort means Antrea will use the assigned IANA port for a given tunnel protocol.
+	if o.config.TunnelPort != 0 {
+		if err := validation.ValidatePort(int(o.config.TunnelPort)); err != nil {
+			return fmt.Errorf("tunnelPort is invalid: %w", err)
+		}
+	}
 	ok, encryptionMode := config.GetTrafficEncryptionModeFromStr(o.config.TrafficEncryptionMode)
 	if !ok {
 		return fmt.Errorf("TrafficEncryptionMode %s is unknown", o.config.TrafficEncryptionMode)
+	}
+	if encryptionMode == config.TrafficEncryptionModeWireGuard {
+		if err := validation.ValidatePort(o.config.WireGuard.Port); err != nil {
+			return fmt.Errorf("wireGuard.port is invalid: %w", err)
+		}
 	}
 	ok, encapMode := config.GetTrafficEncapModeFromStr(o.config.TrafficEncapMode)
 	if !ok {
@@ -546,7 +608,9 @@ func (o *Options) validateK8sNodeOptions() error {
 	if ipsecAuthMode == config.IPsecAuthenticationModeCert && !features.DefaultFeatureGate.Enabled(features.IPsecCertAuth) {
 		return fmt.Errorf("IPsec AuthenticationMode %s requires feature gate %s to be enabled", o.config.TrafficEncapMode, features.IPsecCertAuth)
 	}
-
+	if encapMode != config.TrafficEncapModeEncap && encryptionMode == config.TrafficEncryptionModeWireGuard {
+		return fmt.Errorf("WireGuard is not applicable to the %s mode", o.config.TrafficEncapMode)
+	}
 	// Check if the enabled features are supported on the OS.
 	if err := o.checkUnsupportedFeatures(); err != nil {
 		return err
@@ -573,7 +637,7 @@ func (o *Options) validateK8sNodeOptions() error {
 			return fmt.Errorf("TrafficEncryptionMode %s may only be enabled in %s mode", encryptionMode, config.TrafficEncapModeEncap)
 		}
 	}
-	if o.config.NoSNAT && !(encapMode == config.TrafficEncapModeNoEncap || encapMode == config.TrafficEncapModeNetworkPolicyOnly) {
+	if o.config.NoSNAT && (encapMode != config.TrafficEncapModeNoEncap && encapMode != config.TrafficEncapModeNetworkPolicyOnly) {
 		return fmt.Errorf("noSNAT is only applicable to the %s mode", config.TrafficEncapModeNoEncap)
 	}
 	if encapMode == config.TrafficEncapModeNetworkPolicyOnly {
@@ -584,7 +648,7 @@ func (o *Options) validateK8sNodeOptions() error {
 	if err := o.validateFlowExporterConfig(); err != nil {
 		return fmt.Errorf("failed to validate flow exporter config: %v", err)
 	}
-	if err := o.validateMulticastConfig(encryptionMode); err != nil {
+	if err := o.validateMulticastConfig(encapMode, encryptionMode); err != nil {
 		return fmt.Errorf("failed to validate multicast config: %v", err)
 	}
 	if err := o.validateEgressConfig(encapMode); err != nil {
@@ -602,9 +666,12 @@ func (o *Options) validateK8sNodeOptions() error {
 
 	if o.config.DNSServerOverride != "" {
 		hostPort := ip.AppendPortIfMissing(o.config.DNSServerOverride, "53")
-		_, _, err := net.SplitHostPort(hostPort)
+		_, port, err := net.SplitHostPort(hostPort)
 		if err != nil {
-			return fmt.Errorf("dnsServerOverride %s is invalid: %v", o.config.DNSServerOverride, err)
+			return fmt.Errorf("dnsServerOverride %s is invalid: %w", o.config.DNSServerOverride, err)
+		}
+		if err := validation.ValidatePortString(port); err != nil {
+			return fmt.Errorf("port in dnsServerOverride %s is invalid: %w", o.config.DNSServerOverride, err)
 		}
 		o.dnsServerOverride = hostPort
 	}
@@ -617,6 +684,10 @@ func (o *Options) validateK8sNodeOptions() error {
 	// after all fields in the Options struct have been initialized (e.g., enableProxy).
 	if err := o.validateConfigForPlatform(); err != nil {
 		return err
+	}
+
+	if err := o.validateHostNetworkModeOptions(); err != nil {
+		return fmt.Errorf("failed to validate host network mode options: %w", err)
 	}
 
 	return nil
@@ -733,6 +804,10 @@ func (o *Options) validateSecondaryNetworkConfig() error {
 		return nil
 	}
 
+	if !features.DefaultFeatureGate.Enabled(features.AntreaIPAM) {
+		return fmt.Errorf("SecondaryNetwork feature requires the AntreaIPAM feature gate to be enabled")
+	}
+
 	if len(o.config.SecondaryNetwork.OVSBridges) == 0 {
 		return nil
 	}
@@ -762,6 +837,19 @@ func (o *Options) validateNodePortLocalConfig() error {
 		}
 		o.nplStartPort = startPort
 		o.nplEndPort = endPort
+	}
+	return nil
+}
+
+func (o *Options) validateHostNetworkModeOptions() error {
+	ok, networkMode := config.GetHostNetworkModeFromStr(o.config.HostNetworkMode)
+	if !ok {
+		return fmt.Errorf("HostNetworkMode %q is unknown", o.config.HostNetworkMode)
+	}
+	if networkMode == config.HostNetworkModeNFTables {
+		if !features.DefaultFeatureGate.Enabled(features.NFTablesHostNetworkMode) {
+			return fmt.Errorf("HostNetworkMode nftables requires feature gate `NFTablesHostNetworkMode` to be enabled")
+		}
 	}
 	return nil
 }

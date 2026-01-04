@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Copyright 2021 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,7 +35,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
-	k8sv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/util/workqueue"
 
@@ -50,7 +52,6 @@ import (
 	crdv1b1 "antrea.io/antrea/pkg/apis/crd/v1beta1"
 	"antrea.io/antrea/pkg/client/clientset/versioned"
 	fakeversioned "antrea.io/antrea/pkg/client/clientset/versioned/fake"
-	"antrea.io/antrea/pkg/client/clientset/versioned/scheme"
 	crdinformers "antrea.io/antrea/pkg/client/informers/externalversions"
 	"antrea.io/antrea/pkg/util/channel"
 	"antrea.io/antrea/pkg/util/ip"
@@ -92,7 +93,6 @@ func (d *fakeLocalIPDetector) Run(stopCh <-chan struct{}) {
 }
 
 func (d *fakeLocalIPDetector) AddEventHandler(handler ipassigner.LocalIPEventHandler) {
-	return
 }
 
 func (d *fakeLocalIPDetector) HasSynced() bool {
@@ -131,14 +131,14 @@ func (c *fakeSingleNodeCluster) SelectNodeForIP(ip, externalIPPool string, filte
 }
 
 func (c *fakeSingleNodeCluster) AliveNodes() sets.Set[string] {
-	return sets.New[string](c.node)
+	return sets.New(c.node)
 }
 
 func (c *fakeSingleNodeCluster) AddClusterEventHandler(handler memberlist.ClusterNodeEventHandler) {}
 
 func mockNewIPAssigner(ipAssigner ipassigner.IPAssigner) func() {
 	originalNewIPAssigner := newIPAssigner
-	newIPAssigner = func(_, _ string, _ linkmonitor.Interface) (ipassigner.IPAssigner, error) {
+	newIPAssigner = func(_, _ string, _ linkmonitor.Interface, _ bool) (ipassigner.IPAssigner, error) {
 		return ipAssigner, nil
 	}
 	return func() {
@@ -176,7 +176,7 @@ func newFakeController(t *testing.T, initObjects []runtime.Object) *fakeControll
 	k8sClient := fake.NewSimpleClientset()
 	informerFactory := informers.NewSharedInformerFactory(k8sClient, 0)
 	nodeInformer := informerFactory.Core().V1().Nodes()
-	localIPDetector := &fakeLocalIPDetector{localIPs: sets.New[string](fakeLocalEgressIP1, fakeLocalEgressIP2)}
+	localIPDetector := &fakeLocalIPDetector{localIPs: sets.New(fakeLocalEgressIP1, fakeLocalEgressIP2)}
 
 	ifaceStore := interfacestore.NewInterfaceStore()
 	addPodInterface(ifaceStore, "ns1", "pod1", 1)
@@ -205,6 +205,7 @@ func newFakeController(t *testing.T, initObjects []runtime.Object) *fakeControll
 		true,
 		true,
 		nil,
+		true,
 	)
 	egressController.localIPDetector = localIPDetector
 	return &fakeController{
@@ -312,7 +313,7 @@ func TestSyncEgress(t *testing.T) {
 					{Pod: &cpv1b2.PodReference{Name: "pod3", Namespace: "ns3"}},
 				},
 			},
-			newLocalIPs: sets.New[string](fakeRemoteEgressIP1),
+			newLocalIPs: sets.New(fakeRemoteEgressIP1),
 			expectedEgresses: []*crdv1b1.Egress{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "egressA", UID: "uidA"},
@@ -908,12 +909,14 @@ func TestSyncEgress(t *testing.T) {
 				mockIPAssigner.EXPECT().AssignIP(fakeLocalEgressIP1, &crdv1b1.SubnetInfo{Gateway: fakeGatewayIP, PrefixLength: 16, VLAN: 10}, true).Return(true, nil)
 				mockIPAssigner.EXPECT().GetInterfaceID(&crdv1b1.SubnetInfo{Gateway: fakeGatewayIP, PrefixLength: 16, VLAN: 10}).Return(20, true)
 				mockRouteClient.EXPECT().AddEgressRoutes(uint32(101), 20, net.ParseIP(fakeGatewayIP), 16)
-				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(1))
+				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(1), false)
 
 				// forceAdvertise depends on how fast the Egress status update is reflected in the informer cache, which doesn't really matter.
 				mockIPAssigner.EXPECT().AssignIP(fakeLocalEgressIP1, &crdv1b1.SubnetInfo{Gateway: fakeGatewayIP, PrefixLength: 16, VLAN: 10}, gomock.Any()).Return(false, nil)
 			},
 			expectedEvents: []string{
+				"Assigned Egress egressA with IP 1.1.1.1 on Node node1",
+				// Expect a second Event after adding the SubnetInfo to the EIP.
 				"Assigned Egress egressA with IP 1.1.1.1 on Node node1",
 			},
 		},
@@ -964,19 +967,21 @@ func TestSyncEgress(t *testing.T) {
 				mockRouteClient.EXPECT().AddSNATRule(net.ParseIP(fakeLocalEgressIP1), uint32(1))
 				mockIPAssigner.EXPECT().GetInterfaceID(&crdv1b1.SubnetInfo{Gateway: fakeGatewayIP, PrefixLength: 16, VLAN: 10}).Return(20, true)
 				mockRouteClient.EXPECT().AddEgressRoutes(uint32(101), 20, net.ParseIP(fakeGatewayIP), 16)
-				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(1))
+				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(1), false)
 
 				mockIPAssigner.EXPECT().AssignIP(fakeLocalEgressIP1, &crdv1b1.SubnetInfo{Gateway: fakeGatewayIP2, PrefixLength: 16}, true).Return(true, nil)
-				mockRouteClient.EXPECT().DeleteEgressRule(uint32(101), uint32(1))
+				mockRouteClient.EXPECT().DeleteEgressRule(uint32(101), uint32(1), false)
 				mockRouteClient.EXPECT().DeleteEgressRoutes(uint32(101))
 				mockIPAssigner.EXPECT().GetInterfaceID(&crdv1b1.SubnetInfo{Gateway: fakeGatewayIP2, PrefixLength: 16}).Return(30, true)
 				mockRouteClient.EXPECT().AddEgressRoutes(uint32(101), 30, net.ParseIP(fakeGatewayIP2), 16)
-				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(1))
+				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(1), false)
 
 				// forceAdvertise depends on how fast the Egress status update is reflected in the informer cache, which doesn't really matter.
 				mockIPAssigner.EXPECT().AssignIP(fakeLocalEgressIP1, &crdv1b1.SubnetInfo{Gateway: fakeGatewayIP2, PrefixLength: 16}, gomock.Any()).Return(false, nil)
 			},
 			expectedEvents: []string{
+				"Assigned Egress egressA with IP 1.1.1.1 on Node node1",
+				// Expect a second Event after updating the SubnetInfo of the EIP.
 				"Assigned Egress egressA with IP 1.1.1.1 on Node node1",
 			},
 		},
@@ -1033,13 +1038,13 @@ func TestSyncEgress(t *testing.T) {
 				mockRouteClient.EXPECT().AddSNATRule(net.ParseIP(fakeLocalEgressIP1), uint32(1))
 				mockIPAssigner.EXPECT().GetInterfaceID(&crdv1b1.SubnetInfo{Gateway: fakeGatewayIP, PrefixLength: 16, VLAN: 10}).Return(20, true)
 				mockRouteClient.EXPECT().AddEgressRoutes(uint32(101), 20, net.ParseIP(fakeGatewayIP), 16)
-				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(1))
+				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(1), false)
 
 				mockIPAssigner.EXPECT().AssignIP(fakeLocalEgressIP2, &crdv1b1.SubnetInfo{Gateway: fakeGatewayIP, PrefixLength: 16, VLAN: 10}, true).Return(true, nil)
 				mockOFClient.EXPECT().InstallSNATMarkFlows(net.ParseIP(fakeLocalEgressIP2), uint32(2))
 				mockOFClient.EXPECT().InstallPodSNATFlows(uint32(2), net.ParseIP(fakeLocalEgressIP2), uint32(2))
 				mockRouteClient.EXPECT().AddSNATRule(net.ParseIP(fakeLocalEgressIP2), uint32(2))
-				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(2))
+				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(2), false)
 
 				// forceAdvertise depends on how fast the Egress status update is reflected in the informer cache, which doesn't really matter.
 				mockIPAssigner.EXPECT().AssignIP(fakeLocalEgressIP2, &crdv1b1.SubnetInfo{Gateway: fakeGatewayIP, PrefixLength: 16, VLAN: 10}, gomock.Any()).Return(false, nil)
@@ -1086,10 +1091,10 @@ func TestSyncEgress(t *testing.T) {
 				mockRouteClient.EXPECT().AddSNATRule(net.ParseIP(fakeLocalEgressIP1), uint32(1))
 				mockIPAssigner.EXPECT().GetInterfaceID(&crdv1b1.SubnetInfo{Gateway: fakeGatewayIP, PrefixLength: 16, VLAN: 10}).Return(20, true)
 				mockRouteClient.EXPECT().AddEgressRoutes(uint32(101), 20, net.ParseIP(fakeGatewayIP), 16)
-				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(1))
+				mockRouteClient.EXPECT().AddEgressRule(uint32(101), uint32(1), false)
 
 				mockIPAssigner.EXPECT().UnassignIP(fakeLocalEgressIP1).Return(true, nil)
-				mockRouteClient.EXPECT().DeleteEgressRule(uint32(101), uint32(1))
+				mockRouteClient.EXPECT().DeleteEgressRule(uint32(101), uint32(1), false)
 				mockRouteClient.EXPECT().DeleteEgressRoutes(uint32(101))
 				mockOFClient.EXPECT().UninstallSNATMarkFlows(uint32(1))
 				mockOFClient.EXPECT().UninstallPodSNATFlows(uint32(1))
@@ -1113,9 +1118,22 @@ func TestSyncEgress(t *testing.T) {
 			if tt.maxEgressIPsPerNode > 0 {
 				c.egressIPScheduler.maxEgressIPsPerNode = tt.maxEgressIPsPerNode
 			}
-			c.eventBroadcaster.StartRecordingToSink(&k8sv1.EventSinkImpl{
-				Interface: c.k8sClient.CoreV1().Events(""),
+			events := make([]*v1.Event, 0)
+			var eventsMutex sync.Mutex
+			c.eventBroadcaster.StartEventWatcher(func(e *v1.Event) {
+				eventsMutex.Lock()
+				defer eventsMutex.Unlock()
+				events = append(events, e)
 			})
+			getEventMessages := func() []string {
+				eventsMutex.Lock()
+				defer eventsMutex.Unlock()
+				messages := make([]string, len(events))
+				for idx := range events {
+					messages[idx] = events[idx].Message
+				}
+				return messages
+			}
 
 			stopCh := make(chan struct{})
 			defer close(stopCh)
@@ -1171,12 +1189,12 @@ func TestSyncEgress(t *testing.T) {
 				require.NoError(t, err)
 				assert.True(t, k8s.SemanticIgnoringTime.DeepEqual(expectedEgress, gotEgress))
 			}
-			assert.EventuallyWithT(t, func(collect *assert.CollectT) {
-				events, err := c.k8sClient.CoreV1().Events("").Search(scheme.Scheme, tt.existingEgress)
-				if assert.NoError(collect, err) && assert.Len(collect, events.Items, len(tt.expectedEvents)) {
-					for ind, items := range events.Items {
-						assert.Contains(collect, items.Message, tt.expectedEvents[ind])
-					}
+			assert.EventuallyWithT(t, func(t *assert.CollectT) {
+				messages := getEventMessages()
+				if len(tt.expectedEvents) == 0 {
+					assert.Empty(t, messages, "Expected no events")
+				} else {
+					assert.Equal(t, tt.expectedEvents, messages)
 				}
 			}, 2*time.Second, 200*time.Millisecond)
 		})
@@ -1259,7 +1277,7 @@ func TestExternalIPPoolUpdateShouldSyncEgress(t *testing.T) {
 		require.Eventually(t, func() bool {
 			return c.queue.Len() == len(items)
 		}, time.Second, 10*time.Millisecond)
-		expectedItems := sets.New[string](items...)
+		expectedItems := sets.New(items...)
 		for i := 0; i < len(items); i++ {
 			item, _ := c.queue.Get()
 			c.queue.Done(item)
@@ -1637,7 +1655,7 @@ func TestUpdateEgressStatus(t *testing.T) {
 				return false, nil, nil
 			})
 
-			localIPDetector := &fakeLocalIPDetector{localIPs: sets.New[string](fakeLocalEgressIP1)}
+			localIPDetector := &fakeLocalIPDetector{localIPs: sets.New(fakeLocalEgressIP1)}
 			cluster := newFakeMemberlistCluster([]string{tt.selectedNodeForIP})
 			c := &EgressController{crdClient: fakeClient, nodeName: fakeNode, localIPDetector: localIPDetector, cluster: cluster}
 			err := c.updateEgressStatus(tt.egress, tt.egressIP, tt.scheduleErr)
@@ -1688,12 +1706,10 @@ func TestGetEgress(t *testing.T) {
 		podName string
 	}
 	tests := []struct {
-		name               string
-		args               args
-		expectedEgressName string
-		expectedEgressIP   string
-		expectedEgressNode string
-		expectedErr        string
+		name           string
+		args           args
+		expectedEgress *crdv1b1.Egress
+		expectedErr    string
 	}{
 		{
 			name: "local egress applied on a pod",
@@ -1701,9 +1717,7 @@ func TestGetEgress(t *testing.T) {
 				ns:      "ns1",
 				podName: "pod1",
 			},
-			expectedEgressName: "egressA",
-			expectedEgressIP:   fakeLocalEgressIP1,
-			expectedEgressNode: fakeNode,
+			expectedEgress: egress,
 		},
 		{
 			name: "no local egress applied on a pod",
@@ -1716,15 +1730,18 @@ func TestGetEgress(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotEgressName, gotEgressIP, gotEgressNode, err := c.GetEgress(tt.args.ns, tt.args.podName)
+			gotEgress, err := c.GetEgress(tt.args.ns, tt.args.podName)
 			if tt.expectedErr == "" {
 				require.NoError(t, err)
+				assert.Equal(t, types.EgressConfig{
+					Name:       tt.expectedEgress.Name,
+					UID:        tt.expectedEgress.UID,
+					EgressIP:   tt.expectedEgress.Status.EgressIP,
+					EgressNode: tt.expectedEgress.Status.EgressNode,
+				}, gotEgress)
 			} else {
 				require.EqualError(t, err, tt.expectedErr)
 			}
-			assert.Equal(t, tt.expectedEgressName, gotEgressName)
-			assert.Equal(t, tt.expectedEgressIP, gotEgressIP)
-			assert.Equal(t, tt.expectedEgressNode, gotEgressNode)
 		})
 	}
 }
@@ -1828,7 +1845,7 @@ func checkQueueItemExistence[T comparable](t *testing.T, queue workqueue.TypedRa
 	require.Eventually(t, func() bool {
 		return len(items) == queue.Len()
 	}, time.Second, 10*time.Millisecond, "Didn't find enough items in the queue")
-	expectedItems := sets.New[T](items...)
+	expectedItems := sets.New(items...)
 	actualItems := sets.New[T]()
 	for i := 0; i < len(expectedItems); i++ {
 		key, _ := queue.Get()

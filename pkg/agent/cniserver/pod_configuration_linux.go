@@ -19,6 +19,7 @@ package cniserver
 
 import (
 	"fmt"
+	"net"
 
 	current "github.com/containernetworking/cni/pkg/types/100"
 	"k8s.io/client-go/tools/cache"
@@ -38,18 +39,15 @@ func (pc *podConfigurator) connectInterfaceToOVS(
 	containerAccess *containerAccessArbitrator) (*interfacestore.InterfaceConfig, error) {
 	// Use the outer veth interface name as the OVS port name.
 	ovsPortName := hostIface.Name
-	containerConfig := buildContainerConfig(ovsPortName, containerID, podName, podNamespace, containerIface, ips, vlanID)
-	return containerConfig, pc.connectInterfaceToOVSCommon(ovsPortName, netNS, containerConfig)
-}
+	containerConfig := buildContainerConfig(ovsPortName, containerID, podName, podNamespace,
+		netNS, containerIface, ips, vlanID)
 
-func (pc *podConfigurator) connectInterfaceToOVSCommon(ovsPortName, netNS string, containerConfig *interfacestore.InterfaceConfig) error {
-	// create OVS Port and add attach container configuration into external_ids
-	containerID := containerConfig.ContainerID
-	klog.V(2).Infof("Adding OVS port %s for container %s", ovsPortName, containerID)
+	// Create an OVS Port and add container configuration into external_ids.
 	ovsAttachInfo := BuildOVSPortExternalIDs(containerConfig)
+	klog.V(2).InfoS("Adding OVS port for container", "port", ovsPortName, "container", containerID)
 	portUUID, err := pc.createOVSPort(ovsPortName, ovsAttachInfo, containerConfig.VLANID)
 	if err != nil {
-		return fmt.Errorf("failed to add OVS port for container %s: %v", containerID, err)
+		return nil, fmt.Errorf("failed to add OVS port for container %s: %v", containerID, err)
 	}
 	// Remove OVS port if any failure occurs in later manipulation.
 	defer func() {
@@ -64,11 +62,11 @@ func (pc *podConfigurator) connectInterfaceToOVSCommon(ovsPortName, netNS string
 		// GetOFPort will wait for up to 1 second for OVSDB to report the OFPort number.
 		ofPort, err = pc.ovsBridgeClient.GetOFPort(ovsPortName, false)
 		if err != nil {
-			return fmt.Errorf("failed to get of_port of OVS port %s: %v", ovsPortName, err)
+			return nil, fmt.Errorf("failed to get of_port of OVS port %s: %v", ovsPortName, err)
 		}
 		klog.V(2).InfoS("Setting up Openflow entries for Pod interface", "container", containerID, "port", ovsPortName)
 		if err = pc.ofClient.InstallPodFlows(ovsPortName, containerConfig.IPs, containerConfig.MAC, uint32(ofPort), containerConfig.VLANID, nil); err != nil {
-			return fmt.Errorf("failed to add Openflow entries for container %s: %v", containerID, err)
+			return nil, fmt.Errorf("failed to add Openflow entries for container %s: %v", containerID, err)
 		}
 	}
 
@@ -88,15 +86,15 @@ func (pc *podConfigurator) connectInterfaceToOVSCommon(ovsPortName, netNS string
 		}
 		pc.podUpdateNotifier.Notify(event)
 	}
-	return nil
+	return containerConfig, nil
 }
 
 func (pc *podConfigurator) configureInterfaces(
 	podName, podNamespace, containerID, containerNetNS string,
 	containerIFDev string, mtu int, sriovVFDeviceID string,
-	result *ipam.IPAMResult, createOVSPort bool, containerAccess *containerAccessArbitrator) error {
+	result *ipam.IPAMResult, createOVSPort bool, containerAccess *containerAccessArbitrator, mac net.HardwareAddr) error {
 	return pc.configureInterfacesCommon(podName, podNamespace, containerID, containerNetNS,
-		containerIFDev, mtu, sriovVFDeviceID, result, containerAccess)
+		containerIFDev, mtu, sriovVFDeviceID, result, containerAccess, mac)
 }
 
 // reconcileMissingPods is never called on Linux, see reconcile logic.

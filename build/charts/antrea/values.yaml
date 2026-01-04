@@ -15,6 +15,12 @@ controllerImage:
 # -- Determines how traffic is encapsulated. It must be one of "encap",
 # "noEncap", "hybrid", or "networkPolicyOnly".
 trafficEncapMode: "encap"
+# -- The aggregated cluster-wide Pod CIDRs (not the per-Node Pod CIDRs).
+# This field is applicable only in networkPolicyOnly mode and ignored in other traffic modes. It can be left empty,
+# but it is recommended to specify the correct Pod CIDRs string, as Traceflow may not work correctly for inter-Node
+# Pod-to-Pod traffic otherwise.
+# Example: "10.10.0.0/16" for IPv4-only, or "10.10.0.0/16,fd00::/12" for dual-stack.
+podCIDRs: ""
 # -- Tunnel protocol used for encapsulating traffic across Nodes. It must be one
 # of "geneve", "vxlan", "gre", "stt".
 tunnelType: "geneve"
@@ -83,7 +89,7 @@ defaultMTU: 0
 # messages sent to antrea-agent. The number stands for the rate as packets per
 # second(pps) and the burst size will be automatically set to twice the rate.
 # When the rate and burst size are exceeded, new packets will be dropped.
-packetInRate: 500
+packetInRate: 5000
 
 ovs:
   # -- Name of the OVS bridge antrea-agent will create and use.
@@ -123,6 +129,10 @@ egress:
   # snatFullyRandomPorts configuration, but this field can be used as an
   # override.
   snatFullyRandomPorts:
+  # -- Enable Egress VLAN sub-interfaces to use unique MAC addresses instead of
+  # inheriting the parent interface’s MAC. Useful in cloud environments that require
+  # unique MAC addresses per interface.
+  uniqueMACForSubInterfaces: true
 
 nodePortLocal:
   # -- Enable the NodePortLocal feature.
@@ -156,9 +166,13 @@ antreaProxy:
   # -- Disables the health check server run by Antrea Proxy, which provides health
   # information about Services of type LoadBalancer with externalTrafficPolicy set to
   # Local, when proxyAll is enabled. This avoids race conditions between kube-proxy
-  # and Antrea proxy, with both trying to bind to the same addresses, when proxyAll
+  # and Antrea Proxy, with both trying to bind to the same address, when proxyAll
   # is enabled while kube-proxy has not been removed.
   disableServiceHealthCheckServer: false
+  # -- The value of the IP address and the port on which AntreaProxy health server listens when proxyAll is enabled. This
+  # server is functionally equivalent to the one of kube-proxy. If it is not specified, it will be automatically set
+  # to "0.0.0.0:10256".
+  serviceHealthCheckServerBindAddress: ""
 
 nodeIPAM:
   # -- Enable Node IPAM in Antrea
@@ -226,12 +240,16 @@ secondaryNetwork:
   # on the Node, antrea-agent will create it based on the configuration.
   # The following configuration specifies an OVS bridge with name "br1" and a
   # physical interface "eth1":
-  # [{bridgeName: "br1", physicalInterfaces: ["eth1"]}]
+  # [{bridgeName: "br1", physicalInterfaces: ["eth1"], enableMulticastSnooping: false}]
   ovsBridges: []
 
 agent:
   # -- Port for the antrea-agent APIServer to serve on.
   apiPort: 10350
+  # -- clusterPort is the server port used by the antrea-agent to run a gossip-based cluster
+  # membership protocol. Currently it's used only when the Egress feature is enabled.
+  # Defaults to 10351
+  clusterPort: 10351
   # -- Enable metrics exposure via Prometheus.
   enablePrometheusMetrics: true
   # -- Annotations to be added to antrea-agent Pods.
@@ -276,6 +294,18 @@ agent:
   # resources socket is mounted into antrea-agent Pods. Setting it to an empty
   # value disables the mounting.
   kubeletRootDir: "/var/lib/kubelet"
+  antreaSysctlInit:
+    # -- Enable the sysctl override. When enabled, the init container will do the process.
+    enable: false
+    # -- Path to the sysctl configuration directory on the host.
+    hostSysctlDir: "/etc/sysctl.d"
+    # -- Resource requests and limits for the antrea-sysctl-init init container.
+    resources:
+      requests:
+        cpu: "50m"
+    securityContext:
+      # -- Whether to run the antrea-sysctl-init container as privileged.
+      privileged: true
   installCNI:
     # -- Extra environment variables to be injected into install-cni.
     extraEnv: {}
@@ -284,7 +314,7 @@ agent:
       requests:
         cpu: "100m"
     securityContext:
-      # -- Run the install-cni container as privileged.
+      # -- Whether to run the install-cni container as privileged.
       privileged: false
       # -- Capabilities for the install-cni initContainer.
       capabilities:
@@ -306,7 +336,7 @@ agent:
       requests:
         cpu: "200m"
     securityContext:
-      # -- Run the antrea-agent container as privileged. Currently we require
+      # -- Whether to run the antrea-agent container as privileged. Currently we require
       # this to be true (for sysctl configurations), but we may support running
       # as non-privileged in the future.
       privileged: true
@@ -326,7 +356,7 @@ agent:
       requests:
         cpu: "200m"
     securityContext:
-      # -- Run the antrea-ovs container as privileged.
+      # -- Whether to run the antrea-ovs container as privileged.
       privileged: false
       # -- Capabilities for the antrea-ovs container.
       capabilities:
@@ -342,7 +372,7 @@ agent:
       requests:
         cpu: "50m"
     securityContext:
-      # -- Run the antrea-ipsec container as privileged.
+      # -- Whether to run the antrea-ipsec container as privileged.
       privileged: false
       # -- Capabilities for the antrea-ipsec container.
       capabilities:
@@ -409,7 +439,7 @@ flowExporter:
   # -- IPFIX collector address as a string with format <HOST>:[<PORT>][:<PROTO>].
   # If the collector is running in-cluster as a Service, set <HOST> to
   # <Service namespace>/<Service name>.
-  flowCollectorAddr: "flow-aggregator/flow-aggregator:4739:tls"
+  flowCollectorAddr: "flow-aggregator/flow-aggregator:14739:grpc"
   # -- Determines how often the flow exporter polls for new connections.
   flowPollInterval: "5s"
   # -- timeout after which a flow record is sent to the collector for active
@@ -418,6 +448,10 @@ flowExporter:
   # -- timeout after which a flow record is sent to the collector for idle
   # flows.
   idleFlowExportTimeout: "15s"
+  # -- (list) Filter which flows are exported based on protocol. A nil
+  # protocolFilter allows all flows. Supported protocols are "tcp", "udp"
+  # and "sctp".
+  protocolFilter:
 
 cni:
   # -- Chained plugins to use alongside antrea-cni.
@@ -429,6 +463,9 @@ cni:
   # -- CNI binaries shipped with Antrea for which installation should be
   # skipped.
   skipBinaries: []
+  # -- The file permission for 10-antrea.conflist when it is installed in
+  # the CNI configuration directory on the host.
+  configFileMode: "644"
 
 webhooks:
   labelsMutator:
@@ -467,3 +504,15 @@ testing:
   coverage: false
   simulator:
     enable: false
+
+hostNetworkAcceleration:
+  # -- Enable to accelerate Pod-to-Pod traffic in the Node's host network using nftables flowtable when traffic mode is
+  # noEncap or hybrid.
+  enable: true
+
+# -- Determines how antrea-agent implements Node host network netfilter rules required by functionalities and features,
+# using either "iptables" or "nftables". The default value is "iptables". If "nftables" is specified, the
+# NFTablesHostNetworkMode feature gate must be enabled; otherwise, antrea-agent will fail to start. Currently, nftables
+# support is limited to the following features:
+#   - AntreaProxy (proxyAll)
+hostNetworkMode: "iptables"

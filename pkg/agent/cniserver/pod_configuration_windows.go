@@ -18,6 +18,7 @@
 package cniserver
 
 import (
+	"net"
 	"time"
 
 	"antrea.io/libOpenflow/openflow15"
@@ -41,8 +42,8 @@ var (
 )
 
 const (
-	podNotReadyTimeInSeconds = 30 * time.Second
-	ovsInterfaceTypeForPod   = "internal"
+	podNotReadyTime        = 30 * time.Second
+	ovsInterfaceTypeForPod = "internal"
 )
 
 // connectInterfaceToOVSAsync waits for an interface to be created and connects it to OVS br-int asynchronously
@@ -55,7 +56,7 @@ func (pc *podConfigurator) connectInterfaceToOVSAsync(ifConfig *interfacestore.I
 	// need to think about the race condition between the current goroutine with the listener.
 	// It may generate a duplicated PodIsReady event if the Pod's OpenFlow entries are installed
 	// before the time, then the library shall merge the event.
-	pc.unreadyPortQueue.AddAfter(ovsPortName, podNotReadyTimeInSeconds)
+	pc.unreadyPortQueue.AddAfter(ovsPortName, podNotReadyTime)
 	return pc.ifConfigurator.addPostInterfaceCreateHook(ifConfig.ContainerID, ovsPortName, containerAccess, func() error {
 		if err := pc.ovsBridgeClient.SetInterfaceType(ovsPortName, ovsInterfaceTypeForPod); err != nil {
 			return err
@@ -73,7 +74,8 @@ func (pc *podConfigurator) connectInterfaceToOVS(
 	containerAccess *containerAccessArbitrator) (*interfacestore.InterfaceConfig, error) {
 	// Use the outer veth interface name as the OVS port name.
 	ovsPortName := hostIface.Name
-	containerConfig := buildContainerConfig(ovsPortName, containerID, podName, podNamespace, containerIface, ips, vlanID)
+	containerConfig := buildContainerConfig(ovsPortName, containerID, podName, podNamespace,
+		netNS, containerIface, ips, vlanID)
 	// The container interface is created after the CNI returns the network setup result.
 	// Because of this, we need to wait asynchronously for the interface to be created: we create the OVS port
 	// and set the OVS Interface type "" first, and change the OVS Interface type to "internal" to connect to the
@@ -93,12 +95,12 @@ func (pc *podConfigurator) connectInterfaceToOVS(
 func (pc *podConfigurator) configureInterfaces(
 	podName, podNamespace, containerID, containerNetNS string,
 	containerIFDev string, mtu int, sriovVFDeviceID string,
-	result *ipam.IPAMResult, createOVSPort bool, containerAccess *containerAccessArbitrator) error {
+	result *ipam.IPAMResult, createOVSPort bool, containerAccess *containerAccessArbitrator, mac net.HardwareAddr) error {
 	if !createOVSPort {
 		return pc.ifConfigurator.configureContainerLink(
 			podName, podNamespace, containerID, containerNetNS,
 			containerIFDev, mtu, sriovVFDeviceID, "",
-			&result.Result, containerAccess)
+			&result.Result, containerAccess, mac)
 	}
 	// Check if the OVS configurations for the container exists or not. If yes, return
 	// immediately. This check is used on Windows, as kubelet on Windows will call CNI ADD
@@ -125,7 +127,7 @@ func (pc *podConfigurator) configureInterfaces(
 	}
 
 	return pc.configureInterfacesCommon(podName, podNamespace, containerID, containerNetNS,
-		containerIFDev, mtu, sriovVFDeviceID, result, containerAccess)
+		containerIFDev, mtu, sriovVFDeviceID, result, containerAccess, mac)
 }
 
 // isInterfaceInvalid returns false because we now don't support detecting the disconnected host interface on Windows

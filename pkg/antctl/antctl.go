@@ -23,6 +23,7 @@ import (
 	checkinstallation "antrea.io/antrea/pkg/antctl/raw/check/installation"
 	"antrea.io/antrea/pkg/antctl/raw/featuregates"
 	"antrea.io/antrea/pkg/antctl/raw/multicluster"
+	"antrea.io/antrea/pkg/antctl/raw/packetcapture"
 	"antrea.io/antrea/pkg/antctl/raw/proxy"
 	"antrea.io/antrea/pkg/antctl/raw/set"
 	"antrea.io/antrea/pkg/antctl/raw/supportbundle"
@@ -642,7 +643,7 @@ $ antctl get podmulticaststats pod -n namespace`,
 		{
 			use:   "bgppolicy",
 			short: "Print effective bgppolicy information",
-			long:  "Print effective bgppolicy information including name, local ASN, router ID and listen port",
+			long:  "Print effective bgppolicy information including name, local ASN, router ID, listen port, confederation identifier and member ASNs",
 			agentEndpoint: &endpoint{
 				nonResourceEndpoint: &nonResourceEndpoint{
 					path:       "/bgppolicy",
@@ -726,6 +727,32 @@ $ antctl get podmulticaststats pod -n namespace`,
 			commandGroup:        get,
 			transformedResponse: reflect.TypeOf(agentapis.BGPRouteResponse{}),
 		},
+		{
+			use:   "fqdncache",
+			short: "Print fqdn cache",
+			long:  "Print effective fqdn cache information including fqdn name, IP addresses, and expiration time",
+			example: `	Get the list of all fqdn rules currently applied
+			$ antctl get fqdncache
+			Get the list of all fqdn rules currently applied for a given domain name (wildcard supported)
+			$ antctl get fqdncache --domain example.com
+			$ antctl get fqdncache --domain *.antrea.io
+			`,
+			agentEndpoint: &endpoint{
+				nonResourceEndpoint: &nonResourceEndpoint{
+					path: "/fqdncache",
+					params: []flagInfo{
+						{
+							name:      "domain",
+							usage:     "Get fqdn cache for only a specific domain",
+							shorthand: "d",
+						},
+					},
+					outputType: multiple,
+				},
+			},
+			commandGroup:        get,
+			transformedResponse: reflect.TypeOf(agentapis.FQDNCacheResponse{}),
+		},
 	},
 	rawCommands: []rawCommand{
 		{
@@ -747,6 +774,11 @@ $ antctl get podmulticaststats pod -n namespace`,
 		},
 		{
 			cobraCommand:      traceflow.Command,
+			supportAgent:      true,
+			supportController: true,
+		},
+		{
+			cobraCommand:      packetcapture.Command,
 			supportAgent:      true,
 			supportController: true,
 		},

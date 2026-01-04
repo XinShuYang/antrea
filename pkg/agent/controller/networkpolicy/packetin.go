@@ -26,8 +26,10 @@ import (
 	"github.com/vmware/go-ipfix/pkg/registry"
 	"k8s.io/klog/v2"
 
-	"antrea.io/antrea/pkg/agent/flowexporter"
+	"antrea.io/antrea/pkg/agent/flowexporter/connection"
+	flowexporterutils "antrea.io/antrea/pkg/agent/flowexporter/utils"
 	"antrea.io/antrea/pkg/agent/openflow"
+	"antrea.io/antrea/pkg/apis/controlplane/v1beta2"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
 )
 
@@ -106,14 +108,19 @@ func getInfoInReg(regMatch *ofctrl.MatchField, rng *openflow15.NXRange) (uint32,
 func (c *Controller) storeDenyConnection(pktIn *ofctrl.PacketIn) error {
 	packet, err := binding.ParsePacketIn(pktIn)
 	if err != nil {
-		return fmt.Errorf("error in parsing packetIn: %v", err)
+		return fmt.Errorf("error in parsing packetIn: %w", err)
 	}
+	return c.storeDenyConnectionParsed(pktIn, packet)
+}
+
+// storeDenyConnectionParsed takes a parsed packet as input, making it easier to unit test than storeDenyConnection.
+func (c *Controller) storeDenyConnectionParsed(pktIn *ofctrl.PacketIn, packet *binding.Packet) error {
 	matchers := pktIn.GetMatches()
 
 	// Get 5-tuple information
 	sourceAddr, _ := netip.AddrFromSlice(packet.SourceIP)
 	destinationAddr, _ := netip.AddrFromSlice(packet.DestinationIP)
-	tuple := flowexporter.Tuple{
+	tuple := connection.Tuple{
 		SourceAddress:      sourceAddr,
 		DestinationAddress: destinationAddr,
 		SourcePort:         packet.SourcePort,
@@ -122,11 +129,12 @@ func (c *Controller) storeDenyConnection(pktIn *ofctrl.PacketIn) error {
 	}
 
 	// Generate deny connection and add to deny connection store
-	denyConn := flowexporter.Connection{}
+	denyConn := connection.Connection{}
 	denyConn.FlowKey = tuple
 	denyConn.OriginalDestinationAddress = tuple.DestinationAddress
 	denyConn.OriginalDestinationPort = tuple.DestinationPort
 	denyConn.Mark = getCTMarkValue(matchers)
+	denyConn.Labels = getCTLabelValue(matchers)
 	nwDstValue := getCTNwDstValue(matchers)
 	dstPortValue := getCTTpDstValue(matchers)
 	if nwDstValue.IsValid() {
@@ -137,7 +145,7 @@ func (c *Controller) storeDenyConnection(pktIn *ofctrl.PacketIn) error {
 	}
 
 	// No need to obtain connection info again if it already exists in denyConnectionStore.
-	if conn, exist := c.denyConnStore.GetConnByKey(flowexporter.NewConnectionKey(&denyConn)); exist {
+	if conn, exist := c.denyConnStore.GetConnByKey(connection.NewConnectionKey(&denyConn)); exist {
 		c.denyConnStore.AddOrUpdateConn(conn, time.Now(), uint64(packet.IPLength))
 		return nil
 	}
@@ -160,10 +168,13 @@ func (c *Controller) storeDenyConnection(pktIn *ofctrl.PacketIn) error {
 		if err != nil {
 			return fmt.Errorf("error when obtaining rule id from reg: %v", err)
 		}
-		policy := c.GetNetworkPolicyByRuleFlowID(ruleID)
 		rule := c.GetRuleByFlowID(ruleID)
+		var policy *v1beta2.NetworkPolicyReference
+		if rule != nil {
+			policy = rule.PolicyRef
+		}
 		if policy == nil || rule == nil {
-			klog.V(4).Infof("Cannot find NetworkPolicy or rule that has ruleID %v", ruleID)
+			klog.V(4).InfoS("Cannot find NetworkPolicy or rule", "ruleID", ruleID)
 			// Ignore the connection if there is no matching NetworkPolicy or rule: the
 			// NetworkPolicy must have been deleted or updated.
 			return nil
@@ -172,24 +183,26 @@ func (c *Controller) storeDenyConnection(pktIn *ofctrl.PacketIn) error {
 		if isAntreaPolicyIngressTable(tableID) {
 			denyConn.IngressNetworkPolicyName = policy.Name
 			denyConn.IngressNetworkPolicyNamespace = policy.Namespace
-			denyConn.IngressNetworkPolicyType = flowexporter.PolicyTypeToUint8(policy.Type)
+			denyConn.IngressNetworkPolicyUID = string(policy.UID)
+			denyConn.IngressNetworkPolicyType = flowexporterutils.PolicyTypeToUint8(policy.Type)
 			denyConn.IngressNetworkPolicyRuleName = rule.Name
-			denyConn.IngressNetworkPolicyRuleAction = flowexporter.RuleActionToUint8(disposition)
+			denyConn.IngressNetworkPolicyRuleAction = flowexporterutils.RuleActionToUint8(disposition)
 		} else if isAntreaPolicyEgressTable(tableID) {
 			denyConn.EgressNetworkPolicyName = policy.Name
 			denyConn.EgressNetworkPolicyNamespace = policy.Namespace
-			denyConn.EgressNetworkPolicyType = flowexporter.PolicyTypeToUint8(policy.Type)
+			denyConn.EgressNetworkPolicyUID = string(policy.UID)
+			denyConn.EgressNetworkPolicyType = flowexporterutils.PolicyTypeToUint8(policy.Type)
 			denyConn.EgressNetworkPolicyRuleName = rule.Name
-			denyConn.EgressNetworkPolicyRuleAction = flowexporter.RuleActionToUint8(disposition)
+			denyConn.EgressNetworkPolicyRuleAction = flowexporterutils.RuleActionToUint8(disposition)
 		}
 	} else {
 		// For K8s NetworkPolicy implicit drop action, we cannot get Namespace/name.
 		if tableID == openflow.IngressDefaultTable.GetID() {
 			denyConn.IngressNetworkPolicyType = registry.PolicyTypeK8sNetworkPolicy
-			denyConn.IngressNetworkPolicyRuleAction = flowexporter.RuleActionToUint8(disposition)
+			denyConn.IngressNetworkPolicyRuleAction = flowexporterutils.RuleActionToUint8(disposition)
 		} else if tableID == openflow.EgressDefaultTable.GetID() {
 			denyConn.EgressNetworkPolicyType = registry.PolicyTypeK8sNetworkPolicy
-			denyConn.EgressNetworkPolicyRuleAction = flowexporter.RuleActionToUint8(disposition)
+			denyConn.EgressNetworkPolicyRuleAction = flowexporterutils.RuleActionToUint8(disposition)
 		}
 	}
 	c.denyConnStore.AddOrUpdateConn(&denyConn, time.Now(), uint64(packet.IPLength))
@@ -244,6 +257,19 @@ func getCTMarkValue(matchers *ofctrl.Matchers) uint32 {
 		return 0
 	}
 	return ctMarkValue
+}
+
+// getCTLabelValue returns the conntrack label as a []byte using a big-endian representation.
+func getCTLabelValue(matchers *ofctrl.Matchers) []byte {
+	ctLabel := matchers.GetMatchByName("NXM_NX_CT_LABEL")
+	if ctLabel == nil {
+		return nil
+	}
+	ctLabelValue, ok := ctLabel.GetValue().([]byte)
+	if !ok {
+		return nil
+	}
+	return ctLabelValue
 }
 
 func getCTNwDstValue(matchers *ofctrl.Matchers) netip.Addr {

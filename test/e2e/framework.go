@@ -20,8 +20,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,7 +36,6 @@ import (
 	"github.com/containernetworking/plugins/pkg/ip"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/mod/semver"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -72,7 +72,7 @@ import (
 var AntreaConfigMap *corev1.ConfigMap
 
 var (
-	connectionLostError = fmt.Errorf("http2: client connection lost")
+	errConnectionLost = fmt.Errorf("http2: client connection lost")
 )
 
 const (
@@ -117,6 +117,10 @@ const (
 	flowVisibilityNamespace = "flow-visibility"
 	defaultBridgeName       = "br-int"
 	monitoringNamespace     = "monitoring"
+	// #nosec G101: not credentials
+	flowAggregatorIPFIXClientTLSSecretName = "ipfix-client-cert"
+	// #nosec G101: not credentials
+	flowAggregatorIPFIXCASecretName = "ipfix-server-ca"
 
 	cpNodeCoverageDir = "/tmp/antrea-e2e-coverage"
 
@@ -129,11 +133,14 @@ const (
 	mcjoinImage         = "antrea/mcjoin:v2.9"
 	nginxImage          = "antrea/nginx:1.21.6-alpine"
 	iisImage            = "mcr.microsoft.com/windows/servercore/iis"
-	ipfixCollectorImage = "antrea/ipfix-collector:v0.12.0"
+	ipfixCollectorImage = "antrea/ipfix-collector:v0.16.0"
 
 	nginxLBService = "nginx-loadbalancer"
 
-	ipfixCollectorPort                  = "4739"
+	// Need a non-default (4739) port when testing the FA in hostNetwork mode.
+	// Otherwise we end up with 2 different hostNetwork Pods listening on the same port, with a
+	// conflict if they are scheduled on the same Node.
+	ipfixCollectorPort                  = "44739"
 	exporterFlowPollInterval            = 1 * time.Second
 	exporterActiveFlowExportTimeout     = 2 * time.Second
 	exporterIdleFlowExportTimeout       = 1 * time.Second
@@ -232,10 +239,20 @@ type TestOptions struct {
 	externalFRRCID string
 }
 
+type flowVisibilityIPFIXTestOptions struct {
+	tls             bool
+	clientAuth      bool
+	includeK8sNames *bool
+	includeK8sUIDs  *bool
+}
+
 type flowVisibilityTestOptions struct {
-	mode             flowaggregatorconfig.AggregatorMode
-	databaseURL      string
-	secureConnection bool
+	mode                      flowaggregatorconfig.AggregatorMode
+	numFlowAggregatorReplicas int
+	databaseURL               string
+	databaseSecureConnection  bool
+	clusterID                 string
+	ipfixCollector            flowVisibilityIPFIXTestOptions
 }
 
 var testOptions TestOptions
@@ -252,10 +269,10 @@ type PodInfo struct {
 type TestData struct {
 	ClusterName        string
 	provider           providers.ProviderInterface
-	kubeConfig         *restclient.Config
+	KubeConfig         *restclient.Config
 	clientset          kubernetes.Interface
 	aggregatorClient   aggregatorclientset.Interface
-	crdClient          crdclientset.Interface
+	CRDClient          crdclientset.Interface
 	logsDirForTestCase string
 	testNamespace      string
 }
@@ -467,19 +484,12 @@ func isIPv6Enabled() bool {
 }
 
 func labelNodeRoleControlPlane() string {
-	// TODO: return labelNodeRoleControlPlane unconditionally when the min K8s version
-	// requirement to run Antrea becomes K8s v1.20
-	const labelNodeRoleControlPlane = "node-role.kubernetes.io/control-plane"
-	const labelNodeRoleOldControlPlane = "node-role.kubernetes.io/master"
-	// If clusterInfo.k8sServerVersion < "v1.20.0"
-	if semver.Compare(clusterInfo.k8sServerVersion, "v1.20.0") < 0 {
-		return labelNodeRoleOldControlPlane
-	}
-	return labelNodeRoleControlPlane
+	return "node-role.kubernetes.io/control-plane"
 }
 
 func controlPlaneNoScheduleTolerations() []corev1.Toleration {
-	// the Node taint still uses "master" in K8s v1.20
+	// "node-role.kubernetes.io/control-plane" was added in K8s 1.20
+	// "node-role.kubernetes.io/master" was removed in K8s 1.24
 	return []corev1.Toleration{
 		{
 			Key:      "node-role.kubernetes.io/master",
@@ -946,7 +956,7 @@ func (data *TestData) deployFlowVisibilityClickHouse(o flowVisibilityTestOptions
 	}
 
 	visibilityYML := flowVisibilityYML
-	if o.secureConnection {
+	if o.databaseSecureConnection {
 		visibilityYML = flowVisibilityTLSYML
 	}
 
@@ -1038,19 +1048,122 @@ func (data *TestData) deleteClickHouseOperator() error {
 	return nil
 }
 
-// deployFlowAggregator deploys the Flow Aggregator with ipfix collector and clickHouse address.
-func (data *TestData) deployFlowAggregator(ipfixCollector string, o flowVisibilityTestOptions) error {
+func (data *TestData) deployIPFIXCollector(serverCert []byte, serverKey []byte, clientCA []byte) (string, error) {
+	args := []string{"--ipfix.port", ipfixCollectorPort}
+	if serverCert != nil {
+		args = append(args, "--server-cert", "/certs/server/tls.crt", "--server-key", "/certs/server/tls.key")
+		if clientCA != nil {
+			args = append(args, "--client-ca", "/certs/clients/ca.crt")
+		}
+	}
+
+	pb := NewPodBuilder("ipfix-collector", data.testNamespace, ipfixCollectorImage).WithArgs(args).InHostNetwork()
+
+	if serverCert != nil {
+		serverCertSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "ipfix-collector-server-cert",
+			},
+			Immutable: ptr.To(true),
+			Data: map[string][]byte{
+				"tls.crt": serverCert,
+				"tls.key": serverKey,
+			},
+		}
+		if _, err := data.clientset.CoreV1().Secrets(data.testNamespace).Create(context.TODO(), serverCertSecret, metav1.CreateOptions{}); err != nil {
+			return "", fmt.Errorf("failed to create Secret for ipfix-collector server certificate: %w", err)
+		}
+		pb = pb.MountSecret(serverCertSecret.Name, "/certs/server", serverCertSecret.Name)
+
+		if clientCA != nil {
+			clientCASecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ipfix-collector-client-ca",
+				},
+				Immutable: ptr.To(true),
+				Data: map[string][]byte{
+					"ca.crt": clientCA,
+				},
+			}
+			if _, err := data.clientset.CoreV1().Secrets(data.testNamespace).Create(context.TODO(), clientCASecret, metav1.CreateOptions{}); err != nil {
+				return "", fmt.Errorf("failed to create Secret for ipfix-collector client CA certificate: %w", err)
+			}
+			pb = pb.MountSecret(clientCASecret.Name, "/certs/clients", clientCASecret.Name)
+		}
+	}
+
+	if err := pb.Create(data); err != nil {
+		return "", fmt.Errorf("error when creating the ipfix collector Pod: %w", err)
+	}
+	ipfixCollectorIP, err := data.podWaitForIPs(defaultTimeout, "ipfix-collector", data.testNamespace)
+	if err != nil || len(ipfixCollectorIP.IPStrings) == 0 {
+		return "", fmt.Errorf("error when waiting to get ipfix collector Pod IP: %w", err)
+	}
+	var ipStr string
+	if isIPv6Enabled() && ipfixCollectorIP.IPv6 != nil {
+		ipStr = ipfixCollectorIP.IPv6.String()
+	} else {
+		ipStr = ipfixCollectorIP.IPv4.String()
+	}
+	ipfixCollectorAddr := fmt.Sprintf("%s:tcp", net.JoinHostPort(ipStr, ipfixCollectorPort))
+	return ipfixCollectorAddr, nil
+}
+
+// deployFlowAggregator deploys the Flow Aggregator.
+func (data *TestData) deployFlowAggregator(
+	ipfixCollector string,
+	ipfixClientCert, ipfixClientKey, ipfixServerCA []byte,
+	o flowVisibilityTestOptions,
+) error {
 	flowAggYaml := flowAggregatorYML
 	if testOptions.enableCoverage {
 		flowAggYaml = flowAggregatorCovYML
 	}
+
+	// Create flow-aggregator Namespace first, so that we can create the necessary Secrets prior
+	// to applying the Flow Aggregator manifest.
+	if err := data.CreateNamespace(flowAggregatorNamespace, nil); err != nil {
+		return fmt.Errorf("failed to create %q Namespace: %w", flowAggregatorNamespace, err)
+	}
+
+	if ipfixClientCert != nil {
+		clientCertSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: flowAggregatorIPFIXClientTLSSecretName,
+			},
+			Immutable: ptr.To(true),
+			Data: map[string][]byte{
+				"tls.crt": ipfixClientCert,
+				"tls.key": ipfixClientKey,
+			},
+		}
+		if _, err := data.clientset.CoreV1().Secrets(flowAggregatorNamespace).Create(context.TODO(), clientCertSecret, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("failed to create Secret for IPFIX client certificate: %w", err)
+		}
+	}
+
+	if ipfixServerCA != nil {
+		serverCASecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: flowAggregatorIPFIXCASecretName,
+			},
+			Immutable: ptr.To(true),
+			Data: map[string][]byte{
+				"ca.crt": ipfixServerCA,
+			},
+		}
+		if _, err := data.clientset.CoreV1().Secrets(flowAggregatorNamespace).Create(context.TODO(), serverCASecret, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("failed to create Secret for IPFIX server CA certificate: %w", err)
+		}
+	}
+
 	rc, _, _, err := data.provider.RunCommandOnNode(controlPlaneNodeName(), fmt.Sprintf("kubectl apply -f %s", flowAggYaml))
 	if err != nil || rc != 0 {
 		return fmt.Errorf("error when deploying the Flow Aggregator; %s not available on the control-plane Node", flowAggYaml)
 	}
 	// clickhouse-ca Secret is created in the flow-visibility Namespace. In order to make it accessible to the Flow Aggregator,
-	// we copy it from Namespace flow-visibility to Namespace flow-aggregator when secureConnection is true.
-	if o.secureConnection {
+	// we copy it from Namespace flow-visibility to Namespace flow-aggregator when databaseSecureConnection is true.
+	if o.databaseSecureConnection {
 		secret, err := data.clientset.CoreV1().Secrets(flowVisibilityNamespace).Get(context.TODO(), flowAggregatorCHSecret, metav1.GetOptions{})
 		if err != nil {
 			return fmt.Errorf("unable to get Secret with name %s in Namespace %s: %v", flowAggregatorCHSecret, flowVisibilityNamespace, err)
@@ -1074,19 +1187,19 @@ func (data *TestData) deployFlowAggregator(ipfixCollector string, o flowVisibili
 	if err = data.mutateFlowAggregatorConfigMap(ipfixCollector, o); err != nil {
 		return err
 	}
+
+	if o.numFlowAggregatorReplicas > 0 {
+		if rc, _, _, err = data.provider.RunCommandOnNode(controlPlaneNodeName(), fmt.Sprintf("kubectl -n %s scale deployment/%s --replicas=%d", flowAggregatorNamespace, flowAggregatorDeployment, o.numFlowAggregatorReplicas)); err != nil || rc != 0 {
+			return fmt.Errorf("failed to scale number of flow aggregator replicas: %w", err)
+		}
+	}
+
 	if rc, _, _, err = data.provider.RunCommandOnNode(controlPlaneNodeName(), fmt.Sprintf("kubectl -n %s rollout status deployment/%s --timeout=%v", flowAggregatorNamespace, flowAggregatorDeployment, 2*defaultTimeout)); err != nil || rc != 0 {
 		_, stdout, _, _ := data.provider.RunCommandOnNode(controlPlaneNodeName(), fmt.Sprintf("kubectl -n %s describe pod", flowAggregatorNamespace))
 		_, logStdout, _, _ := data.provider.RunCommandOnNode(controlPlaneNodeName(), fmt.Sprintf("kubectl -n %s logs -l app=flow-aggregator", flowAggregatorNamespace))
 		return fmt.Errorf("error when waiting for the Flow Aggregator rollout to complete. kubectl describe output: %s, logs: %s", stdout, logStdout)
 	}
-	// Check for flow-aggregator Pod running again for db connection establishment
-	flowAggPod, err := data.getFlowAggregator()
-	if err != nil {
-		return fmt.Errorf("error when getting flow-aggregator Pod: %v", err)
-	}
-	if err = data.podWaitForReady(2*defaultTimeout, flowAggPod.Name, flowAggregatorNamespace); err != nil {
-		return err
-	}
+
 	return nil
 }
 
@@ -1107,16 +1220,33 @@ func (data *TestData) mutateFlowAggregatorConfigMap(ipfixCollectorAddr string, o
 
 	flowAggregatorConf.Mode = o.mode
 	flowAggregatorConf.FlowCollector = flowaggregatorconfig.FlowCollectorConfig{
-		Enable:  true,
-		Address: ipfixCollectorAddr,
+		Enable:          true,
+		Address:         ipfixCollectorAddr,
+		IncludeK8sNames: o.ipfixCollector.includeK8sNames,
+		IncludeK8sUIDs:  o.ipfixCollector.includeK8sUIDs,
+	}
+	if o.ipfixCollector.tls {
+		tls := &flowAggregatorConf.FlowCollector.TLS
+		tls.Enable = true
+		tls.ServerName = "ipfix-collector"
+		// By default, the YAML manifest used for testing already has CASecretName and
+		// ClientSecretName set (which is a no-op unless TLS is enabled). However, when
+		// client auth is disabled by the test, we have to make sure that ClientSecretName
+		// is set to the empty string.
+		tls.CASecretName = flowAggregatorIPFIXCASecretName
+		if o.ipfixCollector.clientAuth {
+			tls.ClientSecretName = flowAggregatorIPFIXClientTLSSecretName
+		} else {
+			tls.ClientSecretName = ""
+		}
 	}
 	if o.databaseURL != "" {
 		flowAggregatorConf.ClickHouse = flowaggregatorconfig.ClickHouseConfig{
 			Enable:         true,
 			CommitInterval: aggregatorClickHouseCommitInterval.String(),
 			DatabaseURL:    o.databaseURL,
-			TLS: flowaggregatorconfig.TLSConfig{
-				CACert: o.secureConnection,
+			TLS: flowaggregatorconfig.ClickHouseTLSConfig{
+				CACert: o.databaseSecureConnection,
 			},
 		}
 
@@ -1128,6 +1258,7 @@ func (data *TestData) mutateFlowAggregatorConfigMap(ipfixCollectorAddr string, o
 	flowAggregatorConf.ActiveFlowRecordTimeout = aggregatorActiveFlowRecordTimeout.String()
 	flowAggregatorConf.InactiveFlowRecordTimeout = aggregatorInactiveFlowRecordTimeout.String()
 	flowAggregatorConf.RecordContents.PodLabels = true
+	flowAggregatorConf.ClusterID = o.clusterID
 
 	b, err := yaml.Marshal(&flowAggregatorConf)
 	if err != nil {
@@ -1317,10 +1448,10 @@ func (data *TestData) CreateClient(kubeconfigPath string) error {
 	if err != nil {
 		return fmt.Errorf("error when creating CRD client: %v", err)
 	}
-	data.kubeConfig = kubeConfig
+	data.KubeConfig = kubeConfig
 	data.clientset = clientset
 	data.aggregatorClient = aggregatorClient
-	data.crdClient = crdClient
+	data.CRDClient = crdClient
 	return nil
 }
 
@@ -1483,13 +1614,13 @@ func (b *PodBuilder) WithResources(ResourceRequests, ResourceLimits corev1.Resou
 	return b
 }
 
-func (b *PodBuilder) AddVolume(volume []corev1.Volume) *PodBuilder {
-	b.Volumes = volume
+func (b *PodBuilder) AddVolume(volume corev1.Volume) *PodBuilder {
+	b.Volumes = append(b.Volumes, volume)
 	return b
 }
 
-func (b *PodBuilder) AddVolumeMount(volumeMount []corev1.VolumeMount) *PodBuilder {
-	b.VolumeMounts = volumeMount
+func (b *PodBuilder) AddVolumeMount(volumeMount corev1.VolumeMount) *PodBuilder {
+	b.VolumeMounts = append(b.VolumeMounts, volumeMount)
 	return b
 }
 
@@ -1505,7 +1636,20 @@ func (b *PodBuilder) MountConfigMap(configMapName string, mountPath string, volu
 			},
 		},
 	}
-	return b.AddVolume([]corev1.Volume{volume}).AddVolumeMount([]corev1.VolumeMount{volumeMount})
+	return b.AddVolume(volume).AddVolumeMount(volumeMount)
+}
+
+func (b *PodBuilder) MountSecret(secretName string, mountPath string, volumeName string) *PodBuilder {
+	volumeMount := corev1.VolumeMount{Name: volumeName, MountPath: mountPath}
+	volume := corev1.Volume{
+		Name: volumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: secretName,
+			},
+		},
+	}
+	return b.AddVolume(volume).AddVolumeMount(volumeMount)
 }
 
 func (b *PodBuilder) MountHostPath(hostPath string, hostPathType corev1.HostPathType, mountPath string, volumeName string) *PodBuilder {
@@ -1519,7 +1663,7 @@ func (b *PodBuilder) MountHostPath(hostPath string, hostPathType corev1.HostPath
 			},
 		},
 	}
-	return b.AddVolume([]corev1.Volume{volume}).AddVolumeMount([]corev1.VolumeMount{volumeMount})
+	return b.AddVolume(volume).AddVolumeMount(volumeMount)
 }
 
 func (b *PodBuilder) WithReadinessProbe(probe *corev1.Probe) *PodBuilder {
@@ -1932,8 +2076,8 @@ func (data *TestData) RunCommandFromAntreaPodOnNode(nodeName string, cmd []strin
 	return data.RunCommandFromPod(antreaNamespace, antreaPodName, agentContainerName, cmd)
 }
 
-// getFlowAggregator retrieves the name of the Flow-Aggregator Pod (flow-aggregator-*) running on a specific Node.
-func (data *TestData) getFlowAggregator() (*corev1.Pod, error) {
+// getFlowAggregators retrieves all Flow-Aggregator Pods (flow-aggregator-*).
+func (data *TestData) getFlowAggregators() ([]corev1.Pod, error) {
 	listOptions := metav1.ListOptions{
 		LabelSelector: "app=flow-aggregator",
 	}
@@ -1941,10 +2085,10 @@ func (data *TestData) getFlowAggregator() (*corev1.Pod, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list Flow Aggregator Pod: %v", err)
 	}
-	if len(pods.Items) != 1 {
-		return nil, fmt.Errorf("expected *exactly* one Pod")
+	if len(pods.Items) == 0 {
+		return nil, fmt.Errorf("expected at least one Pod")
 	}
-	return &pods.Items[0], nil
+	return pods.Items, nil
 }
 
 // getAntreaController retrieves the name of the Antrea Controller (antrea-controller-*) running in the k8s cluster.
@@ -2261,7 +2405,7 @@ func randSeq(n int) string {
 	b := make([]rune, n)
 	for i := range b {
 		// #nosec G404: random number generator not used for security purposes
-		randIdx := rand.Intn(len(lettersAndDigits))
+		randIdx := rand.IntN(len(lettersAndDigits))
 		b[i] = lettersAndDigits[randIdx]
 	}
 	return string(b)
@@ -2290,7 +2434,7 @@ func (data *TestData) RunCommandFromPod(podNamespace string, podName string, con
 			Stderr:  true,
 			TTY:     false,
 		}, scheme.ParameterCodec)
-	exec, err := remotecommand.NewSPDYExecutor(data.kubeConfig, "POST", request.URL())
+	exec, err := remotecommand.NewSPDYExecutor(data.KubeConfig, "POST", request.URL())
 	if err != nil {
 		return "", "", err
 	}
@@ -2491,6 +2635,19 @@ func (data *TestData) GetEncapMode() (config.TrafficEncapModeType, error) {
 	return encapMode, nil
 }
 
+func (data *TestData) GetEncryptionnMode() (config.TrafficEncryptionModeType, error) {
+	agentConf, err := data.GetAntreaAgentConf()
+	if err != nil {
+		return config.TrafficEncapModeInvalid, fmt.Errorf("failed to get Antrea Agent config: %w", err)
+	}
+	if agentConf.TrafficEncryptionMode == "" {
+		// default encryption mode
+		return config.TrafficEncryptionModeNone, nil
+	}
+	_, encryptionMode := config.GetTrafficEncryptionModeFromStr(agentConf.TrafficEncryptionMode)
+	return encryptionMode, nil
+}
+
 func (data *TestData) isProxyAll() (bool, error) {
 	agentConf, err := data.GetAntreaAgentConf()
 	if err != nil {
@@ -2601,31 +2758,72 @@ func (data *TestData) GetMulticastInterfaces(antreaNamespace string) ([]string, 
 	return agentConf.Multicast.MulticastInterfaces, nil
 }
 
-func (data *TestData) GetTransportInterface() (string, error) {
+// GetTransportInterfaceName returns the transport interface name for cluster Nodes, assuming all Nodes have the same one.
+func (data *TestData) GetTransportInterfaceName() (string, error) {
 	// It assumes all Nodes have the same transport interface name.
-	nodeName := nodeName(0)
-	nodeIP := nodeIP(0)
+	name, _, _, err := data.GetTransportInterfaceForNode(0)
+	return name, err
+}
+
+func (data *TestData) GetTransportInterfaceForNode(nodeIdx int) (string, *net.IPNet, *net.IPNet, error) {
+	nodeName := nodeName(nodeIdx)
 	antreaPod, err := data.getAntreaPodOnNode(nodeName)
 	if err != nil {
-		return "", fmt.Errorf("failed to get Antrea Pod on Node %s: %v", nodeName, err)
+		return "", nil, nil, fmt.Errorf("failed to get Antrea Pod on Node %s: %v", nodeName, err)
 	}
 	cmd := []string{"ip", "-br", "addr", "show"}
 	stdout, stderr, err := data.RunCommandFromPod(antreaNamespace, antreaPod, agentContainerName, cmd)
 	if stdout == "" || stderr != "" || err != nil {
-		return "", fmt.Errorf("failed to show ip address, stdout: %s, stderr: %s, err: %v", stdout, stderr, err)
+		return "", nil, nil, fmt.Errorf("failed to show ip address, stdout: %s, stderr: %s, err: %v", stdout, stderr, err)
 	}
 	// Example stdout:
 	// eth0@if461       UP             172.18.0.2/16 fc00:f853:ccd:e793::2/64 fe80::42:acff:fe12:2/64
 	// eno1             UP             10.176.3.138/22 fe80::e643:4bff:fe43:a30e/64
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, nodeIP+"/") {
-			fields := strings.Fields(line)
-			name, _, _ := strings.Cut(fields[0], "@")
-			return name, nil
+
+	// findInterfaceForIP finds the interface name and IPNet for a given node IP.
+	findInterfaceForIP := func(nodeIP string) (string, *net.IPNet, error) {
+		if nodeIP == "" {
+			return "", nil, nil // no IP set, not an error
 		}
+		for _, line := range lines {
+			if !strings.Contains(line, nodeIP+"/") {
+				continue
+			}
+			fields := strings.Fields(line)
+
+			// Extract interface name.
+			iface, _, _ := strings.Cut(fields[0], "@")
+
+			// Find matching CIDR.
+			for _, field := range fields[2:] {
+				if strings.HasPrefix(field, nodeIP+"/") {
+					_, ipNet, err := net.ParseCIDR(field)
+					if err != nil {
+						return "", nil, fmt.Errorf("failed to parse CIDR %s: %w", field, err)
+					}
+					return iface, ipNet, nil
+				}
+			}
+		}
+		return "", nil, fmt.Errorf("no interface was assigned with Node IP %s", nodeIP)
 	}
-	return "", fmt.Errorf("no interface was assigned with Node IP %s", nodeIP)
+
+	iface, nodeIPv4CIDR, err := findInterfaceForIP(nodeIPv4(nodeIdx))
+	if err != nil {
+		return "", nil, nil, err
+	}
+	iface6, nodeIPv6CIDR, err := findInterfaceForIP(nodeIPv6(nodeIdx))
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if iface != "" && iface6 != "" && iface != iface6 {
+		return "", nil, nil, fmt.Errorf("failed precondition: transport interface should be the same regardless of IP family")
+	}
+	if iface == "" {
+		iface = iface6
+	}
+	return iface, nodeIPv4CIDR, nodeIPv6CIDR, nil
 }
 
 func (data *TestData) GetPodInterfaceMTU(namespace string, podName string, containerName string) (int, error) {
@@ -2716,7 +2914,7 @@ func (data *TestData) mutateAntreaConfigMap(
 		}
 		configMap.Data["antrea-controller.conf"] = string(b)
 	}
-	//getAgentConf should be able to process both windows and linux configmap.
+	// getAgentConf should be able to process both windows and linux configmap.
 	getAgentConf := func(cm *corev1.ConfigMap) (*agentconfig.AgentConfig, error) {
 		var agentConf agentconfig.AgentConfig
 		if err := yaml.Unmarshal([]byte(cm.Data["antrea-agent.conf"]), &agentConf); err != nil {
@@ -2843,14 +3041,17 @@ func (data *TestData) gracefulExitAntreaAgent(covDir string, nodeName string) er
 
 // gracefulExitFlowAggregator copies the Flow Aggregator binary coverage data file out before terminating the Pod.
 func (data *TestData) gracefulExitFlowAggregator(covDir string) error {
-	flowAggPod, err := data.getFlowAggregator()
+	flowAggPods, err := data.getFlowAggregators()
 	if err != nil {
 		return fmt.Errorf("error when getting flow-aggregator Pod: %v", err)
 	}
-	podName := flowAggPod.Name
 
-	if err := data.killProcessAndCollectCovFiles(flowAggregatorNamespace, podName, "flow-aggregator", "flow-aggregator", covDir); err != nil {
-		return fmt.Errorf("error when gracefully exiting Flow Aggregator: %w", err)
+	for idx := range flowAggPods {
+		podName := flowAggPods[idx].Name
+
+		if err := data.killProcessAndCollectCovFiles(flowAggregatorNamespace, podName, "flow-aggregator", "flow-aggregator", covDir); err != nil {
+			return fmt.Errorf("error when gracefully exiting Flow Aggregator %q: %w", podName, err)
+		}
 	}
 
 	return nil
@@ -3176,7 +3377,7 @@ func (data *TestData) waitForStatefulSetPods(timeout time.Duration, stsName stri
 }
 
 func isConnectionLostError(err error) bool {
-	return strings.Contains(err.Error(), connectionLostError.Error())
+	return strings.Contains(err.Error(), errConnectionLost.Error())
 }
 
 // retryOnConnectionLostError allows the caller to retry fn in case the error is ConnectionLost.
@@ -3187,7 +3388,7 @@ func retryOnConnectionLostError(backoff wait.Backoff, fn func() error) error {
 
 func (data *TestData) checkAntreaAgentInfo(interval time.Duration, timeout time.Duration, name string) error {
 	err := wait.PollUntilContextTimeout(context.TODO(), interval, timeout, true, func(ctx context.Context) (bool, error) {
-		aai, err := data.crdClient.CrdV1beta1().AntreaAgentInfos().Get(context.TODO(), name, metav1.GetOptions{})
+		aai, err := data.CRDClient.CrdV1beta1().AntreaAgentInfos().Get(context.TODO(), name, metav1.GetOptions{})
 		if err != nil {
 			if errors.IsNotFound(err) {
 				return false, nil
@@ -3382,4 +3583,11 @@ func (data *TestData) getAntreaClusterUUID(timeout time.Duration) (uuid.UUID, er
 		return true, nil
 	})
 	return clusterUUID, err
+}
+
+func getHttpURL(ip string, port string) string {
+	return (&url.URL{
+		Scheme: "http",
+		Host:   net.JoinHostPort(ip, port),
+	}).String()
 }

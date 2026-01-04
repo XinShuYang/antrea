@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,8 +29,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"antrea.io/antrea/pkg/agent/flowexporter"
+	"antrea.io/antrea/pkg/agent/flowexporter/connection"
 	connectionstest "antrea.io/antrea/pkg/agent/flowexporter/connections/testing"
+	"antrea.io/antrea/pkg/agent/flowexporter/options"
+	"antrea.io/antrea/pkg/agent/flowexporter/utils"
 	"antrea.io/antrea/pkg/agent/metrics"
 	"antrea.io/antrea/pkg/agent/openflow"
 	proxytest "antrea.io/antrea/pkg/agent/proxy/testing"
@@ -37,15 +40,13 @@ import (
 	cpv1beta "antrea.io/antrea/pkg/apis/controlplane/v1beta2"
 	secv1beta1 "antrea.io/antrea/pkg/apis/crd/v1beta1"
 	queriertest "antrea.io/antrea/pkg/querier/testing"
-	podstoretest "antrea.io/antrea/pkg/util/podstore/testing"
+	objectstoretest "antrea.io/antrea/pkg/util/objectstore/testing"
+	utilwait "antrea.io/antrea/pkg/util/wait"
 	k8sproxy "antrea.io/antrea/third_party/proxy"
 )
 
 var (
-	tuple1 = flowexporter.Tuple{SourceAddress: netip.MustParseAddr("5.6.7.8"), DestinationAddress: netip.MustParseAddr("8.7.6.5"), Protocol: 6, SourcePort: 60001, DestinationPort: 200}
-	tuple2 = flowexporter.Tuple{SourceAddress: netip.MustParseAddr("1.2.3.4"), DestinationAddress: netip.MustParseAddr("4.3.2.1"), Protocol: 6, SourcePort: 65280, DestinationPort: 255}
-	tuple3 = flowexporter.Tuple{SourceAddress: netip.MustParseAddr("10.10.10.10"), DestinationAddress: netip.MustParseAddr("4.3.2.1"), Protocol: 6, SourcePort: 60000, DestinationPort: 100}
-	pod1   = &v1.Pod{
+	pod1 = &v1.Pod{
 		Status: v1.PodStatus{
 			PodIPs: []v1.PodIP{
 				{
@@ -91,41 +92,36 @@ var (
 	}
 )
 
-type fakeL7Listener struct{}
-
-func (fll *fakeL7Listener) ConsumeL7EventMap() map[flowexporter.ConnectionKey]L7ProtocolFields {
-	l7EventsMap := make(map[flowexporter.ConnectionKey]L7ProtocolFields)
-	return l7EventsMap
-}
-
 func TestConntrackConnectionStore_AddOrUpdateConn(t *testing.T) {
-	ctrl := gomock.NewController(t)
 	refTime := time.Now()
+	networkPolicyReadyTime := refTime.Add(-time.Hour)
+
+	tuple := connection.Tuple{SourceAddress: netip.MustParseAddr("5.6.7.8"), DestinationAddress: netip.MustParseAddr("8.7.6.5"), Protocol: 6, SourcePort: 60001, DestinationPort: 200}
 
 	tc := []struct {
-		name         string
-		flowKey      flowexporter.Tuple
-		oldConn      *flowexporter.Connection
-		newConn      flowexporter.Connection
-		expectedConn flowexporter.Connection
+		name                             string
+		oldConn                          *connection.Connection
+		newConn                          connection.Connection
+		expectedConn                     connection.Connection
+		expectNetworkPolicyMetadataAdded bool
 	}{
 		{
-			name:    "addNewConn",
-			flowKey: tuple1,
-			oldConn: nil,
-			newConn: flowexporter.Connection{
+			name:                             "addNewConn",
+			oldConn:                          nil,
+			expectNetworkPolicyMetadataAdded: true,
+			newConn: connection.Connection{
 				StartTime: refTime,
 				StopTime:  refTime,
-				FlowKey:   tuple1,
-				Labels:    []byte{0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0},
+				FlowKey:   tuple,
+				Labels:    []byte{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1},
 				Mark:      openflow.ServiceCTMark.GetValue(),
 			},
-			expectedConn: flowexporter.Connection{
+			expectedConn: connection.Connection{
 				StartTime:                      refTime,
 				StopTime:                       refTime,
 				LastExportTime:                 refTime,
-				FlowKey:                        tuple1,
-				Labels:                         []byte{0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0},
+				FlowKey:                        tuple,
+				Labels:                         []byte{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1},
 				Mark:                           openflow.ServiceCTMark.GetValue(),
 				IsPresent:                      true,
 				IsActive:                       true,
@@ -134,15 +130,16 @@ func TestConntrackConnectionStore_AddOrUpdateConn(t *testing.T) {
 				DestinationServicePortName:     servicePortName.String(),
 				IngressNetworkPolicyName:       np1.Name,
 				IngressNetworkPolicyNamespace:  np1.Namespace,
-				IngressNetworkPolicyType:       flowexporter.PolicyTypeToUint8(np1.Type),
+				IngressNetworkPolicyUID:        string(np1.UID),
+				IngressNetworkPolicyType:       utils.PolicyTypeToUint8(np1.Type),
 				IngressNetworkPolicyRuleName:   rule1.Name,
-				IngressNetworkPolicyRuleAction: flowexporter.RuleActionToUint8(string(*rule1.Action)),
+				IngressNetworkPolicyRuleAction: utils.RuleActionToUint8(string(*rule1.Action)),
 			},
 		},
 		{
-			name:    "updateActiveConn",
-			flowKey: tuple2,
-			oldConn: &flowexporter.Connection{
+			name:                             "updateActiveConn",
+			expectNetworkPolicyMetadataAdded: false, // Update case doesn't add NetworkPolicy metadata
+			oldConn: &connection.Connection{
 				StartTime:       refTime.Add(-(time.Second * 50)),
 				StopTime:        refTime.Add(-(time.Second * 30)),
 				LastExportTime:  refTime.Add(-(time.Second * 50)),
@@ -150,20 +147,20 @@ func TestConntrackConnectionStore_AddOrUpdateConn(t *testing.T) {
 				OriginalBytes:   0xbaaaaa00000000,
 				ReversePackets:  0xf,
 				ReverseBytes:    0xbaa,
-				FlowKey:         tuple2,
+				FlowKey:         tuple,
 				IsPresent:       true,
 			},
-			newConn: flowexporter.Connection{
+			newConn: connection.Connection{
 				StartTime:       refTime.Add(-(time.Second * 50)),
 				StopTime:        refTime,
 				OriginalPackets: 0xffff,
 				OriginalBytes:   0xbaaaaa0000000000,
 				ReversePackets:  0xff,
 				ReverseBytes:    0xbaaa,
-				FlowKey:         tuple2,
+				FlowKey:         tuple,
 				IsPresent:       true,
 			},
-			expectedConn: flowexporter.Connection{
+			expectedConn: connection.Connection{
 				StartTime:       refTime.Add(-(time.Second * 50)),
 				StopTime:        refTime,
 				LastExportTime:  refTime.Add(-(time.Second * 50)),
@@ -171,7 +168,7 @@ func TestConntrackConnectionStore_AddOrUpdateConn(t *testing.T) {
 				OriginalBytes:   0xbaaaaa0000000000,
 				ReversePackets:  0xff,
 				ReverseBytes:    0xbaaa,
-				FlowKey:         tuple2,
+				FlowKey:         tuple,
 				IsPresent:       true,
 				IsActive:        true,
 			},
@@ -179,9 +176,9 @@ func TestConntrackConnectionStore_AddOrUpdateConn(t *testing.T) {
 		{
 			// If the polled new connection is dying, the old connection present
 			// in connection store will not be updated.
-			name:    "updateDyingConn",
-			flowKey: tuple3,
-			oldConn: &flowexporter.Connection{
+			name:                             "updateDyingConn",
+			expectNetworkPolicyMetadataAdded: false, // Update case doesn't add NetworkPolicy metadata
+			oldConn: &connection.Connection{
 				StartTime:       refTime.Add(-(time.Second * 50)),
 				StopTime:        refTime.Add(-(time.Second * 30)),
 				LastExportTime:  refTime.Add(-(time.Second * 50)),
@@ -189,22 +186,22 @@ func TestConntrackConnectionStore_AddOrUpdateConn(t *testing.T) {
 				OriginalBytes:   0xbaaaaa00000000,
 				ReversePackets:  0xf,
 				ReverseBytes:    0xba,
-				FlowKey:         tuple3,
+				FlowKey:         tuple,
 				TCPState:        "TIME_WAIT",
 				IsPresent:       true,
 			},
-			newConn: flowexporter.Connection{
+			newConn: connection.Connection{
 				StartTime:       refTime.Add(-(time.Second * 50)),
 				StopTime:        refTime,
 				OriginalPackets: 0xffff,
 				OriginalBytes:   0xbaaaaa0000000000,
 				ReversePackets:  0xff,
 				ReverseBytes:    0xbaaa,
-				FlowKey:         tuple3,
+				FlowKey:         tuple,
 				TCPState:        "TIME_WAIT",
 				IsPresent:       true,
 			},
-			expectedConn: flowexporter.Connection{
+			expectedConn: connection.Connection{
 				StartTime:       refTime.Add(-(time.Second * 50)),
 				StopTime:        refTime.Add(-(time.Second * 30)),
 				LastExportTime:  refTime.Add(-(time.Second * 50)),
@@ -212,39 +209,69 @@ func TestConntrackConnectionStore_AddOrUpdateConn(t *testing.T) {
 				OriginalBytes:   0xbaaaaa00000000,
 				ReversePackets:  0xf,
 				ReverseBytes:    0xba,
-				FlowKey:         tuple3,
+				FlowKey:         tuple,
 				TCPState:        "TIME_WAIT",
 				IsPresent:       true,
 			},
 		},
+		{
+			name:                             "addConnWithOldTimestamp_NoNetworkPolicyMetadata",
+			oldConn:                          nil,
+			expectNetworkPolicyMetadataAdded: false,
+			newConn: connection.Connection{
+				StartTime: networkPolicyReadyTime.Add(-time.Minute), // Before NetworkPolicy ready
+				StopTime:  refTime,
+				FlowKey:   tuple,
+				Labels:    []byte{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1},
+				Mark:      openflow.ServiceCTMark.GetValue(),
+			},
+			expectedConn: connection.Connection{
+				StartTime:                  networkPolicyReadyTime.Add(-time.Minute),
+				StopTime:                   refTime,
+				LastExportTime:             networkPolicyReadyTime.Add(-time.Minute),
+				FlowKey:                    tuple,
+				Labels:                     []byte{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1},
+				Mark:                       openflow.ServiceCTMark.GetValue(),
+				IsPresent:                  true,
+				IsActive:                   true,
+				DestinationPodName:         "pod1",
+				DestinationPodNamespace:    "ns1",
+				DestinationServicePortName: servicePortName.String(),
+				// NetworkPolicy fields should be empty for old connections
+			},
+		},
 	}
-
-	mockPodStore := podstoretest.NewMockInterface(ctrl)
-	mockProxier := proxytest.NewMockProxier(ctrl)
-	mockConnDumper := connectionstest.NewMockConnTrackDumper(ctrl)
-	npQuerier := queriertest.NewMockAgentNetworkPolicyInfoQuerier(ctrl)
-	conntrackConnStore := NewConntrackConnectionStore(mockConnDumper, true, false, npQuerier, mockPodStore, mockProxier, nil, testFlowExporterOptions)
 
 	for _, c := range tc {
 		t.Run(c.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockPodStore := objectstoretest.NewMockPodStore(ctrl)
+			mockProxier := proxytest.NewMockProxyQuerier(ctrl)
+			mockConnDumper := connectionstest.NewMockConnTrackDumper(ctrl)
+			npQuerier := queriertest.NewMockAgentNetworkPolicyInfoQuerier(ctrl)
+
+			conntrackConnStore := NewConntrackConnectionStore(mockConnDumper, true, false, npQuerier, mockPodStore, mockProxier, nil, testFlowExporterOptions)
+			// Set the networkPolicyReadyTime to simulate that NetworkPolicies are ready
+			conntrackConnStore.networkPolicyReadyTime = networkPolicyReadyTime
+
 			// Add the existing connection to the connection store.
 			if c.oldConn != nil {
 				addConnToStore(conntrackConnStore, c.oldConn)
 			} else {
-				testAddNewConn(mockPodStore, mockProxier, npQuerier, c.newConn)
+				testAddNewConn(mockPodStore, mockProxier, npQuerier, c.newConn, c.expectNetworkPolicyMetadataAdded)
 			}
 			conntrackConnStore.AddOrUpdateConn(&c.newConn)
-			actualConn, exist := conntrackConnStore.GetConnByKey(flowexporter.NewConnectionKey(&c.newConn))
+			actualConn, exist := conntrackConnStore.GetConnByKey(connection.NewConnectionKey(&c.newConn))
 			require.Equal(t, exist, true, "The connection should exist in the connection store")
 			assert.Equal(t, c.expectedConn, *actualConn, "Connections should be equal")
-			assert.Equalf(t, 1, conntrackConnStore.connectionStore.expirePriorityQueue.Len(), "Length of the expire priority queue should be 1")
+			require.Equal(t, 1, conntrackConnStore.connectionStore.expirePriorityQueue.Len(), "Length of the expire priority queue should be 1")
 			conntrackConnStore.connectionStore.expirePriorityQueue.Pop() // empty the PQ
 		})
 	}
 }
 
 // testAddNewConn tests podInfo, Services, network policy mapping.
-func testAddNewConn(mockPodStore *podstoretest.MockInterface, mockProxier *proxytest.MockProxier, npQuerier *queriertest.MockAgentNetworkPolicyInfoQuerier, conn flowexporter.Connection) {
+func testAddNewConn(mockPodStore *objectstoretest.MockPodStore, mockProxier *proxytest.MockProxyQuerier, npQuerier *queriertest.MockAgentNetworkPolicyInfoQuerier, conn connection.Connection, expectNetworkPolicyMetadataAdded bool) {
 	mockPodStore.EXPECT().GetPodByIPAndTime(conn.FlowKey.SourceAddress.String(), gomock.Any()).Return(nil, false)
 	mockPodStore.EXPECT().GetPodByIPAndTime(conn.FlowKey.DestinationAddress.String(), gomock.Any()).Return(pod1, true)
 
@@ -252,15 +279,16 @@ func testAddNewConn(mockPodStore *podstoretest.MockInterface, mockProxier *proxy
 	serviceStr := fmt.Sprintf("%s:%d/%s", conn.OriginalDestinationAddress.String(), conn.OriginalDestinationPort, protocol)
 	mockProxier.EXPECT().GetServiceByIP(serviceStr).Return(servicePortName, true)
 
-	ingressOfID := binary.LittleEndian.Uint32(conn.Labels[:4])
-	npQuerier.EXPECT().GetNetworkPolicyByRuleFlowID(ingressOfID).Return(&np1)
-	npQuerier.EXPECT().GetRuleByFlowID(ingressOfID).Return(&rule1)
+	if expectNetworkPolicyMetadataAdded {
+		ingressOfID := binary.BigEndian.Uint32(conn.Labels[12:16])
+		npQuerier.EXPECT().GetRuleByFlowID(ingressOfID).Return(&rule1)
+	}
 }
 
 // addConntrackConnToMap adds a conntrack connection to the connection map and
 // increment the metric.
-func addConnToStore(cs *ConntrackConnectionStore, conn *flowexporter.Connection) {
-	connKey := flowexporter.NewConnectionKey(conn)
+func addConnToStore(cs *ConntrackConnectionStore, conn *connection.Connection) {
+	connKey := connection.NewConnectionKey(conn)
 	cs.AddConnToMap(&connKey, conn)
 	cs.expirePriorityQueue.WriteItemToQueue(connKey, conn)
 	metrics.TotalAntreaConnectionsInConnTrackTable.Inc()
@@ -269,12 +297,12 @@ func addConnToStore(cs *ConntrackConnectionStore, conn *flowexporter.Connection)
 func TestConnectionStore_DeleteConnectionByKey(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	// Create two flows; one is already in connectionStore and other one is new
-	testFlows := make([]*flowexporter.Connection, 2)
-	testFlowKeys := make([]*flowexporter.ConnectionKey, 2)
+	testFlows := make([]*connection.Connection, 2)
+	testFlowKeys := make([]*connection.ConnectionKey, 2)
 	refTime := time.Now()
 	// Flow-1, which is already in connectionStore
-	tuple1 := flowexporter.Tuple{SourceAddress: netip.MustParseAddr("1.2.3.4"), DestinationAddress: netip.MustParseAddr("4.3.2.1"), Protocol: 6, SourcePort: 65280, DestinationPort: 255}
-	testFlows[0] = &flowexporter.Connection{
+	tuple1 := connection.Tuple{SourceAddress: netip.MustParseAddr("1.2.3.4"), DestinationAddress: netip.MustParseAddr("4.3.2.1"), Protocol: 6, SourcePort: 65280, DestinationPort: 255}
+	testFlows[0] = &connection.Connection{
 		StartTime:       refTime.Add(-(time.Second * 50)),
 		StopTime:        refTime,
 		OriginalPackets: 0xffff,
@@ -285,8 +313,8 @@ func TestConnectionStore_DeleteConnectionByKey(t *testing.T) {
 		IsPresent:       true,
 	}
 	// Flow-2, which is not in connectionStore
-	tuple2 := flowexporter.Tuple{SourceAddress: netip.MustParseAddr("5.6.7.8"), DestinationAddress: netip.MustParseAddr("8.7.6.5"), Protocol: 6, SourcePort: 60001, DestinationPort: 200}
-	testFlows[1] = &flowexporter.Connection{
+	tuple2 := connection.Tuple{SourceAddress: netip.MustParseAddr("5.6.7.8"), DestinationAddress: netip.MustParseAddr("8.7.6.5"), Protocol: 6, SourcePort: 60001, DestinationPort: 200}
+	testFlows[1] = &connection.Connection{
 		StartTime:       refTime.Add(-(time.Second * 20)),
 		StopTime:        refTime,
 		OriginalPackets: 0xbb,
@@ -297,13 +325,13 @@ func TestConnectionStore_DeleteConnectionByKey(t *testing.T) {
 		IsPresent:       true,
 	}
 	for i, flow := range testFlows {
-		connKey := flowexporter.NewConnectionKey(flow)
+		connKey := connection.NewConnectionKey(flow)
 		testFlowKeys[i] = &connKey
 	}
 	// For testing purposes, set the metric
 	metrics.TotalAntreaConnectionsInConnTrackTable.Set(float64(len(testFlows)))
 	// Create connectionStore
-	mockPodStore := podstoretest.NewMockInterface(ctrl)
+	mockPodStore := objectstoretest.NewMockPodStore(ctrl)
 	connStore := NewConntrackConnectionStore(nil, true, false, nil, mockPodStore, nil, nil, testFlowExporterOptions)
 	// Add flows to the connection store.
 	for i, flow := range testFlows {
@@ -322,11 +350,11 @@ func TestConnectionStore_DeleteConnectionByKey(t *testing.T) {
 func TestConnectionStore_MetricSettingInPoll(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
-	testFlows := make([]*flowexporter.Connection, 0)
+	testFlows := make([]*connection.Connection, 0)
 	// Create connectionStore
-	mockPodStore := podstoretest.NewMockInterface(ctrl)
+	mockPodStore := objectstoretest.NewMockPodStore(ctrl)
 	mockConnDumper := connectionstest.NewMockConnTrackDumper(ctrl)
-	conntrackConnStore := NewConntrackConnectionStore(mockConnDumper, true, false, nil, mockPodStore, nil, &fakeL7Listener{}, testFlowExporterOptions)
+	conntrackConnStore := NewConntrackConnectionStore(mockConnDumper, true, false, nil, mockPodStore, nil, nil, testFlowExporterOptions)
 	// Hard-coded conntrack occupancy metrics for test
 	TotalConnections := 0
 	MaxConnections := 300000
@@ -338,4 +366,74 @@ func TestConnectionStore_MetricSettingInPoll(t *testing.T) {
 	assert.Equal(t, connsLens[0], len(testFlows), "expected connections should be equal to number of testFlows")
 	checkTotalConnectionsMetric(t, TotalConnections)
 	checkMaxConnectionsMetric(t, MaxConnections)
+}
+
+func TestConntrackConnectionStore_Run_NetworkPolicyWait(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockConnDumper := connectionstest.NewMockConnTrackDumper(ctrl)
+
+	// Create a utilwait.Group and increment it to simulate waiting for NetworkPolicies
+	networkPolicyWait := utilwait.NewGroup()
+	networkPolicyWait.Increment()
+
+	testOptions := &options.FlowExporterOptions{
+		ActiveFlowTimeout:      testActiveFlowTimeout,
+		IdleFlowTimeout:        testIdleFlowTimeout,
+		StaleConnectionTimeout: testStaleConnectionTimeout,
+		PollInterval:           100 * time.Millisecond, // Valid but small poll interval
+	}
+	conntrackConnStore := NewConntrackConnectionStore(mockConnDumper, true, false, nil, nil, nil, networkPolicyWait, testOptions)
+
+	// Create a signal channel that will be closed on the first DumpFlows call
+	firstPollDoneCh := make(chan struct{})
+
+	// Set up mock expectations - close signal channel on first DumpFlows call, then return normally
+	mockConnDumper.EXPECT().DumpFlows(uint16(openflow.CtZone)).DoAndReturn(func(uint16) ([]*connection.Connection, int, error) {
+		defer close(firstPollDoneCh)
+		return []*connection.Connection{}, 0, nil
+	}).Times(1)
+	mockConnDumper.EXPECT().DumpFlows(uint16(openflow.CtZone)).Return([]*connection.Connection{}, 0, nil).AnyTimes()
+	mockConnDumper.EXPECT().GetMaxConnections().Return(0, nil).AnyTimes()
+
+	// Record the time before starting Run
+	beforeRunTime := time.Now()
+
+	// Verify that networkPolicyReadyTime is initially zero
+	require.Zero(t, conntrackConnStore.networkPolicyReadyTime)
+
+	// Start the connection store in a goroutine
+	stopCh := make(chan struct{})
+	closeStopCh := sync.OnceFunc(func() { close(stopCh) })
+	defer closeStopCh()
+	runFinishedCh := make(chan struct{})
+	go func() {
+		defer close(runFinishedCh)
+		conntrackConnStore.Run(stopCh)
+	}()
+
+	// Signal that NetworkPolicies are ready
+	networkPolicyWait.Done()
+
+	// Wait for the first poll to happen (which means Run has proceeded past the wait)
+	select {
+	case <-firstPollDoneCh:
+		// Expected: Run has started polling
+	case <-time.After(1 * time.Second):
+		require.Fail(t, "Run should have started polling within 1 second")
+	}
+
+	// Stop the connection store
+	closeStopCh()
+
+	// Wait for Run to finish
+	select {
+	case <-runFinishedCh:
+		// Expected: Run finished cleanly
+	case <-time.After(1 * time.Second):
+		require.Fail(t, "Run should have finished within 1 second after stopCh was closed")
+	}
+
+	// Verify that networkPolicyReadyTime has been set and is after we started the test
+	require.NotZero(t, conntrackConnStore.networkPolicyReadyTime)
+	assert.True(t, conntrackConnStore.networkPolicyReadyTime.After(beforeRunTime))
 }

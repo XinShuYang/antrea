@@ -15,12 +15,13 @@
 package querier
 
 import (
-	ipfixintermediate "github.com/vmware/go-ipfix/pkg/intermediate"
+	"antrea.io/antrea/pkg/flowaggregator/intermediate"
 )
 
 type Metrics struct {
 	NumRecordsExported     int64
 	NumRecordsReceived     int64
+	NumRecordsDropped      int64
 	NumFlows               int64
 	NumConnToCollector     int64
 	WithClickHouseExporter bool
@@ -30,7 +31,7 @@ type Metrics struct {
 }
 
 type FlowAggregatorQuerier interface {
-	GetFlowRecords(flowKey *ipfixintermediate.FlowKey) []map[string]interface{}
+	GetFlowRecords(flowKey *intermediate.FlowKey) []map[string]interface{}
 	GetRecordMetrics() Metrics
 }
 

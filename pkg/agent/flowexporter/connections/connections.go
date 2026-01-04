@@ -15,17 +15,23 @@
 package connections
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/vmware/go-ipfix/pkg/registry"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
-	"antrea.io/antrea/pkg/agent/flowexporter"
+	"antrea.io/antrea/pkg/agent/flowexporter/connection"
+	"antrea.io/antrea/pkg/agent/flowexporter/options"
 	"antrea.io/antrea/pkg/agent/flowexporter/priorityqueue"
+	"antrea.io/antrea/pkg/agent/flowexporter/utils"
 	"antrea.io/antrea/pkg/agent/proxy"
-	"antrea.io/antrea/pkg/util/podstore"
+	"antrea.io/antrea/pkg/querier"
+	"antrea.io/antrea/pkg/util/objectstore"
 )
 
 const (
@@ -33,20 +39,23 @@ const (
 )
 
 type connectionStore struct {
-	connections            map[flowexporter.ConnectionKey]*flowexporter.Connection
-	podStore               podstore.Interface
-	antreaProxier          proxy.Proxier
+	connections            map[connection.ConnectionKey]*connection.Connection
+	networkPolicyQuerier   querier.AgentNetworkPolicyInfoQuerier
+	podStore               objectstore.PodStore
+	antreaProxier          proxy.ProxyQuerier
 	expirePriorityQueue    *priorityqueue.ExpirePriorityQueue
 	staleConnectionTimeout time.Duration
 	mutex                  sync.Mutex
 }
 
 func NewConnectionStore(
-	podStore podstore.Interface,
-	proxier proxy.Proxier,
-	o *flowexporter.FlowExporterOptions) connectionStore {
+	npQuerier querier.AgentNetworkPolicyInfoQuerier,
+	podStore objectstore.PodStore,
+	proxier proxy.ProxyQuerier,
+	o *options.FlowExporterOptions) connectionStore {
 	return connectionStore{
-		connections:            make(map[flowexporter.ConnectionKey]*flowexporter.Connection),
+		connections:            make(map[connection.ConnectionKey]*connection.Connection),
+		networkPolicyQuerier:   npQuerier,
 		podStore:               podStore,
 		antreaProxier:          proxier,
 		expirePriorityQueue:    priorityqueue.NewExpirePriorityQueue(o.ActiveFlowTimeout, o.IdleFlowTimeout),
@@ -55,15 +64,21 @@ func NewConnectionStore(
 }
 
 // GetConnByKey gets the connection in connection map given the connection key.
-func (cs *connectionStore) GetConnByKey(connKey flowexporter.ConnectionKey) (*flowexporter.Connection, bool) {
+func (cs *connectionStore) GetConnByKey(connKey connection.ConnectionKey) (*connection.Connection, bool) {
 	cs.mutex.Lock()
 	defer cs.mutex.Unlock()
 	conn, found := cs.connections[connKey]
 	return conn, found
 }
 
+func (cs *connectionStore) NumConnections() int {
+	cs.mutex.Lock()
+	defer cs.mutex.Unlock()
+	return len(cs.connections)
+}
+
 // ForAllConnectionsDo execute the callback for each connection in connection map.
-func (cs *connectionStore) ForAllConnectionsDo(callback flowexporter.ConnectionMapCallBack) error {
+func (cs *connectionStore) ForAllConnectionsDo(callback connection.ConnectionMapCallBack) error {
 	cs.mutex.Lock()
 	defer cs.mutex.Unlock()
 	for k, v := range cs.connections {
@@ -78,7 +93,7 @@ func (cs *connectionStore) ForAllConnectionsDo(callback flowexporter.ConnectionM
 
 // ForAllConnectionsDoWithoutLock execute the callback for each connection in connection
 // map, without grabbing the lock. Caller is expected to grab lock.
-func (cs *connectionStore) ForAllConnectionsDoWithoutLock(callback flowexporter.ConnectionMapCallBack) error {
+func (cs *connectionStore) ForAllConnectionsDoWithoutLock(callback connection.ConnectionMapCallBack) error {
 	for k, v := range cs.connections {
 		err := callback(k, v)
 		if err != nil {
@@ -91,13 +106,13 @@ func (cs *connectionStore) ForAllConnectionsDoWithoutLock(callback flowexporter.
 
 // AddConnToMap adds the connection to connections map given connection key.
 // This is used only for unit tests.
-func (cs *connectionStore) AddConnToMap(connKey *flowexporter.ConnectionKey, conn *flowexporter.Connection) {
+func (cs *connectionStore) AddConnToMap(connKey *connection.ConnectionKey, conn *connection.Connection) {
 	cs.mutex.Lock()
 	defer cs.mutex.Unlock()
 	cs.connections[*connKey] = conn
 }
 
-func (cs *connectionStore) fillPodInfo(conn *flowexporter.Connection) {
+func (cs *connectionStore) fillPodInfo(conn *connection.Connection) {
 	if cs.podStore == nil {
 		klog.V(4).Info("Pod store is not available to retrieve local Pods information.")
 		return
@@ -111,14 +126,16 @@ func (cs *connectionStore) fillPodInfo(conn *flowexporter.Connection) {
 	if srcFound {
 		conn.SourcePodName = srcPod.Name
 		conn.SourcePodNamespace = srcPod.Namespace
+		conn.SourcePodUID = string(srcPod.UID)
 	}
 	if dstFound {
 		conn.DestinationPodName = dstPod.Name
 		conn.DestinationPodNamespace = dstPod.Namespace
+		conn.DestinationPodUID = string(dstPod.UID)
 	}
 }
 
-func (cs *connectionStore) fillServiceInfo(conn *flowexporter.Connection, serviceStr string) {
+func (cs *connectionStore) fillServiceInfo(conn *connection.Connection, serviceStr string) {
 	// resolve destination Service information
 	if cs.antreaProxier != nil {
 		servicePortName, exists := cs.antreaProxier.GetServiceByIP(serviceStr)
@@ -139,6 +156,64 @@ func lookupServiceProtocol(protoID uint8) (corev1.Protocol, error) {
 	return serviceProto, nil
 }
 
+func (cs *connectionStore) addNetworkPolicyMetadata(conn *connection.Connection) {
+	// Retrieve NetworkPolicy Name and Namespace by using the ingress and egress
+	// IDs stored in the connection label.
+	if len(conn.Labels) != 0 {
+		if klog.V(4).Enabled() {
+			klog.InfoS("Setting NetworkPolicy metadata from connection labels", "labels", hex.EncodeToString(conn.Labels))
+		}
+		ingressOfID := binary.BigEndian.Uint32(conn.Labels[12:16])
+		egressOfID := binary.BigEndian.Uint32(conn.Labels[8:12])
+		if ingressOfID != 0 {
+			rule := cs.networkPolicyQuerier.GetRuleByFlowID(ingressOfID)
+			if rule == nil {
+				// This should not happen because the rule flow ID to rule mapping
+				// is meant to be preserved for long enough (based on the poll
+				// interval), even after the rule deletion.
+				klog.InfoS("Cannot find ingress NetworkPolicy rule", "flowID", ingressOfID)
+			} else if rule.PolicyRef == nil {
+				// This should never be possible.
+				klog.ErrorS(nil, "Found ingress NetworkPolicy rule with nil PolicyRef", "flowID", ingressOfID)
+			} else {
+				policy := rule.PolicyRef
+				conn.IngressNetworkPolicyName = policy.Name
+				conn.IngressNetworkPolicyNamespace = policy.Namespace
+				conn.IngressNetworkPolicyUID = string(policy.UID)
+				conn.IngressNetworkPolicyType = utils.PolicyTypeToUint8(policy.Type)
+				conn.IngressNetworkPolicyRuleName = rule.Name
+				conn.IngressNetworkPolicyRuleAction = registry.NetworkPolicyRuleActionAllow
+				if klog.V(4).Enabled() {
+					klog.InfoS("Found ingress NetworkPolicy rule", "flowID", ingressOfID, "policy", klog.KRef(policy.Namespace, policy.Name), "ruleName", rule.Name)
+				}
+			}
+		}
+		if egressOfID != 0 {
+			rule := cs.networkPolicyQuerier.GetRuleByFlowID(egressOfID)
+			if rule == nil {
+				// This should not happen because the rule flow ID to rule mapping
+				// is meant to be preserved for long enough (based on the poll
+				// interval), even after the rule deletion.
+				klog.InfoS("Cannot find egress NetworkPolicy rule", "flowID", egressOfID)
+			} else if rule.PolicyRef == nil {
+				// This should never be possible.
+				klog.ErrorS(nil, "Found egress NetworkPolicy rule with nil PolicyRef", "flowID", egressOfID)
+			} else {
+				policy := rule.PolicyRef
+				conn.EgressNetworkPolicyName = policy.Name
+				conn.EgressNetworkPolicyNamespace = policy.Namespace
+				conn.EgressNetworkPolicyUID = string(policy.UID)
+				conn.EgressNetworkPolicyType = utils.PolicyTypeToUint8(policy.Type)
+				conn.EgressNetworkPolicyRuleName = rule.Name
+				conn.EgressNetworkPolicyRuleAction = registry.NetworkPolicyRuleActionAllow
+				if klog.V(4).Enabled() {
+					klog.InfoS("Found egress NetworkPolicy rule", "flowID", egressOfID, "policy", klog.KRef(policy.Namespace, policy.Name), "ruleName", rule.Name)
+				}
+			}
+		}
+	}
+}
+
 func (cs *connectionStore) AcquireConnStoreLock() {
 	cs.mutex.Lock()
 }
@@ -152,11 +227,9 @@ func (cs *connectionStore) ReleaseConnStoreLock() {
 // item's expire time every time we encounter it in the PQ. The method also
 // updates active connection's stats fields and adds it back to the PQ. Layer 7
 // fields should be set to default to prevent from re-exporting same values.
-func (cs *connectionStore) UpdateConnAndQueue(pqItem *flowexporter.ItemToExpire, currTime time.Time) {
+func (cs *connectionStore) UpdateConnAndQueue(pqItem *priorityqueue.ItemToExpire, currTime time.Time) {
 	conn := pqItem.Conn
 	conn.LastExportTime = currTime
-	conn.AppProtocolName = ""
-	conn.HttpVals = ""
 	if conn.ReadyToDelete || !conn.IsActive {
 		cs.expirePriorityQueue.RemoveItemFromMap(conn)
 	} else {

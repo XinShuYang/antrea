@@ -82,18 +82,22 @@ data:
     $OVS_VERSION=$(Get-Item $OVSDriverDir\OVSExt.sys).VersionInfo.ProductVersion
     ovs-vsctl --no-wait set Open_vSwitch . ovs_version=$OVS_VERSION
 
-    ovs-vswitchd --log-file=/var/log/antrea/openvswitch/ovs-vswitchd.log --pidfile -vfile:info --detach
-
+    # Use RetryInterval to reduce the wait time after restarting the OVS process, accelerating process recovery.
+    $RetryInterval = 2
     $SleepInterval = 30
     Write-Host "Started the loop that checks OVS status every $SleepInterval seconds"
     while ($true) {
-        if ( !( Get-Process ovsdb-server ) ) {
+        if ( !( Get-Process ovsdb-server -ErrorAction SilentlyContinue) ) {
             Write-Host "ovsdb-server is not running, starting it again..."
             ovsdb-server $OVS_DB_PATH -vfile:info --remote=punix:db.sock --log-file=/var/log/antrea/openvswitch/ovsdb-server.log --pidfile --detach
+            Start-Sleep -Seconds $RetryInterval
+            continue
         }
-        if ( !( Get-Process ovs-vswitchd ) ) {
+        if ( !( Get-Process ovs-vswitchd -ErrorAction SilentlyContinue) ) {
             Write-Host "ovs-vswitchd is not running, starting it again..."
             ovs-vswitchd --log-file=/var/log/antrea/openvswitch/ovs-vswitchd.log --pidfile -vfile:info --detach
+            Start-Sleep -Seconds $RetryInterval
+            continue
         }
         Start-Sleep -Seconds $SleepInterval
     }
@@ -127,17 +131,6 @@ data:
   antrea-agent.conf: |
     # FeatureGates is a map of feature names to bools that enable or disable experimental features.
     featureGates:
-    # Enable antrea proxy which provides ServiceLB for in-cluster services in antrea agent.
-    # It should be enabled on Windows, otherwise NetworkPolicy will not take effect on
-    # Service traffic. Note that this feature gate is deprecated since this feature was
-    # promoted to GA in v1.14.
-    #  AntreaProxy: true
-
-    # Enable NodePortLocal feature to make the Pods reachable externally through NodePort
-    #  NodePortLocal: true
-
-    # Enable flowexporter which exports polled conntrack connections as IPFIX flow records from each agent to a configured collector.
-    #  FlowExporter: false
 
     # Name of the OpenVSwitch bridge antrea-agent will create and use.
     # Make sure it doesn't conflict with your existing OpenVSwitch bridges.
@@ -173,41 +166,6 @@ data:
 
     # Enable metrics exposure via Prometheus. Initializes Prometheus metrics listener.
     #enablePrometheusMetrics: true
-
-    # Provide the IPFIX collector address as a string with format <HOST>:[<PORT>][:<PROTO>].
-    # HOST can either be the DNS name, IP, or Service name of the Flow Collector. If
-    # using an IP, it can be either IPv4 or IPv6. However, IPv6 address should be
-    # wrapped with []. When the collector is running in-cluster as a Service, set
-    # <HOST> to <Service namespace>/<Service name>. For example,
-    # "flow-aggregator/flow-aggregator" can be provided to connect to the Antrea
-    # Flow Aggregator Service.
-    # If PORT is empty, we default to 4739, the standard IPFIX port.
-    # If no PROTO is given, we consider "tls" as default. We support "tls", "tcp" and
-    # "udp" protocols. "tls" is used for securing communication between flow exporter and
-    # flow aggregator.
-    #flowCollectorAddr: "flow-aggregator/flow-aggregator:4739:tls"
-
-    # Provide flow poll interval as a duration string. This determines how often the
-    # flow exporter dumps connections from the conntrack module. Flow poll interval
-    # should be greater than or equal to 1s (one second).
-    # Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
-    #flowPollInterval: "5s"
-
-    # Provide the active flow export timeout, which is the timeout after which a flow
-    # record is sent to the collector for active flows. Thus, for flows with a continuous
-    # stream of packets, a flow record will be exported to the collector once the elapsed
-    # time since the last export event is equal to the value of this timeout.
-    # Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
-    #activeFlowExportTimeout: "30s"
-
-    # Provide the idle flow export timeout, which is the timeout after which a flow
-    # record is sent to the collector for idle flows. A flow is considered idle if no
-    # packet matching this flow has been observed since the last export event.
-    # Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
-    #idleFlowExportTimeout: "15s"
-
-    # Enable TLS communication from flow exporter to flow aggregator.
-    #enableTLSToFlowAggregator: true
 
     # Determines how traffic is encapsulated. It has the following options:
     # encap(default):    Inter-node Pod traffic is always encapsulated and Pod to external network
@@ -305,8 +263,8 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/agent-windows: cd61458cbe274d2d6117702c6220c55ae75b38b71806d18e569682998ff83d79
-        checksum/windows-config: 4f07164f32afc61e20b4aef984a8781142e5d99f7c58f7581e4ccfeabb34855f
+        checksum/agent-windows: 4a8b62e6d8076e1792f4a0a880a806016eb6991994c7cc63ac71bcf5bb2f9432
+        checksum/windows-config: 25fbe0add2041817f8d57d17e6f83bfe1d0f60aeac7ea189827ab2d42db1802b
         microsoft.com/hostprocess-inherit-user: "true"
       labels:
         app: antrea
@@ -351,6 +309,10 @@ spec:
               - -VMSwitchExtension
               - disable
         name: antrea-agent
+        resources:
+            requests:
+              cpu: 200m
+              memory: 100Mi
         volumeMounts:
         - mountPath: /etc/antrea
           name: antrea-windows-config
@@ -366,6 +328,10 @@ spec:
         image: antrea/antrea-windows:latest
         imagePullPolicy: IfNotPresent
         name: antrea-ovs
+        resources:
+            requests:
+              cpu: 200m
+              memory: 100Mi
         volumeMounts:
         - mountPath: /var/lib/antrea-windows
           name: antrea-agent-windows
@@ -382,6 +348,9 @@ spec:
         image: antrea/antrea-windows:latest
         imagePullPolicy: IfNotPresent
         name: install-cni
+        resources:
+            requests:
+              cpu: 100m
         volumeMounts:
         - mountPath: /etc/antrea
           name: antrea-windows-config

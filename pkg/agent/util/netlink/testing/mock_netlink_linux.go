@@ -1,4 +1,4 @@
-// Copyright 2024 Antrea Authors
+// Copyright 2025 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -201,6 +201,20 @@ func (mr *MockInterfaceMockRecorder) LinkList() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LinkList", reflect.TypeOf((*MockInterface)(nil).LinkList))
 }
 
+// LinkSetAlias mocks base method.
+func (m *MockInterface) LinkSetAlias(link netlink.Link, name string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LinkSetAlias", link, name)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// LinkSetAlias indicates an expected call of LinkSetAlias.
+func (mr *MockInterfaceMockRecorder) LinkSetAlias(link, name any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LinkSetAlias", reflect.TypeOf((*MockInterface)(nil).LinkSetAlias), link, name)
+}
+
 // LinkSetDown mocks base method.
 func (m *MockInterface) LinkSetDown(link netlink.Link) error {
 	m.ctrl.T.Helper()
@@ -314,6 +328,21 @@ func (mr *MockInterfaceMockRecorder) NeighList(linkIndex, family any) *gomock.Ca
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NeighList", reflect.TypeOf((*MockInterface)(nil).NeighList), linkIndex, family)
 }
 
+// NeighListExecute mocks base method.
+func (m *MockInterface) NeighListExecute(msg netlink.Ndmsg) ([]netlink.Neigh, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "NeighListExecute", msg)
+	ret0, _ := ret[0].([]netlink.Neigh)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// NeighListExecute indicates an expected call of NeighListExecute.
+func (mr *MockInterfaceMockRecorder) NeighListExecute(msg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NeighListExecute", reflect.TypeOf((*MockInterface)(nil).NeighListExecute), msg)
+}
+
 // NeighSet mocks base method.
 func (m *MockInterface) NeighSet(neigh *netlink.Neigh) error {
 	m.ctrl.T.Helper()
@@ -326,6 +355,20 @@ func (m *MockInterface) NeighSet(neigh *netlink.Neigh) error {
 func (mr *MockInterfaceMockRecorder) NeighSet(neigh any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NeighSet", reflect.TypeOf((*MockInterface)(nil).NeighSet), neigh)
+}
+
+// RouteAdd mocks base method.
+func (m *MockInterface) RouteAdd(route *netlink.Route) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RouteAdd", route)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RouteAdd indicates an expected call of RouteAdd.
+func (mr *MockInterfaceMockRecorder) RouteAdd(route any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RouteAdd", reflect.TypeOf((*MockInterface)(nil).RouteAdd), route)
 }
 
 // RouteDel mocks base method.

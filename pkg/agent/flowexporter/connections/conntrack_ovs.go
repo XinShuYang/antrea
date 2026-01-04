@@ -25,7 +25,9 @@ import (
 	"k8s.io/klog/v2"
 
 	"antrea.io/antrea/pkg/agent/config"
-	"antrea.io/antrea/pkg/agent/flowexporter"
+	"antrea.io/antrea/pkg/agent/flowexporter/connection"
+	"antrea.io/antrea/pkg/agent/flowexporter/filter"
+	"antrea.io/antrea/pkg/agent/flowexporter/utils"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/ovs/ovsctl"
 )
@@ -63,20 +65,22 @@ type connTrackOvsCtl struct {
 	serviceCIDRv6        netip.Prefix
 	ovsctlClient         ovsctl.OVSCtlClient
 	isAntreaProxyEnabled bool
+	protocolFilter       filter.ProtocolFilter
 }
 
-func NewConnTrackOvsAppCtl(nodeConfig *config.NodeConfig, serviceCIDRv4 netip.Prefix, serviceCIDRv6 netip.Prefix, isAntreaProxyEnabled bool) *connTrackOvsCtl {
+func NewConnTrackOvsAppCtl(nodeConfig *config.NodeConfig, serviceCIDRv4 netip.Prefix, serviceCIDRv6 netip.Prefix, isAntreaProxyEnabled bool, protocolFilter filter.ProtocolFilter) *connTrackOvsCtl {
 	return &connTrackOvsCtl{
 		nodeConfig,
 		serviceCIDRv4,
 		serviceCIDRv6,
 		ovsctl.NewClient(nodeConfig.OVSBridge),
 		isAntreaProxyEnabled,
+		protocolFilter,
 	}
 }
 
 // DumpFlows uses "ovs-appctl dpctl/dump-conntrack" to dump conntrack flows in the Antrea ZoneID.
-func (ct *connTrackOvsCtl) DumpFlows(zoneFilter uint16) ([]*flowexporter.Connection, int, error) {
+func (ct *connTrackOvsCtl) DumpFlows(zoneFilter uint16) ([]*connection.Connection, int, error) {
 	svcCIDR := ct.serviceCIDRv4
 	if zoneFilter == openflow.CtZoneV6 {
 		svcCIDR = ct.serviceCIDRv6
@@ -86,13 +90,13 @@ func (ct *connTrackOvsCtl) DumpFlows(zoneFilter uint16) ([]*flowexporter.Connect
 		return nil, 0, fmt.Errorf("error when dumping flows from conntrack: %v", err)
 	}
 
-	filteredConns := filterAntreaConns(conns, ct.nodeConfig, svcCIDR, zoneFilter, ct.isAntreaProxyEnabled)
+	filteredConns := filterAntreaConns(conns, ct.nodeConfig, svcCIDR, zoneFilter, ct.isAntreaProxyEnabled, ct.protocolFilter)
 	klog.V(2).Infof("FlowExporter considered flows: %d", len(filteredConns))
 
 	return filteredConns, totalConns, nil
 }
 
-func (ct *connTrackOvsCtl) ovsAppctlDumpConnections(zoneFilter uint16) ([]*flowexporter.Connection, int, error) {
+func (ct *connTrackOvsCtl) ovsAppctlDumpConnections(zoneFilter uint16) ([]*connection.Connection, int, error) {
 	// Dump conntrack using ovs-appctl dpctl/dump-conntrack
 	cmdOutput, execErr := ct.ovsctlClient.RunAppctlCmd("dpctl/dump-conntrack", false, "-m", "-s")
 	if execErr != nil {
@@ -100,7 +104,7 @@ func (ct *connTrackOvsCtl) ovsAppctlDumpConnections(zoneFilter uint16) ([]*flowe
 	}
 
 	// Parse the output to get the flow strings and convert them to Antrea connections.
-	antreaConns := make([]*flowexporter.Connection, 0)
+	antreaConns := make([]*connection.Connection, 0)
 	outputFlow := strings.Split(string(cmdOutput), "\n")
 	for _, flow := range outputFlow {
 		conn, err := flowStringToAntreaConnection(flow, zoneFilter)
@@ -120,8 +124,8 @@ func (ct *connTrackOvsCtl) ovsAppctlDumpConnections(zoneFilter uint16) ([]*flowe
 // flowStringToAntreaConnection parses the flow string and converts to Antrea connection.
 // Example of flow string:
 // "tcp,orig=(src=127.0.0.1,dst=127.0.0.1,sport=45218,dport=2379,packets=320108,bytes=24615344),reply=(src=127.0.0.1,dst=127.0.0.1,sport=2379,dport=45218,packets=239595,bytes=24347883),start=2020-07-24T05:07:03.998,id=3750535678,status=SEEN_REPLY|ASSURED|CONFIRMED|SRC_NAT_DONE|DST_NAT_DONE,timeout=86399,labels=0x200000001,protoinfo=(state_orig=ESTABLISHED,state_reply=ESTABLISHED,wscale_orig=7,wscale_reply=7,flags_orig=WINDOW_SCALE|SACK_PERM|MAXACK_SET,flags_reply=WINDOW_SCALE|SACK_PERM|MAXACK_SET)"
-func flowStringToAntreaConnection(flow string, zoneFilter uint16) (*flowexporter.Connection, error) {
-	conn := flowexporter.Connection{}
+func flowStringToAntreaConnection(flow string, zoneFilter uint16) (*connection.Connection, error) {
+	conn := connection.Connection{}
 	flowSlice := strings.Split(flow, ",")
 	isReply := false
 	inZone := false
@@ -133,7 +137,7 @@ func flowStringToAntreaConnection(flow string, zoneFilter uint16) (*flowexporter
 		switch {
 		case hasAnyProto(fs):
 			// Proto identifier
-			proto, err := flowexporter.LookupProtocolMap(fs)
+			proto, err := utils.LookupProtocolMap(fs)
 			if err != nil {
 				return nil, err
 			}
@@ -248,18 +252,15 @@ func flowStringToAntreaConnection(flow string, zoneFilter uint16) (*flowexporter
 			conn.Timeout = uint32(val)
 		case strings.Contains(fs, "labels"):
 			fields := strings.Split(fs, "=")
-			labelStr := strings.Replace(fields[len(fields)-1], "0x", "", -1)
-			// Add leading zeros since DecodeString() expects the input string has even length
-			if len(labelStr) < 16 {
-				labelStr = strings.Repeat("0", 16-len(labelStr)) + labelStr
+			labelStr, _ := strings.CutPrefix(fields[len(fields)-1], "0x")
+			// Add leading zeros since DecodeString() expects the input string to have
+			// even length and we expect conn.Labels to be a []byte of length 16.
+			if len(labelStr) < 32 {
+				labelStr = strings.Repeat("0", 32-len(labelStr)) + labelStr
 			}
 			hexval, err := hex.DecodeString(labelStr)
 			if err != nil {
 				return nil, fmt.Errorf("conversion of label string %s to []byte failed: %v", labelStr, err)
-			}
-			// Reverse the []byte slice to align with kernel side's result which is little endian
-			for i := 0; i < len(hexval)/2; i++ {
-				hexval[i], hexval[len(hexval)-i-1] = hexval[len(hexval)-i-1], hexval[i]
 			}
 			conn.Labels = hexval
 		case strings.Contains(fs, "id"):
@@ -292,7 +293,7 @@ func flowStringToAntreaConnection(flow string, zoneFilter uint16) (*flowexporter
 }
 
 func hasAnyProto(text string) bool {
-	for proto := range flowexporter.Protocols {
+	for proto := range utils.Protocols {
 		if strings.Contains(strings.ToLower(text), proto) {
 			return true
 		}

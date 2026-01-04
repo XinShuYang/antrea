@@ -1,4 +1,4 @@
-// Copyright 2024 Antrea Authors
+// Copyright 2025 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -145,6 +145,20 @@ func (m *MockAgentNetworkPolicyInfoQuerier) GetControllerConnectionStatus() bool
 func (mr *MockAgentNetworkPolicyInfoQuerierMockRecorder) GetControllerConnectionStatus() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetControllerConnectionStatus", reflect.TypeOf((*MockAgentNetworkPolicyInfoQuerier)(nil).GetControllerConnectionStatus))
+}
+
+// GetFQDNCache mocks base method.
+func (m *MockAgentNetworkPolicyInfoQuerier) GetFQDNCache(fqdnFilter *querier.FQDNCacheFilter) []types.DnsCacheEntry {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetFQDNCache", fqdnFilter)
+	ret0, _ := ret[0].([]types.DnsCacheEntry)
+	return ret0
+}
+
+// GetFQDNCache indicates an expected call of GetFQDNCache.
+func (mr *MockAgentNetworkPolicyInfoQuerierMockRecorder) GetFQDNCache(fqdnFilter any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetFQDNCache", reflect.TypeOf((*MockAgentNetworkPolicyInfoQuerier)(nil).GetFQDNCache), fqdnFilter)
 }
 
 // GetNetworkPolicies mocks base method.
@@ -309,14 +323,12 @@ func (m *MockEgressQuerier) EXPECT() *MockEgressQuerierMockRecorder {
 }
 
 // GetEgress mocks base method.
-func (m *MockEgressQuerier) GetEgress(podNamespace, podName string) (string, string, string, error) {
+func (m *MockEgressQuerier) GetEgress(podNamespace, podName string) (types.EgressConfig, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetEgress", podNamespace, podName)
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(string)
-	ret2, _ := ret[2].(string)
-	ret3, _ := ret[3].(error)
-	return ret0, ret1, ret2, ret3
+	ret0, _ := ret[0].(types.EgressConfig)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // GetEgress indicates an expected call of GetEgress.
@@ -380,14 +392,11 @@ func (mr *MockAgentBGPPolicyInfoQuerierMockRecorder) GetBGPPeerStatus(ctx any) *
 }
 
 // GetBGPPolicyInfo mocks base method.
-func (m *MockAgentBGPPolicyInfoQuerier) GetBGPPolicyInfo() (string, string, int32, int32) {
+func (m *MockAgentBGPPolicyInfoQuerier) GetBGPPolicyInfo() *bgp0.BGPPolicyInfo {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetBGPPolicyInfo")
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(string)
-	ret2, _ := ret[2].(int32)
-	ret3, _ := ret[3].(int32)
-	return ret0, ret1, ret2, ret3
+	ret0, _ := ret[0].(*bgp0.BGPPolicyInfo)
+	return ret0
 }
 
 // GetBGPPolicyInfo indicates an expected call of GetBGPPolicyInfo.

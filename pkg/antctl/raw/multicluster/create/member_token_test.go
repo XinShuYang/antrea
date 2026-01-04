@@ -44,7 +44,6 @@ data:
   token: MTIzNDU=
 kind: Secret
 metadata:
-  creationTimestamp: null
   name: default-member-token
 type: Opaque
 `)
@@ -92,7 +91,6 @@ type: Opaque
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := NewMemberTokenCmd()
 			buf := new(bytes.Buffer)
-			cmd.SetOutput(buf)
 			cmd.SetOut(buf)
 			cmd.SetErr(buf)
 

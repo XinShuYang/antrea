@@ -22,9 +22,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"antrea.io/antrea/pkg/agent/flowexporter"
+	"antrea.io/antrea/pkg/agent/flowexporter/connection"
 	connectionstest "antrea.io/antrea/pkg/agent/flowexporter/connections/testing"
-	podstoretest "antrea.io/antrea/pkg/util/podstore/testing"
+	"antrea.io/antrea/pkg/agent/flowexporter/filter"
+	"antrea.io/antrea/pkg/agent/flowexporter/options"
+	objectstoretest "antrea.io/antrea/pkg/util/objectstore/testing"
 
 	"antrea.io/antrea/pkg/agent/metrics"
 )
@@ -36,7 +38,7 @@ const (
 	testStaleConnectionTimeout = 5 * time.Minute
 )
 
-var testFlowExporterOptions = &flowexporter.FlowExporterOptions{
+var testFlowExporterOptions = &options.FlowExporterOptions{
 	FlowCollectorAddr:      "",
 	FlowCollectorProto:     "",
 	ActiveFlowTimeout:      testActiveFlowTimeout,
@@ -48,12 +50,12 @@ var testFlowExporterOptions = &flowexporter.FlowExporterOptions{
 func TestConnectionStore_ForAllConnectionsDo(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	// Create two flows; one is already in connectionStore and other one is new
-	testFlows := make([]*flowexporter.Connection, 2)
-	testFlowKeys := make([]*flowexporter.ConnectionKey, 2)
+	testFlows := make([]*connection.Connection, 2)
+	testFlowKeys := make([]*connection.ConnectionKey, 2)
 	refTime := time.Now()
 	// Flow-1, which is already in connectionStore
-	tuple1 := flowexporter.Tuple{SourceAddress: netip.MustParseAddr("1.2.3.4"), DestinationAddress: netip.MustParseAddr("4.3.2.1"), Protocol: 6, SourcePort: 65280, DestinationPort: 255}
-	testFlows[0] = &flowexporter.Connection{
+	tuple1 := connection.Tuple{SourceAddress: netip.MustParseAddr("1.2.3.4"), DestinationAddress: netip.MustParseAddr("4.3.2.1"), Protocol: 6, SourcePort: 65280, DestinationPort: 255}
+	testFlows[0] = &connection.Connection{
 		StartTime:       refTime.Add(-(time.Second * 50)),
 		StopTime:        refTime,
 		OriginalPackets: 0xffff,
@@ -64,8 +66,8 @@ func TestConnectionStore_ForAllConnectionsDo(t *testing.T) {
 		IsPresent:       true,
 	}
 	// Flow-2, which is not in connectionStore
-	tuple2 := flowexporter.Tuple{SourceAddress: netip.MustParseAddr("5.6.7.8"), DestinationAddress: netip.MustParseAddr("8.7.6.5"), Protocol: 6, SourcePort: 60001, DestinationPort: 200}
-	testFlows[1] = &flowexporter.Connection{
+	tuple2 := connection.Tuple{SourceAddress: netip.MustParseAddr("5.6.7.8"), DestinationAddress: netip.MustParseAddr("8.7.6.5"), Protocol: 6, SourcePort: 60001, DestinationPort: 200}
+	testFlows[1] = &connection.Connection{
 		StartTime:       refTime.Add(-(time.Second * 20)),
 		StopTime:        refTime,
 		OriginalPackets: 0xbb,
@@ -76,18 +78,18 @@ func TestConnectionStore_ForAllConnectionsDo(t *testing.T) {
 		IsPresent:       true,
 	}
 	for i, flow := range testFlows {
-		connKey := flowexporter.NewConnectionKey(flow)
+		connKey := connection.NewConnectionKey(flow)
 		testFlowKeys[i] = &connKey
 	}
 	// Create connectionStore
-	mockPodStore := podstoretest.NewMockInterface(ctrl)
-	connStore := NewConnectionStore(mockPodStore, nil, testFlowExporterOptions)
+	mockPodStore := objectstoretest.NewMockPodStore(ctrl)
+	connStore := NewConnectionStore(nil, mockPodStore, nil, testFlowExporterOptions)
 	// Add flows to the Connection store
 	for i, flow := range testFlows {
 		connStore.connections[*testFlowKeys[i]] = flow
 	}
 
-	resetTwoFields := func(key flowexporter.ConnectionKey, conn *flowexporter.Connection) error {
+	resetTwoFields := func(key connection.ConnectionKey, conn *connection.Connection) error {
 		conn.IsPresent = false
 		conn.OriginalPackets = 0
 		return nil
@@ -105,13 +107,13 @@ func TestConnectionStore_ForAllConnectionsDo(t *testing.T) {
 func TestConnectionStore_DeleteConnWithoutLock(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	// test on deny connection store
-	mockPodStore := podstoretest.NewMockInterface(ctrl)
-	denyConnStore := NewDenyConnectionStore(mockPodStore, nil, testFlowExporterOptions)
-	tuple := flowexporter.Tuple{SourceAddress: netip.MustParseAddr("1.2.3.4"), DestinationAddress: netip.MustParseAddr("4.3.2.1"), Protocol: 6, SourcePort: 65280, DestinationPort: 255}
-	conn := &flowexporter.Connection{
+	mockPodStore := objectstoretest.NewMockPodStore(ctrl)
+	denyConnStore := NewDenyConnectionStore(nil, mockPodStore, nil, testFlowExporterOptions, filter.NewProtocolFilter(nil))
+	tuple := connection.Tuple{SourceAddress: netip.MustParseAddr("1.2.3.4"), DestinationAddress: netip.MustParseAddr("4.3.2.1"), Protocol: 6, SourcePort: 65280, DestinationPort: 255}
+	conn := &connection.Connection{
 		FlowKey: tuple,
 	}
-	connKey := flowexporter.NewConnectionKey(conn)
+	connKey := connection.NewConnectionKey(conn)
 	denyConnStore.connections[connKey] = conn
 
 	// For testing purposes, set the metric

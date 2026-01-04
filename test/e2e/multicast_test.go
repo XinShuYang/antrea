@@ -45,8 +45,6 @@ func skipIfMulticastDisabled(tb testing.TB, data *TestData) {
 	}
 }
 
-var igmpQueryType = int32(0x11)
-
 func TestMulticast(t *testing.T) {
 	skipIfHasWindowsNodes(t)
 	skipIfNotIPv4Cluster(t)
@@ -63,7 +61,7 @@ func TestMulticast(t *testing.T) {
 
 func runMulticastTestCases(t *testing.T, data *TestData, testNamespace string) {
 	var err error
-	transportInterface, err := data.GetTransportInterface()
+	transportInterface, err := data.GetTransportInterfaceName()
 	if err != nil {
 		t.Fatalf("Error getting transport interfaces: %v", err)
 	}
@@ -493,7 +491,7 @@ func testMulticastStatsWithSendersReceivers(t *testing.T, data *TestData, testNa
 			}
 		}
 		for _, anp := range mc.igmpANPConfigs {
-			stats, err := data.crdClient.StatsV1alpha1().AntreaNetworkPolicyStats(testNamespace).Get(context.TODO(), anp.name, metav1.GetOptions{})
+			stats, err := data.CRDClient.StatsV1alpha1().AntreaNetworkPolicyStats(testNamespace).Get(context.TODO(), anp.name, metav1.GetOptions{})
 			if err != nil {
 				return false, err
 			}
@@ -514,7 +512,7 @@ func testMulticastStatsWithSendersReceivers(t *testing.T, data *TestData, testNa
 			}
 		}
 		for _, anp := range mc.multicastANPConfigs {
-			stats, err := data.crdClient.StatsV1alpha1().AntreaNetworkPolicyStats(testNamespace).Get(context.TODO(), anp.name, metav1.GetOptions{})
+			stats, err := data.CRDClient.StatsV1alpha1().AntreaNetworkPolicyStats(testNamespace).Get(context.TODO(), anp.name, metav1.GetOptions{})
 			if err != nil {
 				return false, err
 			}
@@ -530,7 +528,7 @@ func testMulticastStatsWithSendersReceivers(t *testing.T, data *TestData, testNa
 			}
 		}
 		for _, group := range sets.List(groupAddresses) {
-			multicastGroup, err := data.crdClient.StatsV1alpha1().MulticastGroups().Get(context.TODO(), group, metav1.GetOptions{})
+			multicastGroup, err := data.CRDClient.StatsV1alpha1().MulticastGroups().Get(context.TODO(), group, metav1.GetOptions{})
 			if err != nil && !errors.IsNotFound(err) {
 				t.Logf("Got multicastGroup error %v", err)
 				return false, err
@@ -593,7 +591,7 @@ func testMulticastForwardToMultipleInterfaces(t *testing.T, data *TestData, send
 
 func runTestMulticastBetweenPods(t *testing.T, data *TestData, mc multicastTestcase, nodeMulticastInterfaces map[int][]string, testNamespace string, transportInterface string, checkReceiverRoute bool, checkSenderRoute bool) {
 	currentEncapMode, _ := data.GetEncapMode()
-	if requiresExternalHostSupport(mc) && currentEncapMode == config.TrafficEncapModeEncap {
+	if requiresExternalHostSupport(mc) && currentEncapMode.SupportsEncap() {
 		t.Skipf("Multicast does not support using hostNetwork Pod to simulate the external host with encap mode, skip the case")
 	}
 	mcjoinWaitTimeout := defaultTimeout / time.Second

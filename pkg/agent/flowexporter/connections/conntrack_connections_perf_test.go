@@ -32,13 +32,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
-	"antrea.io/antrea/pkg/agent/flowexporter"
+	"antrea.io/antrea/pkg/agent/flowexporter/connection"
 	connectionstest "antrea.io/antrea/pkg/agent/flowexporter/connections/testing"
 	exptest "antrea.io/antrea/pkg/agent/flowexporter/testing"
 	"antrea.io/antrea/pkg/agent/openflow"
 	proxytest "antrea.io/antrea/pkg/agent/proxy/testing"
 	queriertest "antrea.io/antrea/pkg/querier/testing"
-	podstoretest "antrea.io/antrea/pkg/util/podstore/testing"
+	objectstoretest "antrea.io/antrea/pkg/util/objectstore/testing"
 	k8sproxy "antrea.io/antrea/third_party/proxy"
 )
 
@@ -114,7 +114,7 @@ func BenchmarkConnStore(b *testing.B) {
 func setupConntrackConnStore(b *testing.B) (*ConntrackConnectionStore, *connectionstest.MockConnTrackDumper) {
 	ctrl := gomock.NewController(b)
 	defer ctrl.Finish()
-	mockPodStore := podstoretest.NewMockInterface(ctrl)
+	mockPodStore := objectstoretest.NewMockPodStore(ctrl)
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "pod-ns",
@@ -143,25 +143,24 @@ func setupConntrackConnStore(b *testing.B) (*ConntrackConnectionStore, *connecti
 		Port:     "30000",
 		Protocol: v1.ProtocolTCP,
 	}
-	mockProxier := proxytest.NewMockProxier(ctrl)
+	mockProxier := proxytest.NewMockProxyQuerier(ctrl)
 	mockProxier.EXPECT().GetServiceByIP(serviceStr).Return(servicePortName, true).AnyTimes()
 
 	npQuerier := queriertest.NewMockAgentNetworkPolicyInfoQuerier(ctrl)
-	l7Listener := NewL7Listener(nil, mockPodStore)
-	return NewConntrackConnectionStore(mockConnDumper, true, false, npQuerier, mockPodStore, nil, l7Listener, testFlowExporterOptions), mockConnDumper
+	return NewConntrackConnectionStore(mockConnDumper, true, false, npQuerier, mockPodStore, nil, nil, testFlowExporterOptions), mockConnDumper
 }
 
-func generateConns() []*flowexporter.Connection {
-	conns := make([]*flowexporter.Connection, testNumOfConns)
+func generateConns() []*connection.Connection {
+	conns := make([]*connection.Connection, testNumOfConns)
 	for i := 0; i < testNumOfConns; i++ {
 		conns[i] = getNewConn()
 	}
 	return conns
 }
 
-func generateUpdatedConns(conns []*flowexporter.Connection) []*flowexporter.Connection {
+func generateUpdatedConns(conns []*connection.Connection) []*connection.Connection {
 	length := len(conns) - testNumOfDeletedConns + testNumOfNewConns
-	updatedConns := make([]*flowexporter.Connection, length)
+	updatedConns := make([]*connection.Connection, length)
 	for i := 0; i < len(conns); i++ {
 		// replace deleted connection with new connection
 		if conns[i].ReadyToDelete == true {
@@ -186,7 +185,7 @@ func generateUpdatedConns(conns []*flowexporter.Connection) []*flowexporter.Conn
 	return updatedConns
 }
 
-func getNewConn() *flowexporter.Connection {
+func getNewConn() *connection.Connection {
 	randomNum1 := getRandomNum(255)
 	randomNum2 := getRandomNum(255)
 	var src, dst, svc netip.Addr
@@ -199,8 +198,8 @@ func getNewConn() *flowexporter.Connection {
 		dst = exptest.RandIPv4()
 		svc = svcIPv4
 	}
-	flowKey := flowexporter.Tuple{SourceAddress: src, DestinationAddress: dst, Protocol: 6, SourcePort: uint16(randomNum1), DestinationPort: uint16(randomNum2)}
-	return &flowexporter.Connection{
+	flowKey := connection.Tuple{SourceAddress: src, DestinationAddress: dst, Protocol: 6, SourcePort: uint16(randomNum1), DestinationPort: uint16(randomNum2)}
+	return &connection.Connection{
 		StartTime:                  time.Now().Add(-time.Duration(randomNum1) * time.Second),
 		StopTime:                   time.Now(),
 		IsPresent:                  true,

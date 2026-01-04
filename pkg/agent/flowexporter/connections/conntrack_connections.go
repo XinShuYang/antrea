@@ -15,22 +15,22 @@
 package connections
 
 import (
-	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/vmware/go-ipfix/pkg/registry"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
-	"antrea.io/antrea/pkg/agent/flowexporter"
+	"antrea.io/antrea/pkg/agent/flowexporter/connection"
+	"antrea.io/antrea/pkg/agent/flowexporter/options"
 	"antrea.io/antrea/pkg/agent/flowexporter/priorityqueue"
+	"antrea.io/antrea/pkg/agent/flowexporter/utils"
 	"antrea.io/antrea/pkg/agent/metrics"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/proxy"
 	"antrea.io/antrea/pkg/querier"
-	"antrea.io/antrea/pkg/util/podstore"
+	"antrea.io/antrea/pkg/util/objectstore"
+	utilwait "antrea.io/antrea/pkg/util/wait"
 )
 
 var serviceProtocolMap = map[uint8]corev1.Protocol{
@@ -43,15 +43,17 @@ type ConntrackConnectionStore struct {
 	connDumper            ConnTrackDumper
 	v4Enabled             bool
 	v6Enabled             bool
-	networkPolicyQuerier  querier.AgentNetworkPolicyInfoQuerier
 	pollInterval          time.Duration
 	connectUplinkToBridge bool
-	l7EventMapGetter      L7EventMapGetter
+	// networkPolicyWait is used to determine when NetworkPolicy flows have been installed and
+	// when the mapping from flow ID to NetworkPolicy rule is available. We will ignore
+	// connections which started prior to that time to avoid reporting invalid NetworkPolicy
+	// metadata in flow records. This is because the mapping is not "stable" and is expected to
+	// change when the Agent restarts.
+	networkPolicyWait *utilwait.Group
+	// networkPolicyReadyTime is set to the current time when we are done waiting on networkPolicyWait.
+	networkPolicyReadyTime time.Time
 	connectionStore
-}
-
-type L7EventMapGetter interface {
-	ConsumeL7EventMap() map[flowexporter.ConnectionKey]L7ProtocolFields
 }
 
 func NewConntrackConnectionStore(
@@ -59,26 +61,36 @@ func NewConntrackConnectionStore(
 	v4Enabled bool,
 	v6Enabled bool,
 	npQuerier querier.AgentNetworkPolicyInfoQuerier,
-	podStore podstore.Interface,
-	proxier proxy.Proxier,
-	l7EventMapGetterFunc L7EventMapGetter,
-	o *flowexporter.FlowExporterOptions,
+	podStore objectstore.PodStore,
+	proxier proxy.ProxyQuerier,
+	networkPolicyWait *utilwait.Group,
+	o *options.FlowExporterOptions,
 ) *ConntrackConnectionStore {
 	return &ConntrackConnectionStore{
 		connDumper:            connTrackDumper,
 		v4Enabled:             v4Enabled,
 		v6Enabled:             v6Enabled,
-		networkPolicyQuerier:  npQuerier,
 		pollInterval:          o.PollInterval,
-		connectionStore:       NewConnectionStore(podStore, proxier, o),
+		connectionStore:       NewConnectionStore(npQuerier, podStore, proxier, o),
 		connectUplinkToBridge: o.ConnectUplinkToBridge,
-		l7EventMapGetter:      l7EventMapGetterFunc,
+		networkPolicyWait:     networkPolicyWait,
 	}
 }
 
 // Run enables the periodical polling of conntrack connections at a given flowPollInterval.
 func (cs *ConntrackConnectionStore) Run(stopCh <-chan struct{}) {
-	klog.Infof("Starting conntrack polling")
+	if cs.networkPolicyWait != nil {
+		klog.Info("Waiting for NetworkPolicies to become ready")
+		if err := cs.networkPolicyWait.WaitUntil(stopCh); err != nil {
+			klog.ErrorS(err, "Error while waiting for NetworkPolicies to become ready")
+			return
+		}
+	} else {
+		klog.Info("Skip waiting for NetworkPolicies to become ready")
+	}
+	cs.networkPolicyReadyTime = time.Now()
+
+	klog.Info("Starting conntrack polling")
 
 	pollTicker := time.NewTicker(cs.pollInterval)
 	defer pollTicker.Stop()
@@ -86,13 +98,12 @@ func (cs *ConntrackConnectionStore) Run(stopCh <-chan struct{}) {
 	for {
 		select {
 		case <-stopCh:
-			break
+			return
 		case <-pollTicker.C:
-			_, err := cs.Poll()
-			if err != nil {
+			if _, err := cs.Poll(); err != nil {
 				// Not failing here as errors can be transient and could be resolved in future poll cycles.
 				// TODO: Come up with a backoff/retry mechanism by increasing poll interval and adding retry timeout
-				klog.Errorf("Error during conntrack poll cycle: %v", err)
+				klog.ErrorS(err, "Error during conntrack poll cycle")
 			}
 		}
 	}
@@ -103,13 +114,13 @@ func (cs *ConntrackConnectionStore) Run(stopCh <-chan struct{}) {
 // then number of IPv6 connections).
 // TODO: As optimization, only poll invalid/closed connections during every poll, and poll the established connections right before the export.
 func (cs *ConntrackConnectionStore) Poll() ([]int, error) {
-	klog.V(2).Infof("Polling conntrack")
-	// DeepCopy the L7EventMap before polling the conntrack table to match corresponding L4 connection with L7 events
-	// and avoid missing the L7 events for corresponding L4 connection
-	var l7EventMap map[flowexporter.ConnectionKey]L7ProtocolFields
-	if cs.l7EventMapGetter != nil {
-		l7EventMap = cs.l7EventMapGetter.ConsumeL7EventMap()
-	}
+	klog.V(2).Info("Polling conntrack and updating connection store")
+	startTime := time.Now()
+	defer func() {
+		duration := time.Since(startTime)
+		metrics.ConntrackPollCycleDuration.Observe(duration.Seconds())
+		klog.V(2).InfoS("Polled conntrack and updated connection store", "duration", duration)
+	}()
 
 	var zones []uint16
 	var connsLens []int
@@ -128,7 +139,7 @@ func (cs *ConntrackConnectionStore) Poll() ([]int, error) {
 		}
 	}
 	var totalConns int
-	var filteredConnsList []*flowexporter.Connection
+	var filteredConnsList []*connection.Connection
 	for _, zone := range zones {
 		filteredConnsListPerZone, totalConnsPerZone, err := cs.connDumper.DumpFlows(zone)
 		if err != nil {
@@ -144,7 +155,7 @@ func (cs *ConntrackConnectionStore) Poll() ([]int, error) {
 	// exist in conntrack table and has been exported, then we will delete it from
 	// connection map. In addition, if the connection was not exported for a specific
 	// time period, then we consider it to be stale and delete it.
-	deleteIfStaleOrResetConn := func(key flowexporter.ConnectionKey, conn *flowexporter.Connection) error {
+	deleteIfStaleOrResetConn := func(key connection.ConnectionKey, conn *connection.Connection) error {
 		if !conn.IsPresent {
 			// Delete the connection if it is ready to delete or it was not exported
 			// in the time period as specified by the stale connection timeout.
@@ -177,9 +188,6 @@ func (cs *ConntrackConnectionStore) Poll() ([]int, error) {
 	for _, conn := range filteredConnsList {
 		cs.AddOrUpdateConn(conn)
 	}
-	if len(l7EventMap) != 0 {
-		cs.fillL7EventInfo(l7EventMap)
-	}
 
 	cs.ReleaseConnStoreLock()
 
@@ -194,56 +202,16 @@ func (cs *ConntrackConnectionStore) Poll() ([]int, error) {
 	return connsLens, nil
 }
 
-func (cs *ConntrackConnectionStore) addNetworkPolicyMetadata(conn *flowexporter.Connection) {
-	// Retrieve NetworkPolicy Name and Namespace by using the ingress and egress
-	// IDs stored in the connection label.
-	if len(conn.Labels) != 0 {
-		klog.V(4).Infof("connection label: %x; label masks: %x", conn.Labels, conn.LabelsMask)
-		ingressOfID := binary.LittleEndian.Uint32(conn.Labels[:4])
-		egressOfID := binary.LittleEndian.Uint32(conn.Labels[4:8])
-		if ingressOfID != 0 {
-			policy := cs.networkPolicyQuerier.GetNetworkPolicyByRuleFlowID(ingressOfID)
-			rule := cs.networkPolicyQuerier.GetRuleByFlowID(ingressOfID)
-			if policy == nil || rule == nil {
-				// This should not happen because the rule flow ID to rule mapping is
-				// preserved for max(5s, flowPollInterval) even after the rule deletion.
-				klog.Warningf("Cannot find NetworkPolicy or rule with ingressOfID %v", ingressOfID)
-			} else {
-				conn.IngressNetworkPolicyName = policy.Name
-				conn.IngressNetworkPolicyNamespace = policy.Namespace
-				conn.IngressNetworkPolicyType = flowexporter.PolicyTypeToUint8(policy.Type)
-				conn.IngressNetworkPolicyRuleName = rule.Name
-				conn.IngressNetworkPolicyRuleAction = registry.NetworkPolicyRuleActionAllow
-			}
-		}
-		if egressOfID != 0 {
-			policy := cs.networkPolicyQuerier.GetNetworkPolicyByRuleFlowID(egressOfID)
-			rule := cs.networkPolicyQuerier.GetRuleByFlowID(egressOfID)
-			if policy == nil || rule == nil {
-				// This should not happen because the rule flow ID to rule mapping is
-				// preserved for max(5s, flowPollInterval) even after the rule deletion.
-				klog.Warningf("Cannot find NetworkPolicy or rule with egressOfID %v", egressOfID)
-			} else {
-				conn.EgressNetworkPolicyName = policy.Name
-				conn.EgressNetworkPolicyNamespace = policy.Namespace
-				conn.EgressNetworkPolicyType = flowexporter.PolicyTypeToUint8(policy.Type)
-				conn.EgressNetworkPolicyRuleName = rule.Name
-				conn.EgressNetworkPolicyRuleAction = registry.NetworkPolicyRuleActionAllow
-			}
-		}
-	}
-}
-
 // AddOrUpdateConn updates the connection if it is already present, i.e., update timestamp, counters etc.,
 // or adds a new connection with the resolved K8s metadata.
-func (cs *ConntrackConnectionStore) AddOrUpdateConn(conn *flowexporter.Connection) {
+func (cs *ConntrackConnectionStore) AddOrUpdateConn(conn *connection.Connection) {
 	conn.IsPresent = true
-	connKey := flowexporter.NewConnectionKey(conn)
+	connKey := connection.NewConnectionKey(conn)
 
 	existingConn, exists := cs.connections[connKey]
 	if exists {
 		existingConn.IsPresent = conn.IsPresent
-		if flowexporter.IsConnectionDying(existingConn) {
+		if utils.IsConnectionDying(existingConn) {
 			return
 		}
 		// Update the necessary fields that are used in generating flow records.
@@ -254,7 +222,7 @@ func (cs *ConntrackConnectionStore) AddOrUpdateConn(conn *flowexporter.Connectio
 		existingConn.ReverseBytes = conn.ReverseBytes
 		existingConn.ReversePackets = conn.ReversePackets
 		existingConn.TCPState = conn.TCPState
-		existingConn.IsActive = flowexporter.CheckConntrackConnActive(existingConn)
+		existingConn.IsActive = utils.CheckConntrackConnActive(existingConn)
 		if existingConn.IsActive {
 			existingItem, exists := cs.expirePriorityQueue.KeyToItem[connKey]
 			if !exists {
@@ -287,10 +255,15 @@ func (cs *ConntrackConnectionStore) AddOrUpdateConn(conn *flowexporter.Connectio
 				cs.fillServiceInfo(conn, serviceStr)
 			}
 		}
-		cs.addNetworkPolicyMetadata(conn)
+		// This should only happen if we failed to set net.netfilter.nf_conntrack_timestamp
 		if conn.StartTime.IsZero() {
 			conn.StartTime = time.Now()
 			conn.StopTime = time.Now()
+		}
+		if conn.StartTime.Before(cs.networkPolicyReadyTime) {
+			klog.V(1).InfoS("Skip adding NetworkPolicy metadata to connection to avoid reporting invalid information")
+		} else {
+			cs.addNetworkPolicyMetadata(conn)
 		}
 		conn.LastExportTime = conn.StartTime
 		metrics.TotalAntreaConnectionsInConnTrackTable.Inc()
@@ -302,7 +275,7 @@ func (cs *ConntrackConnectionStore) AddOrUpdateConn(conn *flowexporter.Connectio
 	}
 }
 
-func (cs *ConntrackConnectionStore) GetExpiredConns(expiredConns []flowexporter.Connection, currTime time.Time, maxSize int) ([]flowexporter.Connection, time.Duration) {
+func (cs *ConntrackConnectionStore) GetExpiredConns(expiredConns []connection.Connection, currTime time.Time, maxSize int) ([]connection.Connection, time.Duration) {
 	cs.AcquireConnStoreLock()
 	defer cs.ReleaseConnStoreLock()
 	for i := 0; i < maxSize; i++ {
@@ -311,7 +284,7 @@ func (cs *ConntrackConnectionStore) GetExpiredConns(expiredConns []flowexporter.
 			break
 		}
 		expiredConns = append(expiredConns, *pqItem.Conn)
-		if flowexporter.IsConnectionDying(pqItem.Conn) {
+		if utils.IsConnectionDying(pqItem.Conn) {
 			// If a conntrack connection is in dying state or connection is not
 			// in the conntrack table, we set the ReadyToDelete flag to true to
 			// do the deletion later.
@@ -329,7 +302,7 @@ func (cs *ConntrackConnectionStore) GetExpiredConns(expiredConns []flowexporter.
 
 // deleteConnWithoutLock deletes the connection from the connection map given
 // the connection key without grabbing the lock. Caller is expected to grab lock.
-func (cs *ConntrackConnectionStore) deleteConnWithoutLock(connKey flowexporter.ConnectionKey) error {
+func (cs *ConntrackConnectionStore) deleteConnWithoutLock(connKey connection.ConnectionKey) error {
 	_, exists := cs.connections[connKey]
 	if !exists {
 		return fmt.Errorf("connection with key %v doesn't exist in map", connKey)
@@ -339,30 +312,14 @@ func (cs *ConntrackConnectionStore) deleteConnWithoutLock(connKey flowexporter.C
 	return nil
 }
 
-func (cs *ConntrackConnectionStore) GetPriorityQueue() *priorityqueue.ExpirePriorityQueue {
-	return cs.connectionStore.expirePriorityQueue
+func (cs *ConntrackConnectionStore) DeleteAllConnections() int {
+	cs.AcquireConnStoreLock()
+	defer cs.ReleaseConnStoreLock()
+	num := len(cs.connections)
+	clear(cs.connections)
+	return num
 }
 
-func (cs *ConntrackConnectionStore) fillL7EventInfo(l7EventMap map[flowexporter.Tuple]L7ProtocolFields) {
-	// In case the L7 event is received after the connection is removed from the cs.connections store
-	// we will discard such event
-	for connKey, conn := range cs.connections {
-		l7event, ok := l7EventMap[connKey]
-		if ok {
-			if len(l7event.http) > 0 {
-				jsonBytes, err := json.Marshal(l7event.http)
-				if err != nil {
-					klog.ErrorS(err, "Converting l7Event http failed")
-				}
-				conn.HttpVals += string(jsonBytes)
-				conn.AppProtocolName = "http"
-			}
-			// In case L7 event is received after the last planned export of the TCP connection, add
-			// the event back to the queue to be exported in next export cycle
-			_, exists := cs.expirePriorityQueue.KeyToItem[connKey]
-			if !exists {
-				cs.expirePriorityQueue.WriteItemToQueue(connKey, conn)
-			}
-		}
-	}
+func (cs *ConntrackConnectionStore) GetPriorityQueue() *priorityqueue.ExpirePriorityQueue {
+	return cs.connectionStore.expirePriorityQueue
 }

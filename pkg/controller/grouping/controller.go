@@ -46,7 +46,7 @@ func PodIPsIndexFunc(obj interface{}) ([]string, error) {
 	if !ok {
 		return nil, fmt.Errorf("obj is not pod: %+v", obj)
 	}
-	if pod.Status.PodIPs != nil && len(pod.Status.PodIPs) > 0 && pod.Status.Phase != v1.PodSucceeded && pod.Status.Phase != v1.PodFailed {
+	if len(pod.Status.PodIPs) > 0 && pod.Status.Phase != v1.PodSucceeded && pod.Status.Phase != v1.PodFailed {
 		indexes := make([]string, len(pod.Status.PodIPs))
 		for i := range pod.Status.PodIPs {
 			indexes[i] = pod.Status.PodIPs[i].IP
@@ -207,14 +207,14 @@ func (c *GroupEntityController) Run(stopCh <-chan struct{}) {
 
 func (c *GroupEntityController) addPod(obj interface{}) {
 	pod := obj.(*v1.Pod)
-	klog.V(2).Infof("Processing Pod %s/%s ADD event, labels: %v", pod.Namespace, pod.Name, pod.Labels)
+	klog.V(2).InfoS("Processing Pod ADD event", "pod", klog.KObj(pod), "labels", pod.Labels)
 	c.groupEntityIndex.AddPod(pod)
 	c.podAddEvents.Increment()
 }
 
 func (c *GroupEntityController) updatePod(_, curObj interface{}) {
 	curPod := curObj.(*v1.Pod)
-	klog.V(2).Infof("Processing Pod %s/%s UPDATE event, labels: %v", curPod.Namespace, curPod.Name, curPod.Labels)
+	klog.V(2).InfoS("Processing Pod UPDATE event", "pod", klog.KObj(curPod), "labels", curPod.Labels, "phase", curPod.Status.Phase)
 	c.groupEntityIndex.AddPod(curPod)
 }
 
@@ -237,14 +237,14 @@ func (c *GroupEntityController) deletePod(old interface{}) {
 
 func (c *GroupEntityController) addNamespace(obj interface{}) {
 	namespace := obj.(*v1.Namespace)
-	klog.V(2).Infof("Processing Namespace %s ADD event, labels: %v", namespace.Name, namespace.Labels)
+	klog.V(2).InfoS("Processing Namespace ADD event", "namespace", namespace.Name, "labels", namespace.Labels)
 	c.groupEntityIndex.AddNamespace(namespace)
 	c.namespaceAddEvents.Increment()
 }
 
 func (c *GroupEntityController) updateNamespace(_, curObj interface{}) {
 	curNamespace := curObj.(*v1.Namespace)
-	klog.V(2).Infof("Processing Namespace %s UPDATE event, labels: %v", curNamespace.Name, curNamespace.Labels)
+	klog.V(2).InfoS("Processing Namespace UPDATE event", "namespace", curNamespace.Name, "labels", curNamespace.Labels)
 	c.groupEntityIndex.AddNamespace(curNamespace)
 }
 

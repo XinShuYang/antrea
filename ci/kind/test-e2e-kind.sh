@@ -28,12 +28,16 @@ _usage="Usage: $0 [--encap-mode <mode>] [--ip-family <v4|v6|dual>] [--coverage] 
         --feature-gates               A comma-separated list of key=value pairs that describe feature gates, e.g. AntreaProxy=true,Egress=false.
         --run                         Run only tests matching the regexp.
         --proxy-all                   Enable Antrea proxy with all Service support.
-        --no-kube-proxy               Don't deploy kube-proxy.
+        --no-kube-proxy               Deprecated. This option is still supported for compatibility, but will be removed. Use '--kube-proxy-mode none' going forward.
+        --kube-proxy-mode             Kube-proxy mode. Supported values are 'iptables', 'nftables', 'ipvs' and 'none' (to disable kube-proxy).
+        --host-network-mode           Antrea host network mode. Supported values are 'iptables' and 'nftables.
         --load-balancer-mode          LoadBalancer mode.
         --node-ipam                   Enable Antrea NodeIPAM.
+        --flexible-ipam               Enable Antrea AntreaIPAM.
         --multicast                   Enable Multicast.
         --bgp-policy                  Enable Antrea BGPPolicy.
         --flow-visibility             Only run flow visibility related e2e tests.
+        --flow-visibility-protocol    Protocol to use between FlowExporter (Agent) and FlowAggregatior: either grpc (default) or ipfix.
         --networkpolicy-evaluation    Configure additional NetworkPolicy evaluation level when running e2e tests.
         --extra-network               Create an extra network that worker Nodes will connect to. Cannot be specified with the hybrid mode.
         --extra-vlan                  Create an subnet-based VLAN that worker Nodes will connect to.
@@ -74,12 +78,14 @@ mode=""
 ipfamily="v4"
 feature_gates=""
 proxy_all=false
-no_kube_proxy=false
+kube_proxy_mode=""
+host_network_mode=""
 load_balancer_mode=""
 node_ipam=false
 multicast=false
 bgp_policy=false
 flow_visibility=false
+flow_visibility_protocol="grpc"
 np_evaluation=false
 extra_network=false
 extra_vlan=false
@@ -116,8 +122,17 @@ case $key in
     shift
     ;;
     --no-kube-proxy)
-    no_kube_proxy=true
+    echo "WARNING: '--no-kube-proxy' is deprecated. Use '--kube-proxy-mode none' instead."
+    kube_proxy_mode="none"
     shift
+    ;;
+    --kube-proxy-mode)
+    kube_proxy_mode="$2"
+    shift 2
+    ;;
+    --host-network-mode)
+    host_network_mode="$2"
+    shift 2
     ;;
     --load-balancer-mode)
     load_balancer_mode="$2"
@@ -142,6 +157,10 @@ case $key in
     --flow-visibility)
     flow_visibility=true
     shift
+    ;;
+    --flow-visibility-protocol)
+    flow_visibility_protocol="$2"
+    shift 2
     ;;
     --networkpolicy-evaluation)
     np_evaluation=true
@@ -220,12 +239,21 @@ if $extra_network && [[ "$mode" == "hybrid" ]]; then
 fi
 
 if [[ $cleanup_only == "true" ]];then
+  if [[ $flexible_ipam == "true" ]]; then
+    $TESTBED_CMD destroy kind --flexible-ipam
+  fi
   $TESTBED_CMD destroy kind
   exit 0
 fi
 
 if $use_non_default_images && $coverage; then
     echoerr "Cannot use non-default images when coverage is enabled"
+    exit 1
+fi
+
+if [[ "$flow_visibility_protocol" != "grpc" && "$flow_visibility_protocol" != "ipfix" ]]; then
+    echoerr "Unsupported value for --flow-visibility-protocol"
+    print_help
     exit 1
 fi
 
@@ -237,6 +265,16 @@ if [ -n "$feature_gates" ]; then
 fi
 if $proxy_all; then
     manifest_args="$manifest_args --proxy-all"
+    # Disables the health check server run by Antrea Proxy, which provides health information about
+    # Services of type LoadBalancer with externalTrafficPolicy set to Local, when proxyAll is
+    # enabled. This avoids race conditions between kube-proxy and Antrea Proxy, with both trying to
+    # bind to the same address, when proxyAll is enabled while kube-proxy has not been removed.
+    if [[ "$kube_proxy_mode" != "none" ]]; then
+      manifest_args="$manifest_args --extra-helm-values antreaProxy.disableServiceHealthCheckServer=true"
+    fi
+fi
+if [ -n "$host_network_mode" ]; then
+    manifest_args="$manifest_args --extra-helm-values hostNetworkMode=$host_network_mode"
 fi
 if [ -n "$load_balancer_mode" ]; then
     manifest_args="$manifest_args --extra-helm-values antreaProxy.defaultLoadBalancerMode=$load_balancer_mode"
@@ -251,7 +289,10 @@ if $bgp_policy; then
     manifest_args="$manifest_args --feature-gates BGPPolicy=true"
 fi
 if $flow_visibility; then
-    manifest_args="$manifest_args --feature-gates FlowExporter=true,L7FlowExporter=true --extra-helm-values-file $FLOW_VISIBILITY_HELM_VALUES"
+    manifest_args="$manifest_args --feature-gates FlowExporter=true --extra-helm-values-file $FLOW_VISIBILITY_HELM_VALUES"
+fi
+if [[ "$flow_visibility_protocol" == "ipfix" ]]; then
+    manifest_args="$manifest_args --extra-helm-values flowExporter.flowCollectorAddr=flow-aggregator/flow-aggregator:4739:tls"
 fi
 if $flexible_ipam; then
     manifest_args="$manifest_args --flexible-ipam"
@@ -261,7 +302,7 @@ COMMON_IMAGES_LIST=("registry.k8s.io/e2e-test-images/agnhost:2.40" \
                     "antrea/nginx:1.21.6-alpine" \
                     "antrea/toolbox:1.5-1")
 
-FLOW_VISIBILITY_IMAGE_LIST=("antrea/ipfix-collector:v0.12.0" \
+FLOW_VISIBILITY_IMAGE_LIST=("antrea/ipfix-collector:v0.16.0" \
                             "antrea/clickhouse-operator:0.21.0" \
                             "antrea/metrics-exporter:0.21.0" \
                             "antrea/clickhouse-server:23.4")
@@ -320,19 +361,28 @@ function setup_cluster {
   if [[ "$ipfamily" == "v6" ]]; then
     args="$args --ip-family ipv6 --pod-cidr fd00:10:244::/56"
   elif [[ "$ipfamily" == "dual" ]]; then
-      args="$args --ip-family dual"
+    args="$args --ip-family dual"
   elif [[ "$ipfamily" != "v4" ]]; then
     echoerr "invalid value for --ip-family \"$ipfamily\", expected \"v4\" or \"v6\""
     exit 1
   fi
-  if $no_kube_proxy; then
-    args="$args --no-kube-proxy"
+  if [ -n "$kube_proxy_mode" ]; then
+    args="$args --kube-proxy-mode $kube_proxy_mode"
   fi
   if $node_ipam; then
     args="$args --no-kube-node-ipam"
   fi
   if $extra_network && [[ "$mode" != "hybrid" ]]; then
     args="$args --extra-networks \"20.20.30.0/24\""
+  fi
+  if [[ "$mode" == "hybrid" ]]; then
+    if [[ "$ipfamily" == "v4" ]]; then
+      args="$args --subnets \"20.20.20.0/24\""
+    elif [[ "$ipfamily" == "v6" ]]; then
+      args="$args --subnets \"fd00:dead:beef::/64\""
+    elif [[ "$ipfamily" == "dual" ]]; then
+      args="$args --subnets \"20.20.20.0/24,fd00:dead:beef::/64\""
+    fi
   fi
   # Deploy an external agnhost which could be used when testing Pod-to-External traffic.
   args="$args --deploy-external-agnhost $vlan_args"
@@ -344,7 +394,7 @@ function setup_cluster {
     args="$args --flexible-ipam"
   fi
   echo "creating test bed with args $args"
-  eval "timeout 600 $TESTBED_CMD create kind $args"
+  eval "timeout 1200 $TESTBED_CMD create kind $args"
 }
 
 function run_test {
@@ -368,12 +418,15 @@ function run_test {
   fi
 
   if $flow_visibility; then
-      timeout="30m"
+      timeout="45m"
       flow_visibility_args="-run=TestFlowAggregator --flow-visibility"
+      # This is needed so that the FlowAggregator is already configured to mount the Secrets
+      # necessary for (m)TLS testing. The Secret names must match the ones expected by the e2e tests.
+      flow_visibility_manifest_args="--extra-helm-values flowCollector.tls.clientSecretName=ipfix-client-cert,flowCollector.tls.caSecretName=ipfix-server-ca"
       if $coverage; then
-          $FLOWAGGREGATOR_YML_CMD --coverage | docker exec -i kind-control-plane dd of=/root/flow-aggregator-coverage.yml
+          $FLOWAGGREGATOR_YML_CMD --coverage $flow_visibility_manifest_args | docker exec -i kind-control-plane dd of=/root/flow-aggregator-coverage.yml
       else
-          $FLOWAGGREGATOR_YML_CMD | docker exec -i kind-control-plane dd of=/root/flow-aggregator.yml
+          $FLOWAGGREGATOR_YML_CMD $flow_visibility_manifest_args | docker exec -i kind-control-plane dd of=/root/flow-aggregator.yml
       fi
       $HELM template "$FLOW_VISIBILITY_CHART"  | docker exec -i kind-control-plane dd of=/root/flow-visibility.yml
       $HELM template "$FLOW_VISIBILITY_CHART" --set "secureConnection.enable=true" | docker exec -i kind-control-plane dd of=/root/flow-visibility-tls.yml
@@ -385,7 +438,7 @@ function run_test {
       cat $CH_OPERATOR_YML | docker exec -i kind-control-plane dd of=/root/clickhouse-operator-install-bundle.yml
   fi
 
-  if $no_kube_proxy; then
+  if [[ "$kube_proxy_mode" == "none" ]]; then
       apiserver=$(docker exec -i kind-control-plane kubectl get endpoints kubernetes --no-headers | awk '{print $2}')
       if $coverage; then
         docker exec -i kind-control-plane sed -i.bak -E "s/^[[:space:]]*[#]?kubeAPIServerOverride[[:space:]]*:[[:space:]]*[a-z\"]+[[:space:]]*$/    kubeAPIServerOverride: \"$apiserver\"/" /root/antrea-coverage.yml /root/antrea-ipsec-coverage.yml
@@ -449,7 +502,7 @@ fi
 if [[ "$mode" == "" ]] || [[ "$mode" == "hybrid" ]]; then
   echo "======== Test hybrid mode =========="
   if [[ $test_only == "false" ]];then
-    setup_cluster "--subnets \"20.20.20.0/24\" --images \"$COMMON_IMAGES\""
+    setup_cluster "--images \"$COMMON_IMAGES\""
   fi
   run_test hybrid
 fi

@@ -35,6 +35,7 @@ func Command() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "cluster",
 		Short: "Runs pre installation checks",
+		Args:  cobra.NoArgs, // Disables positional arguments
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return Run(o)
 		},
@@ -198,7 +199,7 @@ func (t *testContext) setup(ctx context.Context) error {
 	}
 
 	t.Log("Waiting for Deployment to become ready")
-	err = check.WaitForDeploymentsReady(ctx, time.Second, podReadyTimeout, t.client, t.clusterName, t.namespace, deploymentName)
+	err = check.WaitForDeploymentsReady(ctx, time.Second, podReadyTimeout, false, t.client, t.clusterName, t.namespace, deploymentName)
 	if err != nil {
 		return fmt.Errorf("error while waiting for Deployment to become ready: %w", err)
 	}

@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Copyright 2022 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -121,7 +123,8 @@ func TestEnqueueAllPods(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "ns",
 			Labels: map[string]string{
-				"env": "test",
+				"kubernetes.io/metadata.name": "ns",
+				"env":                         "test",
 			},
 		},
 	}
@@ -188,7 +191,8 @@ func TestStretchedNetworkPolicyControllerPodEvent(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "ns",
 			Labels: map[string]string{
-				"env": "test",
+				"kubernetes.io/metadata.name": "ns",
+				"env":                         "test",
 			},
 		},
 	}
@@ -304,7 +308,8 @@ func TestStretchedNetworkPolicyControllerNSEvent(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "ns",
 			Labels: map[string]string{
-				"env": "test",
+				"kubernetes.io/metadata.name": "ns",
+				"env":                         "test",
 			},
 		},
 	}
@@ -456,7 +461,8 @@ func TestStretchedNetworkPolicyControllerLabelIdentityEvent(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "ns",
 			Labels: map[string]string{
-				"env": "test",
+				"kubernetes.io/metadata.name": "ns",
+				"env":                         "test",
 			},
 		},
 	}

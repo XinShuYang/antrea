@@ -77,7 +77,6 @@ func TestTraceflow(t *testing.T) {
 		testTraceflowInterNode(t, data)
 	})
 	t.Run("testTraceflowExternalIP", func(t *testing.T) {
-		skipIfEncapModeIsNot(t, data, config.TrafficEncapModeEncap)
 		testTraceflowExternalIP(t, data)
 	})
 	t.Run("testTraceflowEgress", func(t *testing.T) {
@@ -95,14 +94,6 @@ func TestTraceflow(t *testing.T) {
 func skipIfTraceflowDisabled(t *testing.T) {
 	skipIfFeatureDisabled(t, features.Traceflow, true, true)
 }
-
-var (
-	protocolICMP   = int32(1)
-	protocolTCP    = int32(6)
-	protocolUDP    = int32(17)
-	protocolICMPv6 = int32(58)
-	tcpFlags       = int32(2) // SYN flag set
-)
 
 // testTraceflowIntraNodeANNP verifies if traceflow can trace intra node traffic with some Antrea NetworkPolicy sets.
 func testTraceflowIntraNodeANNP(t *testing.T, data *TestData) {
@@ -391,6 +382,12 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 	// default Ubuntu ping packet properties.
 	expectedLength := int32(84)
 	expectedTTL := int32(64)
+	currentEncapMode, _ := data.GetEncapMode()
+	if currentEncapMode.IsNetworkPolicyOnly() {
+		// In networkPolicyOnly mode, intra-Node Pod-to-Pod traffic must be forwarded via antrea-gw0, which acts as an
+		// additional hop.
+		expectedTTL = int32(63)
+	}
 	expectedFlags := int32(2)
 	if len(clusterInfo.windowsNodes) != 0 {
 		// default Windows ping packet properties.
@@ -1020,7 +1017,9 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 		},
 	}
 
-	if gwIPv4Str != "" {
+	// When traffic mode is networkPolicyOnly, only the cluster Pod CIDR can be known to Antrea, the antrea-gw0 IP of every
+	// Node is unknown to Antrea. As a result, skip the test.
+	if gwIPv4Str != "" && !currentEncapMode.IsNetworkPolicyOnly() {
 		testcases = append(testcases, testcase{
 			name:      "localGatewayDestinationIPv4",
 			ipVersion: 4,
@@ -1070,7 +1069,9 @@ func testTraceflowIntraNode(t *testing.T, data *TestData) {
 		})
 	}
 
-	if gwIPv6Str != "" {
+	// When traffic mode is networkPolicyOnly, only the cluster Pod CIDR can be known to Antrea, the antrea-gw0 IP of every
+	// Node is unknown to Antrea. As a result, skip the test.
+	if gwIPv6Str != "" && !currentEncapMode.IsNetworkPolicyOnly() {
 		testcases = append(testcases, testcase{
 			name:      "localGatewayDestinationIPv6",
 			ipVersion: 6,
@@ -2055,12 +2056,18 @@ func testTraceflowInterNode(t *testing.T, data *TestData) {
 }
 
 func testTraceflowExternalIP(t *testing.T, data *TestData) {
+	skipIfNumNodesLessThan(t, 2)
+
 	nodeIdx := 0
+	targetNodeIdx := 1
 	if len(clusterInfo.windowsNodes) != 0 {
+		skipIfEncapModeIs(t, data, config.TrafficEncapModeNetworkPolicyOnly)
 		nodeIdx = clusterInfo.windowsNodes[0]
+		targetNodeIdx = nodeIdx
 	}
+
 	node := nodeName(nodeIdx)
-	nodeIP := nodeIP(nodeIdx)
+	targetIP := nodeIP(targetNodeIdx)
 	podNames, podIPs, cleanupFn := createTestAgnhostPods(t, data, 1, data.testNamespace, node)
 	defer cleanupFn()
 	// Give a little time for Windows containerd Nodes to setup OVS.
@@ -2077,7 +2084,7 @@ func testTraceflowExternalIP(t *testing.T, data *TestData) {
 		ipVersion: 4,
 		tf: &v1beta1.Traceflow{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: randName(fmt.Sprintf("%s-%s-to-%s-%s-", data.testNamespace, podNames[0], data.testNamespace, strings.ReplaceAll(nodeIP, ":", "--"))),
+				Name: randName(fmt.Sprintf("%s-%s-to-%s-%s-", data.testNamespace, podNames[0], data.testNamespace, strings.ReplaceAll(targetIP, ":", "--"))),
 			},
 			Spec: v1beta1.TraceflowSpec{
 				Source: v1beta1.Source{
@@ -2085,7 +2092,7 @@ func testTraceflowExternalIP(t *testing.T, data *TestData) {
 					Pod:       podNames[0],
 				},
 				Destination: v1beta1.Destination{
-					IP: nodeIP,
+					IP: targetIP,
 				},
 				Packet: v1beta1.Packet{
 					IPHeader: &v1beta1.IPHeader{
@@ -2107,7 +2114,7 @@ func testTraceflowExternalIP(t *testing.T, data *TestData) {
 					{
 						Component:     v1beta1.ComponentForwarding,
 						ComponentInfo: "Output",
-						Action:        v1beta1.ActionForwardedOutOfOverlay,
+						Action:        v1beta1.ActionForwardedOutOfNetwork,
 					},
 				},
 			},
@@ -2140,7 +2147,7 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 	}
 
 	egress := data.createEgress(t, "egress-", matchExpressions, nil, "", egressIP, nil)
-	defer data.crdClient.CrdV1beta1().Egresses().Delete(context.TODO(), egress.Name, metav1.DeleteOptions{})
+	defer data.CRDClient.CrdV1beta1().Egresses().Delete(context.TODO(), egress.Name, metav1.DeleteOptions{})
 
 	testcaseLocalEgress := testcase{
 		name:      "egressFromLocalNode",
@@ -2184,7 +2191,7 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 					{
 						Component:     v1beta1.ComponentForwarding,
 						ComponentInfo: "Output",
-						Action:        v1beta1.ActionForwardedOutOfOverlay,
+						Action:        v1beta1.ActionForwardedOutOfNetwork,
 					},
 				},
 			},
@@ -2212,9 +2219,9 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 				MatchLabels: map[string]string{"antrea-e2e": remotePodNames[0]},
 			},
 		}
-		_, err := data.crdClient.CrdV1beta1().Egresses().Update(context.TODO(), toUpdate, metav1.UpdateOptions{})
+		_, err := data.CRDClient.CrdV1beta1().Egresses().Update(context.TODO(), toUpdate, metav1.UpdateOptions{})
 		if err != nil && errors.IsConflict(err) {
-			toUpdate, _ = data.crdClient.CrdV1beta1().Egresses().Get(context.TODO(), egress.Name, metav1.GetOptions{})
+			toUpdate, _ = data.CRDClient.CrdV1beta1().Egresses().Get(context.TODO(), egress.Name, metav1.GetOptions{})
 		}
 		return err
 	})
@@ -2281,7 +2288,7 @@ func testTraceflowEgress(t *testing.T, data *TestData) {
 					{
 						Component:     v1beta1.ComponentForwarding,
 						ComponentInfo: "Output",
-						Action:        v1beta1.ActionForwardedOutOfOverlay,
+						Action:        v1beta1.ActionForwardedOutOfNetwork,
 					},
 				},
 			},
@@ -2361,11 +2368,11 @@ func testTraceflowValidation(t *testing.T, data *TestData) {
 				Spec: tc.spec,
 			}
 			tf.Name = randName("")
-			_, err := data.crdClient.CrdV1beta1().Traceflows().Create(context.TODO(), tf, metav1.CreateOptions{})
+			_, err := data.CRDClient.CrdV1beta1().Traceflows().Create(context.TODO(), tf, metav1.CreateOptions{})
 			if tc.allowed {
 				assert.Nil(t, err)
 			} else {
-				tc.deniedReason = strings.Replace(tc.deniedReason, "{{name}}", tf.Name, -1)
+				tc.deniedReason = strings.ReplaceAll(tc.deniedReason, "{{name}}", tf.Name)
 				expected := "admission webhook \"traceflowvalidator.antrea.io\" denied the request: " + tc.deniedReason
 				assert.EqualError(t, err, expected)
 			}
@@ -2379,7 +2386,7 @@ func (data *TestData) waitForTraceflow(t *testing.T, name string, phase v1beta1.
 	var err error
 	timeout := 15 * time.Second
 	if err = wait.PollUntilContextTimeout(context.Background(), defaultInterval, timeout, true, func(ctx context.Context) (bool, error) {
-		tf, err = data.crdClient.CrdV1beta1().Traceflows().Get(context.TODO(), name, metav1.GetOptions{})
+		tf, err = data.CRDClient.CrdV1beta1().Traceflows().Get(context.TODO(), name, metav1.GetOptions{})
 		if err != nil || tf.Status.Phase != phase {
 			return false, nil
 		}
@@ -2460,7 +2467,7 @@ func (data *TestData) createANNPDenyIngress(key string, value string, name strin
 			Egress: []v1beta1.Rule{},
 		},
 	}
-	annpCreated, err := k8sUtils.crdClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Create(context.TODO(), &annp, metav1.CreateOptions{})
+	annpCreated, err := k8sUtils.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Create(context.TODO(), &annp, metav1.CreateOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -2469,7 +2476,7 @@ func (data *TestData) createANNPDenyIngress(key string, value string, name strin
 
 // deleteAntreaNetworkpolicy deletes an Antrea NetworkPolicy.
 func (data *TestData) deleteAntreaNetworkpolicy(policy *v1beta1.NetworkPolicy) error {
-	if err := k8sUtils.crdClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policy.Name, metav1.DeleteOptions{}); err != nil {
+	if err := k8sUtils.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policy.Name, metav1.DeleteOptions{}); err != nil {
 		return fmt.Errorf("unable to cleanup policy %v: %v", policy.Name, err)
 	}
 	return nil
@@ -2540,11 +2547,11 @@ func runTestTraceflow(t *testing.T, data *TestData, tc testcase) {
 	if tc.skipIfNeeded != nil {
 		tc.skipIfNeeded(t)
 	}
-	if _, err := data.crdClient.CrdV1beta1().Traceflows().Create(context.TODO(), tc.tf, metav1.CreateOptions{}); err != nil {
+	if _, err := data.CRDClient.CrdV1beta1().Traceflows().Create(context.TODO(), tc.tf, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("Error when creating traceflow: %v", err)
 	}
 	defer func() {
-		if err := data.crdClient.CrdV1beta1().Traceflows().Delete(context.TODO(), tc.tf.Name, metav1.DeleteOptions{}); err != nil {
+		if err := data.CRDClient.CrdV1beta1().Traceflows().Delete(context.TODO(), tc.tf.Name, metav1.DeleteOptions{}); err != nil {
 			t.Errorf("Error when deleting traceflow: %v", err)
 		}
 	}()

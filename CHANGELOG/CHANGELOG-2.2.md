@@ -1,5 +1,40 @@
 # Changelog 2.2
 
+## 2.2.2 - 2025-09-17
+
+### Fixed
+
+- Fix ACNP applied to NodePort failing to reject traffic in noEncap/hybrid mode. ([#7265](https://github.com/antrea-io/antrea/pull/7265), [@hongliangl])
+- Use a more robust way to extract the source Node IP from encapsulated IGMP messages for Multicast. ([#7282](https://github.com/antrea-io/antrea/pull/7282), [@hongliangl])
+- Fix agent crash issue which is caused by unexpected interface store initialization for FlexibleIPAM uplink internal port. ([#7389](https://github.com/antrea-io/antrea/pull/7389), @gran-vmv)
+- Periodically sync permanent neighbors to ensure route correctness for Antrea host gateway interface. ([#7238](https://github.com/antrea-io/antrea/pull/7238), [@hongliangl])
+- Enhance OVS commands for Antrea Windows to accelerate container recovery and improve robustness. ([#7228](https://github.com/antrea-io/antrea/pull/7228), [@XinShuYang])
+- Sync affected groups in the Antrea Controller when a Pod goes into `Terminated` state, to ensure that the Pod is excluded from NetworkPolicy source and destination immediately. ([#7217](https://github.com/antrea-io/antrea/pull/7217), [@Dyanngg])
+- Fix race condition when getting metrics via `antctl` for FlowAggregator. ([#7230](https://github.com/antrea-io/antrea/pull/7230), [@antoninbas])
+- Fix rollback when `configureContainerLinkVeth` fails, to ensure subsequent retries can succeed. ([#7210](https://github.com/antrea-io/antrea/pull/7210) [#7213](https://github.com/antrea-io/antrea/pull/7213), [@tnqn])
+- Remove stale local members in the group cache for Multicast, which resolves an issue that the same receiver may fail to receive multicast packets after it rejoins the group. ([#7154](https://github.com/antrea-io/antrea/pull/7154), [@wenyingd])
+
+## 2.2.1 - 2025-03-13
+
+### Changed
+
+- Upgrade CNI plugins from v1.5.1 to v1.6.2. ([#6796](https://github.com/antrea-io/antrea/pull/6796), [@luolanzone])
+- Update some golang.org/x dependencies to resolve CVEs. ([#6930](https://github.com/antrea-io/antrea/pull/6930), [@antoninbas])
+
+### Fixed
+
+- Fix antrea-agent crash issue when deleting the Secret which is storing BGP passwords. ([#7042](https://github.com/antrea-io/antrea/pull/7042), [@hongliangl])
+- Filter out the `hostNetwork` Pods locally on Linux to fix K8s compatibility issue, since the `spec.hostNetwork` field selector for Pods is not supported before K8s v1.28. ([#7012](https://github.com/antrea-io/antrea/pull/7012), [@wenyingd])
+- Add `-ComputerName localhost` explicitly for VMSwitch commands to avoid potential validation issues on Windows with Active Directory. ([#6985](https://github.com/antrea-io/antrea/pull/6985), [@XinShuYang])
+- Reconcile Pods with `hostNetwork` after Antrea Agent is restarted on Windows. ([#6944](https://github.com/antrea-io/antrea/pull/6944), [@wenyingd])
+- Fix PacketCapture bpf filter issue to avoid receiving packets when the socket is created but the bpf filter is not applied yet. ([#6821](https://github.com/antrea-io/antrea/pull/6821), [@hangyan])
+- Set the maximum packet size explicitly to fix an issue with reading `PacketCapture` pcapng files with `tcpdump` on macOS. ([#6804](https://github.com/antrea-io/antrea/pull/6804), [@hangyan])
+- Remove stale OVS interfaces in the CNIServer reconciler if the original Pod interface is disconnected. ([#6919](https://github.com/antrea-io/antrea/pull/6919), [@wenyingd])
+- Ensure that `promote_secondaries` is set on `IPAssigner` interfaces to avoid the automatic removal of all other IP addresses in the same subnet when the primary IP address is deleted. ([#6898](https://github.com/antrea-io/antrea/pull/6898) [#6900](https://github.com/antrea-io/antrea/pull/6900), [@antoninbas])
+- Ensure that OpenFlow rules for a Windows Pod are installed as long as the OpenFlow port is allocated, even if its state is incorrectly reported as "LINK_DOWN". ([#6889](https://github.com/antrea-io/antrea/pull/6889), [@wenyingd])
+- Fix audit logging for default deny-all K8s NetworkPolicy rules. ([#6855](https://github.com/antrea-io/antrea/pull/6855), [@qiyueyao])
+- Fix race condition when getting BGP routes in BGPController. ([#6823](https://github.com/antrea-io/antrea/pull/6823), [@Atish-iaf])
+
 ## 2.2.0 - 2024-11-10
 
 ### Added

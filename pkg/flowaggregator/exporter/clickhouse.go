@@ -23,10 +23,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	ipfixentities "github.com/vmware/go-ipfix/pkg/entities"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 
+	flowpb "antrea.io/antrea/pkg/apis/flow/v1alpha1"
 	"antrea.io/antrea/pkg/flowaggregator/clickhouseclient"
 	"antrea.io/antrea/pkg/flowaggregator/options"
 )
@@ -38,7 +38,7 @@ type ClickHouseExporter struct {
 
 const (
 	CACertFile      = "ca.crt"
-	CertDir         = "/etc/flow-aggregator/certs"
+	CertDir         = "/etc/flow-aggregator/certs/clickhouse"
 	DefaultInterval = 1 * time.Second
 	Timeout         = 1 * time.Minute
 )
@@ -87,9 +87,8 @@ func NewClickHouseExporter(clusterUUID uuid.UUID, opt *options.Options) (*ClickH
 	}, nil
 }
 
-func (e *ClickHouseExporter) AddRecord(record ipfixentities.Record, isRecordIPv6 bool) error {
-	e.chExportProcess.CacheRecord(record)
-	return nil
+func (e *ClickHouseExporter) AddRecord(record *flowpb.Flow, isRecordIPv6 bool) error {
+	return e.chExportProcess.CacheRecord(record)
 }
 
 func (e *ClickHouseExporter) Start() {
@@ -121,4 +120,8 @@ func (e *ClickHouseExporter) UpdateOptions(opt *options.Options) {
 		e.chExportProcess.UpdateCH(chConfig, connect)
 	}
 	klog.InfoS("New ClickHouse configuration", "database", chConfig.Database, "databaseURL", chConfig.DatabaseURL, "debug", chConfig.Debug, "compress", *chConfig.Compress, "commitInterval", chConfig.CommitInterval)
+}
+
+func (e *ClickHouseExporter) Flush() error {
+	return nil
 }

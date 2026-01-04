@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 
 	"antrea.io/libOpenflow/openflow15"
@@ -30,19 +31,20 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 
+	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/openflow"
 	crdv1beta1 "antrea.io/antrea/pkg/apis/crd/v1beta1"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
 )
 
-var skipTraceflowUpdateErr = errors.New("skip Traceflow update")
+var errSkipTraceflowUpdate = errors.New("skip Traceflow update")
 
 func (c *Controller) HandlePacketIn(pktIn *ofctrl.PacketIn) error {
 	if !c.traceflowListerSynced() {
 		return errors.New("Traceflow controller is not started")
 	}
 	oldTf, nodeResult, packet, err := c.parsePacketIn(pktIn)
-	if err == skipTraceflowUpdateErr {
+	if err == errSkipTraceflowUpdate {
 		return nil
 	}
 	if err != nil {
@@ -81,11 +83,13 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 	var err error
 	var tag uint8
 	var ctNwDst, ctNwSrc, ipDst, ipSrc, ns, srcPod string
+	var netIPDst net.IP
 	etherData := new(protocol.Ethernet)
 	if err := etherData.UnmarshalBinary(pktIn.Data.(*util.Buffer).Bytes()); err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to parse Ethernet packet from packet-in message: %v", err)
 	}
-	if etherData.Ethertype == protocol.IPv4_MSG {
+	switch etherData.Ethertype {
+	case protocol.IPv4_MSG:
 		ipPacket, ok := etherData.Data.(*protocol.IPv4)
 		if !ok {
 			return nil, nil, nil, errors.New("invalid traceflow IPv4 packet")
@@ -101,7 +105,8 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 		}
 		ipDst = ipPacket.NWDst.String()
 		ipSrc = ipPacket.NWSrc.String()
-	} else if etherData.Ethertype == protocol.IPv6_MSG {
+		netIPDst = ipPacket.NWDst
+	case protocol.IPv6_MSG:
 		ipv6Packet, ok := etherData.Data.(*protocol.IPv6)
 		if !ok {
 			return nil, nil, nil, errors.New("invalid traceflow IPv6 packet")
@@ -117,7 +122,8 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 		}
 		ipDst = ipv6Packet.NWDst.String()
 		ipSrc = ipv6Packet.NWSrc.String()
-	} else {
+		netIPDst = ipv6Packet.NWDst
+	default:
 		return nil, nil, nil, fmt.Errorf("unsupported traceflow packet Ethertype: %d", etherData.Ethertype)
 	}
 
@@ -145,7 +151,7 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 		// request does not specify source / destination ports.
 		if !firstPacket {
 			klog.InfoS("An additional Traceflow packet was received unexpectedly for Live Traceflow, ignoring it")
-			return nil, nil, nil, skipTraceflowUpdateErr
+			return nil, nil, nil, errSkipTraceflowUpdate
 		}
 		// Uninstall the OVS flows after receiving the first packet, to
 		// avoid capturing too many matched packets.
@@ -303,18 +309,18 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 				}
 			}
 			if isRemoteEgress == 1 { // an Egress packet, currently on source Node and forwarded to Egress Node.
-				egressName, egressIP, egressNode, err := c.egressQuerier.GetEgress(ns, srcPod)
+				egressConfig, err := c.egressQuerier.GetEgress(ns, srcPod)
 				if err != nil {
 					return nil, nil, nil, err
 				}
-				obEgress := getEgressObservation(false, egressIP, egressName, egressNode)
+				obEgress := getEgressObservation(false, egressConfig.EgressIP, egressConfig.Name, egressConfig.EgressNode)
 				obs = append(obs, *obEgress)
 			}
 			ob.TunnelDstIP = tunnelDstIP
 			ob.Action = crdv1beta1.ActionForwarded
 		} else if ipDst == gatewayIP.String() && outputPort == gwPort {
 			ob.Action = crdv1beta1.ActionDelivered
-		} else if c.networkConfig.TrafficEncapMode.SupportsEncap() && outputPort == gwPort {
+		} else if c.networkConfig.TrafficEncapMode.SupportsEncap() && outputPort == gwPort { // encap or hybrid
 			var pktMark uint32
 			if match := getMatchPktMarkField(matchers); match != nil {
 				pktMark, err = getMarkValue(match)
@@ -325,10 +331,13 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 			if pktMark != 0 { // Egress packet on Egress Node
 				egressName, egressIP, egressNode := "", "", ""
 				if tunnelDstIP == "" { // Egress Node is Source Node of this Egress packet
-					egressName, egressIP, egressNode, err = c.egressQuerier.GetEgress(ns, srcPod)
+					egressConfig, err := c.egressQuerier.GetEgress(ns, srcPod)
 					if err != nil {
 						return nil, nil, nil, err
 					}
+					egressName = egressConfig.Name
+					egressIP = egressConfig.EgressIP
+					egressNode = egressConfig.EgressNode
 				} else {
 					egressIP, err = c.egressQuerier.GetEgressIPByMark(pktMark)
 					if err != nil {
@@ -338,9 +347,40 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 				obEgress := getEgressObservation(true, egressIP, egressName, egressNode)
 				obs = append(obs, *obEgress)
 			}
-			ob.Action = crdv1beta1.ActionForwardedOutOfOverlay
-		} else if outputPort == gwPort { // noEncap
-			ob.Action = crdv1beta1.ActionForwarded
+
+			ob.Action = crdv1beta1.ActionForwardedOutOfNetwork
+			if c.networkConfig.TrafficEncapMode == config.TrafficEncapModeHybrid && c.podSubnetChecker != nil {
+				netAddrDst, _ := netip.AddrFromSlice(netIPDst)
+				isPodIP, _ := c.podSubnetChecker.LookupIPInPodSubnets(netAddrDst)
+				if isPodIP {
+					ob.Action = crdv1beta1.ActionForwarded
+				}
+			}
+		} else if c.networkConfig.TrafficEncapMode == config.TrafficEncapModeNetworkPolicyOnly && outputPort == gwPort { // networkPolicyOnly
+			isPodIP := false
+			for _, podCIDR := range c.podCIDRs {
+				if podCIDR.Contains(netIPDst) {
+					isPodIP = true
+					break
+				}
+			}
+			if isPodIP {
+				ob.Action = crdv1beta1.ActionForwarded
+			} else {
+				ob.Action = crdv1beta1.ActionForwardedOutOfNetwork
+			}
+		} else if c.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap && outputPort == gwPort { // noEncap
+			// TODO: update this and above case if noEncap mode supports Egress feature
+			isPodIP := false
+			if c.podSubnetChecker != nil {
+				netAddrDst, _ := netip.AddrFromSlice(netIPDst)
+				isPodIP, _ = c.podSubnetChecker.LookupIPInPodSubnets(netAddrDst)
+			}
+			if isPodIP {
+				ob.Action = crdv1beta1.ActionForwarded
+			} else {
+				ob.Action = crdv1beta1.ActionForwardedOutOfNetwork
+			}
 		} else {
 			// Output port is Pod port, packet is delivered.
 			ob.Action = crdv1beta1.ActionDelivered
@@ -484,11 +524,12 @@ func parseCapturedPacket(pktIn *ofctrl.PacketIn) *crdv1beta1.Packet {
 	} else {
 		capturedPacket.IPHeader = &crdv1beta1.IPHeader{Protocol: int32(pkt.IPProto), TTL: int32(pkt.TTL), Flags: int32(pkt.IPFlags)}
 	}
-	if pkt.IPProto == protocol.Type_TCP {
+	switch pkt.IPProto {
+	case protocol.Type_TCP:
 		capturedPacket.TransportHeader.TCP = &crdv1beta1.TCPHeader{SrcPort: int32(pkt.SourcePort), DstPort: int32(pkt.DestinationPort), Flags: ptr.To(int32(pkt.TCPFlags))}
-	} else if pkt.IPProto == protocol.Type_UDP {
+	case protocol.Type_UDP:
 		capturedPacket.TransportHeader.UDP = &crdv1beta1.UDPHeader{SrcPort: int32(pkt.SourcePort), DstPort: int32(pkt.DestinationPort)}
-	} else if pkt.IPProto == protocol.Type_ICMP || pkt.IPProto == protocol.Type_IPv6ICMP {
+	case protocol.Type_ICMP, protocol.Type_IPv6ICMP:
 		capturedPacket.TransportHeader.ICMP = &crdv1beta1.ICMPEchoRequestHeader{ID: int32(pkt.ICMPEchoID), Sequence: int32(pkt.ICMPEchoSeq)}
 	}
 	return &capturedPacket

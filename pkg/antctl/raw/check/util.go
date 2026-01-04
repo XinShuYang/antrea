@@ -15,7 +15,6 @@
 package check
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
@@ -28,10 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/remotecommand"
 )
 
 func NewClient() (client kubernetes.Interface, config *rest.Config, clusterName string, err error) {
@@ -57,53 +54,52 @@ func NewClient() (client kubernetes.Interface, config *rest.Config, clusterName 
 	return clientset, config, clusterName, nil
 }
 
-func DeploymentIsReady(ctx context.Context, client kubernetes.Interface, namespace, deploymentName string) (bool, error) {
-	deployment, err := client.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
-	if err != nil {
-		return false, err
+// getDeploymentCondition returns the condition with the provided type.
+func getDeploymentCondition(status appsv1.DeploymentStatus, condType appsv1.DeploymentConditionType) *appsv1.DeploymentCondition {
+	for i := range status.Conditions {
+		c := status.Conditions[i]
+		if c.Type == condType {
+			return &c
+		}
 	}
-	if deployment.Generation <= deployment.Status.ObservedGeneration {
-		for _, cond := range deployment.Status.Conditions {
-			if cond.Type == appsv1.DeploymentProgressing && cond.Reason == "ProgressDeadlineExceeded" {
-				return false, fmt.Errorf("deployment %q exceeded its progress deadline", deployment.Name)
-			}
-		}
-		if deployment.Spec.Replicas != nil && deployment.Status.UpdatedReplicas < *deployment.Spec.Replicas {
-			return false, nil
-		}
-		if deployment.Status.Replicas > deployment.Status.UpdatedReplicas {
-			return false, nil
-		}
-		if deployment.Status.AvailableReplicas < deployment.Status.UpdatedReplicas {
-			return false, nil
-		}
-		return true, nil
-	}
-	return false, nil
+	return nil
 }
 
-func ExecInPod(ctx context.Context, client kubernetes.Interface, config *rest.Config, namespace, pod, container string, command []string) (string, string, error) {
-	req := client.CoreV1().RESTClient().Post().Resource("pods").Name(pod).Namespace(namespace).SubResource("exec")
-	req.VersionedParams(&corev1.PodExecOptions{
-		Command:   command,
-		Container: container,
-		Stdin:     false,
-		Stdout:    true,
-		Stderr:    true,
-		TTY:       false,
-	}, scheme.ParameterCodec)
-	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
-	if err != nil {
-		return "", "", fmt.Errorf("error while creating executor: %w", err)
+// DeploymentIsReady and DaemonSetIsReady are inspired by the implementation of "kubectl rollout status".
+
+// DeploymentIsReady returns a message describing Deployment status, and a bool value indicating if the status is considered ready.
+func DeploymentIsReady(deployment *appsv1.Deployment) (string, bool, error) {
+	if deployment.Generation <= deployment.Status.ObservedGeneration {
+		cond := getDeploymentCondition(deployment.Status, appsv1.DeploymentProgressing)
+		if cond != nil && cond.Reason == "ProgressDeadlineExceeded" {
+			return "", false, fmt.Errorf("Deployment %q exceeded its progress deadline", deployment.Name)
+		}
+		if deployment.Spec.Replicas != nil && deployment.Status.UpdatedReplicas < *deployment.Spec.Replicas {
+			return fmt.Sprintf("Waiting for Deployment %q: %d out of %d new replicas have been updated...\n", deployment.Name, deployment.Status.UpdatedReplicas, *deployment.Spec.Replicas), false, nil
+		}
+		if deployment.Status.Replicas > deployment.Status.UpdatedReplicas {
+			return fmt.Sprintf("Waiting for Deployment %q: %d old replicas are pending termination...\n", deployment.Name, deployment.Status.Replicas-deployment.Status.UpdatedReplicas), false, nil
+		}
+		if deployment.Status.AvailableReplicas < deployment.Status.UpdatedReplicas {
+			return fmt.Sprintf("Waiting for Deployment %q: %d of %d updated replicas are available...\n", deployment.Name, deployment.Status.AvailableReplicas, deployment.Status.UpdatedReplicas), false, nil
+		}
+		return fmt.Sprintf("Deployment %q is ready\n", deployment.Name), true, nil
 	}
-	var stdout, stderr bytes.Buffer
-	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
-		Stdin:  nil,
-		Stdout: &stdout,
-		Stderr: &stderr,
-		Tty:    false,
-	})
-	return stdout.String(), stderr.String(), err
+	return "Waiting for Deployment spec update to be observed...\n", false, nil
+}
+
+// DaemonSetIsReady returns a message describing DaemonSet status, and a bool value indicating if the status is considered ready.
+func DaemonSetIsReady(daemonSet *appsv1.DaemonSet) (string, bool, error) {
+	if daemonSet.Generation <= daemonSet.Status.ObservedGeneration {
+		if daemonSet.Status.UpdatedNumberScheduled < daemonSet.Status.DesiredNumberScheduled {
+			return fmt.Sprintf("Waiting for DaemonSet %q: %d out of %d new pods have been updated...\n", daemonSet.Name, daemonSet.Status.UpdatedNumberScheduled, daemonSet.Status.DesiredNumberScheduled), false, nil
+		}
+		if daemonSet.Status.NumberAvailable < daemonSet.Status.DesiredNumberScheduled {
+			return fmt.Sprintf("Waiting for DaemonSet %q: %d of %d updated pods are available...\n", daemonSet.Name, daemonSet.Status.NumberAvailable, daemonSet.Status.DesiredNumberScheduled), false, nil
+		}
+		return fmt.Sprintf("DaemonSet %q is ready\n", daemonSet.Name), true, nil
+	}
+	return "Waiting for DaemonSet spec update to be observed...\n", false, nil
 }
 
 func NewDeployment(p DeploymentParameters) *appsv1.Deployment {
@@ -179,25 +175,60 @@ type DeploymentParameters struct {
 	SecurityContext *corev1.SecurityContext
 }
 
-func WaitForDeploymentsReady(ctx context.Context,
+func WaitForDeploymentsReady(
+	ctx context.Context,
 	interval, timeout time.Duration,
+	immediate bool,
 	client kubernetes.Interface,
 	clusterName string,
 	namespace string,
-	deployments ...string) error {
-	for _, deployment := range deployments {
-		fmt.Fprintf(os.Stdout, fmt.Sprintf("[%s] ", clusterName)+"Waiting for Deployment %s to become ready...\n", deployment)
-		err := wait.PollUntilContextTimeout(ctx, interval, timeout, false, func(ctx context.Context) (bool, error) {
-			ready, err := DeploymentIsReady(ctx, client, namespace, deployment)
+	deployments ...string,
+) error {
+	for _, name := range deployments {
+		fmt.Fprintf(os.Stdout, "[%s] Waiting for Deployment %q to become ready...\n", clusterName, name)
+		err := wait.PollUntilContextTimeout(ctx, interval, timeout, immediate, func(ctx context.Context) (bool, error) {
+			deployment, err := client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
-				return false, fmt.Errorf("error checking readiness of Deployment %s: %w", deployment, err)
+				return false, err
 			}
+			status, ready, err := DeploymentIsReady(deployment)
+			if err != nil {
+				return false, fmt.Errorf("error checking readiness of Deployment %q: %w", name, err)
+			}
+			fmt.Fprintf(os.Stdout, "[%s] %s", clusterName, status)
 			return ready, nil
 		})
 		if err != nil {
-			return fmt.Errorf("waiting for Deployment %s to become ready has been interrupted: %w", deployment, err)
+			return fmt.Errorf("waiting for Deployment %q to become ready has been interrupted: %w", name, err)
 		}
-		fmt.Fprintf(os.Stdout, fmt.Sprintf("[%s] ", clusterName)+"Deployment %s is ready.\n", deployment)
+	}
+	return nil
+}
+
+func WaitForDaemonSetReady(
+	ctx context.Context,
+	interval, timeout time.Duration,
+	immediate bool,
+	client kubernetes.Interface,
+	clusterName string,
+	namespace string,
+	name string,
+) error {
+	fmt.Fprintf(os.Stdout, "[%s] Waiting for DaemonSet %q to become ready...\n", clusterName, name)
+	err := wait.PollUntilContextTimeout(ctx, interval, timeout, immediate, func(ctx context.Context) (bool, error) {
+		daemonSet, err := client.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		status, ready, err := DaemonSetIsReady(daemonSet)
+		if err != nil {
+			return false, fmt.Errorf("error checking readiness of DaemonSet %q: %w", name, err)
+		}
+		fmt.Fprintf(os.Stdout, "[%s] %s", clusterName, status)
+		return ready, nil
+	})
+	if err != nil {
+		return fmt.Errorf("waiting for DaemonSet %q to become ready has been interrupted: %w", name, err)
 	}
 	return nil
 }
@@ -219,7 +250,9 @@ func Teardown(ctx context.Context, logger Logger, client kubernetes.Interface, n
 	logger.Log("Deleting installation tests setup...")
 	err := client.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
 	if err != nil {
-		logger.Fail("Namespace %s deletion failed: %v", namespace, err)
+		if !errors.IsNotFound(err) {
+			logger.Fail("Namespace %s deletion failed: %v", namespace, err)
+		}
 		return
 	}
 	logger.Log("Waiting for Namespace %s to be deleted", namespace)

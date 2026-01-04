@@ -23,12 +23,12 @@ ANTREA_IMAGES="antrea/antrea-agent-ubuntu:latest antrea/antrea-controller-ubuntu
 IMAGES=$ANTREA_IMAGES
 ANTREA_CNI=false
 ACTION=""
-UNTIL_TIME_IN_MINS=""
+UNTIL_TIME_IN_MINS=60
 POD_CIDR=""
 SERVICE_CIDR=""
 IP_FAMILY="ipv4"
 NUM_WORKERS=2
-SUBNETS=""
+SUBNETS=()
 VLAN_SUBNETS=()
 EXTRA_NETWORKS=""
 ENCAP_MODE=""
@@ -61,15 +61,17 @@ where:
   --service-cidr: specify service clusterip cidr used in kind cluster, kind's default value will be used if empty.
   --encap-mode: inter-node pod traffic encap mode, default is encap.
   --no-proxy: disable Antrea proxy.
-  --no-kube-proxy: disable Kube proxy.
+  --no-kube-proxy: deprecated. This option is still supported for compatibility, but will be removed. Use '--kube-proxy-mode none' going forward to disable kube-proxy.
+  --kube-proxy-mode: specify the kube-proxy mode. Supported values are 'iptables', 'nftables', 'ipvs' and 'none' (to disable kube-proxy).
   --no-kube-node-ipam: disable NodeIPAM in kube-controller-manager.
   --antrea-cni: install Antrea CNI in Kind cluster; by default the cluster is created without a CNI installed.
   --prometheus: create RBAC resources for Prometheus, default is false.
   --num-workers: specify number of worker nodes in kind cluster, default is $NUM_WORKERS.
   --images: specify images loaded to kind cluster, default is $IMAGES.
   --subnets: a subnet creates a separate Docker bridge network (named 'antrea-<idx>') with the assigned subnet. A worker
-    Node will be connected to one of those network. Default is empty: all worker Nodes connected to the default Docker
-    bridge network created by kind.
+    Node will be connected to one of those networks. Default is empty: all worker Nodes connected to the default Docker
+    bridge network created by kind. For example, '--subnets 20.20.20.0/24,fd00:dead:beef::/64', '--subnets 20.20.20.0/24',
+    '--subnets fd00:dead:beef::/64'. This option can be specified multiple times to create multiple networks.
   --vlan-subnets: specify the id and subnets of the VLAN to which all Nodes will be connected, in addition to the primary network.
     The IP expression of the subnet will be used as the gateway IP. For example, '--vlan-subnets 10=172.100.10.1/24,fd00:172:100:10::1/96,' means
     that a VLAN sub-interface will be created on the primary Docker bridge, and it will be assigned the 10.100.100.1/24 and fd00:172:100:10::1/96 addresses
@@ -82,7 +84,7 @@ where:
   --deploy-external-agnhost: deploy a container running agnhost as an external server for the cluster, default is $DEPLOY_EXTERNAL_AGNHOST.
   --deploy-external-frr: deploy a container running FRR as an external router for the cluster, default is $DEPLOY_EXTERNAL_FRR.
   --all: delete all kind clusters.
-  --until: delete kind clusters that have been created before the specified duration.
+  --until: delete kind clusters that have been created before the specified duration (in minutes).
 "
 
 function print_usage {
@@ -112,6 +114,8 @@ function docker_run_with_host_net {
 }
 
 function configure_networks {
+  local cluster_name="$1"
+
   echo "Configuring networks"
   networks=$(docker network ls -f name=antrea --format '{{.Name}}')
   networks="$(echo $networks)"
@@ -123,17 +127,21 @@ function configure_networks {
   # Inject allow all iptables to preempt docker bridge isolation rules
   if [[ ! -z $SUBNETS ]]; then
     set +e
-    docker_run_with_host_net iptables -C DOCKER-USER -j ACCEPT > /dev/null 2>&1
-    if [[ $? -ne 0 ]]; then
-      docker_run_with_host_net iptables -I DOCKER-USER -j ACCEPT
-    fi
+    for cmd in iptables ip6tables; do
+      [[ "$IP_FAMILY" == "ipv4" ]] && [[ "$cmd" == "ip6tables" ]] && continue
+      [[ "$IP_FAMILY" == "ipv6" ]] && [[ "$cmd" == "iptables" ]] && continue
+      docker_run_with_host_net "$cmd" -C DOCKER-USER -j ACCEPT > /dev/null 2>&1
+      if [[ $? -ne 0 ]]; then
+        docker_run_with_host_net "$cmd" -I DOCKER-USER -j ACCEPT
+      fi
+    done
     set -e
   fi
 
   # remove old networks
-  nodes="$(kind get nodes --name $CLUSTER_NAME | grep worker)"
+  nodes="$(kind get nodes --name $cluster_name | grep worker)"
   nodes=$(echo $nodes)
-  networks+=" kind"
+  networks+=" $cluster_name"
   echo "removing worker nodes $nodes from networks $networks"
   for n in $networks; do
     rm_nodes=$(docker network inspect $n --format '{{range $i, $conf:=.Containers}}{{$conf.Name}} {{end}}')
@@ -143,7 +151,7 @@ function configure_networks {
         echo "disconnected worker $rn from network $n"
       fi
     done
-    if [[ $n != "kind" ]]; then
+    if [[ $n != "$cluster_name" ]]; then
       docker network rm $n > /dev/null 2>&1
       echo "removed network $n"
     fi
@@ -152,41 +160,93 @@ function configure_networks {
   # create new bridge network per subnet
   i=0
   networks=()
-  for s in $SUBNETS; do
-    network=antrea-$i
-    echo "creating network $network with $s"
-    docker network create -d bridge --subnet $s $network >/dev/null 2>&1
+  for subnet in $SUBNETS; do
+    network=antrea-$cluster_name-$i
+    docker_network_args=("-d" "bridge")
+    # append gateway_mode options based on Docker version
+    if version_ge "$docker_version" "28.0.0"; then
+      if [[ "$IP_FAMILY" != "ipv4" ]]; then
+        docker_network_args+=("-o" "com.docker.network.bridge.gateway_mode_ipv6=nat-unprotected")
+      fi
+      if [[ "$IP_FAMILY" != "ipv6" ]]; then
+        docker_network_args+=("-o" "com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected")
+      fi
+    fi
+    # append --ipv6 option for IPv6 only
+    if [[ "$IP_FAMILY" != "ipv4" ]]; then
+      docker_network_args+=("--ipv6")
+    fi
+
+    IFS=',' read -ra subnet_array <<< "$subnet"
+    for subnet in "${subnet_array[@]}"; do
+      docker_network_args+=("--subnet" "$subnet")
+    done
+
+    echo "Creating docker network $network with args: ${docker_network_args[@]}"
+    docker network create "${docker_network_args[@]}" $network >/dev/null 2>&1
     networks+=($network)
     i=$((i+1))
   done
 
   num_networks=${#networks[@]}
   if [[ $num_networks -eq 0 ]]; then
-    networks+=("kind")
+    networks+=("$cluster_name")
     num_networks=$((num_networks+1))
   fi
 
-  control_plane_ip=$(docker inspect $CLUSTER_NAME-control-plane --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.IPAddress}}{{end}}')
+  control_plane_ip4=$(docker inspect $cluster_name-control-plane --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.IPAddress}}{{end}}')
+  control_plane_ip6=$(docker inspect $cluster_name-control-plane --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.GlobalIPv6Address}}{{end}}')
 
   i=0
   for node in $nodes; do
     network=${networks[i]}
-    docker network connect $network $node >/dev/null 2>&1
+    ifname="eth1"
+    # the com.docker.network.endpoint.ifname label is only supported starting with Docker Engine v28
+    # prior to that, the interface should be named "eth1" by default
+    # note that providing an unsupported label does not generate an error
+    docker network connect --driver-opt=com.docker.network.endpoint.ifname=$ifname $network $node
     echo "connected worker $node to network $network"
-    node_ip=$(docker inspect $node --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.IPAddress}}{{end}}')
+    node_ip4=$(docker inspect $node --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.IPAddress}}{{end}}')
+    node_ip6=$(docker inspect $node --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.GlobalIPv6Address}}{{end}}')
+    node_ip6_prefix=$(docker inspect $node --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.GlobalIPv6PrefixLen}}{{end}}')
 
     # reset network
-    docker exec -t $node ip link set eth1 down
-    docker exec -t $node ip link set eth1 name eth0
+    docker exec -t $node ip link set $ifname down
+    docker exec -t $node ip link set $ifname name eth0
     docker exec -t $node ip link set eth0 up
-    gateway=$(echo "${node_ip/%?/1}")
-    docker exec -t $node ip route add default via $gateway
-    echo "node $node is ready with ip change to $node_ip with gw $gateway"
-
+    # set IPv4 address and route for IPv4 only or dual stack
+    if [[ "$IP_FAMILY" != "ipv6" ]]; then
+      gateway4=$(echo "${node_ip4/%?/1}")
+      docker exec -t "$node" ip route add default via "$gateway4"
+      echo "node $node is ready with ip changed to $node_ip4 with gw $gateway4"
+    fi
+    # set IPv6 address and route for IPv6 only or dual stack
+    if [[ "$IP_FAMILY" != "ipv4" ]]; then
+      prefix_len="${node_ip6_prefix:-64}"
+      docker exec -t "$node" ip -6 addr add "$node_ip6/$prefix_len" dev eth0
+      gateway6=$(echo "$node_ip6" | sed -E 's/::[0-9a-fA-F]*$/::1/')
+      docker exec -t "$node" ip -6 route add default via "$gateway6"
+      echo "node $node is ready with ip changed to $node_ip6 with gw $gateway6"
+    fi
+    # remove IPv4 address for IPv6 only
+    if [[ "$IP_FAMILY" == "ipv6" ]]; then
+      docker exec -t "$node" ip addr del "$node_ip4" dev eth0
+      echo "removed IPv4 addr from $node for IPv6 only"
+    fi
+    # generate internal IPs
+    node_ips=""
+    if [[ "$IP_FAMILY" == "dual" ]]; then
+      node_ips="$node_ip4,$node_ip6"
+    elif [[ "$IP_FAMILY" == "ipv4" ]]; then
+      node_ips="$node_ip4"
+    elif [[ "$IP_FAMILY" == "ipv6" ]]; then
+      node_ips="$node_ip6"
+    fi
     # change kubelet config before reset network
-    docker exec -t $node sed -i "s/node-ip=.*/node-ip=$node_ip/g" /var/lib/kubelet/kubeadm-flags.env
+    docker exec -t $node sed -i "s/node-ip=.*/node-ip=$node_ips/g" /var/lib/kubelet/kubeadm-flags.env
     # this is needed to ensure that the worker node can still connect to the apiserver
-    docker exec -t $node bash -c "echo '$control_plane_ip $CLUSTER_NAME-control-plane' >> /etc/hosts"
+    [[ "$IP_FAMILY" != "ipv6" ]] && docker exec -t $node bash -c "echo '$control_plane_ip4 $cluster_name-control-plane' >> /etc/hosts"
+    [[ "$IP_FAMILY" != "ipv4" ]] && docker exec -t $node bash -c "echo '$control_plane_ip6 $cluster_name-control-plane' >> /etc/hosts"
     docker exec -t $node pkill kubelet
     # it's possible that kube-proxy is not running yet on some Nodes
     docker exec -t $node pkill kube-proxy || true
@@ -197,18 +257,41 @@ function configure_networks {
   done
 
   for node in $nodes; do
-    node_ip=$(docker inspect $node --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.IPAddress}}{{end}}')
-    while true; do
-      tmp_ip=$(kubectl describe node $node | grep InternalIP)
-      if [[ "$tmp_ip" == *"$node_ip"* ]]; then
+    node_ip4=$(docker inspect $node --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.IPAddress}}{{end}}')
+    [[ "$IP_FAMILY" == "ipv6" ]] && node_ip4=""
+    node_ip6=$(docker inspect $node --format '{{range $i, $conf:=.NetworkSettings.Networks}}{{$conf.GlobalIPv6Address}}{{end}}')
+
+    echo "Waiting for node $node to be assigned InternalIP..."
+    max_attempts=30
+    attempt=0
+    # verify the internal IPs
+    while (( attempt < max_attempts )); do
+      internal_ips=$(kubectl get node "$node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+
+      ok4=true
+      ok6=true
+      [[ -n "$node_ip4" && "$internal_ips" != *"$node_ip4"* ]] && ok4=false
+      [[ -n "$node_ip6" && "$internal_ips" != *"$node_ip6"* ]] && ok6=false
+
+      if $ok4 && $ok6; then
+        echo "Node $node is ready with expected internal IPs: $node_ip4 $node_ip6"
         break
       fi
-      echo "current ip $tmp_ip, wait for new node ip $node_ip"
+
+      echo "Attempt $((++attempt)): got IPs [$internal_ips]"
+      ! $ok4 && echo "Missing IPv4: $node_ip4"
+      ! $ok6 && echo "Missing IPv6: $node_ip6"
+
       sleep 2
     done
+
+    if (( attempt >= max_attempts )); then
+        echo "Timeout waiting for node $node to have expected internal IPs: $node_ip4 $node_ip6"
+        exit 1
+      fi
   done
 
-  nodes="$(kind get nodes --name $CLUSTER_NAME)"
+  nodes="$(kind get nodes --name $cluster_name)"
   for node in $nodes; do
     # disable tx checksum offload
     # otherwise we observe that inter-Node tunnelled traffic crossing Docker networks is dropped
@@ -218,6 +301,8 @@ function configure_networks {
 }
 
 function configure_extra_networks {
+  local cluster_name="$1"
+
   if [[ -z $EXTRA_NETWORKS ]]; then
     return
   fi
@@ -227,19 +312,22 @@ function configure_extra_networks {
   i=0
   networks=()
   for s in $EXTRA_NETWORKS ; do
-    network=antrea-$i
+    network=antrea-$cluster_name-$i
     echo "creating network $network with $s"
     docker network create -d bridge --subnet $s $network >/dev/null 2>&1
     networks+=($network)
     i=$((i+1))
   done
 
-  nodes="$(kind get nodes --name $CLUSTER_NAME)"
+  nodes="$(kind get nodes --name $cluster_name)"
   for node in $nodes; do
+    i=1
     for network in $networks; do
-      docker network connect $network $node >/dev/null 2>&1
+      ifname="eth$i"
+      docker network connect --driver-opt=com.docker.network.endpoint.ifname=$ifname $network $node
       echo "connected worker $node to network $network"
     done
+    i=$((i+1))
   done
 }
 
@@ -262,12 +350,14 @@ function update_kind_ipam_routes {
 }
 
 function configure_vlan_subnets {
+  local cluster_name="$1"
+
   if [[ ${#VLAN_SUBNETS[@]} -eq 0 ]]; then
     return
   fi
   echo "Configuring VLAN subnets"
 
-  bridge_id=$(docker network inspect kind -f {{.ID}})
+  bridge_id=$(docker network inspect $cluster_name -f {{.ID}})
   bridge_interface="br-${bridge_id:0:12}"
   
   vlan_interfaces=()
@@ -319,9 +409,15 @@ function configure_vlan_subnets {
 }
 
 function delete_vlan_subnets {
+  local cluster_name="$1"
+
   echo "Deleting VLAN subnets"
 
-  bridge_id=$(docker network inspect kind -f {{.ID}})
+  bridge_id=$(docker network inspect -f '{{.ID}}' $cluster_name 2>/dev/null || true)
+  if [[ -z "$bridge_id" ]]; then
+    echo "$cluster_name network not found, skipping VLAN subnet deletion"
+    return
+  fi
   bridge_interface="br-${bridge_id:0:12}"
   vlan_interface_prefix="br-${bridge_id:0:7}."
 
@@ -339,6 +435,8 @@ function delete_vlan_subnets {
     docker_run_with_host_net iptables -t nat -D POSTROUTING ! -o $bridge_interface -s 192.168.240.0/24 -m set --match-set excluded_subnets dst -j RETURN || true
     docker_run_with_host_net iptables -t nat -D POSTROUTING ! -o $bridge_interface -s 10.244.0.0/16 -m set ! --match-set excluded_subnets dst -j MASQUERADE || true
     docker_run_with_host_net ipset destroy excluded_subnets || true  
+  else
+    echo "Non-flexible IPAM test detected. Skipping subnet deletion."
   fi
 }
 
@@ -351,13 +449,14 @@ function delete_network_by_filter {
 }
 
 function delete_networks {
-  if [[ $FLEXIBLE_IPAM == true ]]; then
-    delete_network_by_filter "kind"
-  fi
-  delete_network_by_filter "antrea"
+  local cluster_name=$1
+  delete_network_by_filter "^antrea-${cluster_name}-"
+  delete_network_by_filter "^${cluster_name}$"
 }
 
 function load_images {
+  local cluster_name=$1
+
   echo "load images"
   set +e
   for img in $IMAGES; do
@@ -366,7 +465,7 @@ function load_images {
       echoerr "docker image $img not found"
       continue
     fi
-    kind load docker-image $img --name $CLUSTER_NAME > /dev/null 2>&1
+    kind load docker-image $img --name $cluster_name > /dev/null 2>&1
     if [[ $? -ne 0 ]]; then
       echoerr "docker image $img failed to load"
       continue
@@ -377,17 +476,7 @@ function load_images {
 }
 
 function create {
-  if [[ -z $CLUSTER_NAME ]]; then
-    echoerr "cluster-name not provided"
-    exit 1
-  fi
-
-  # Having a simple validation check for now.
-  # TODO: Making this comprehensive check confirming with rfc1035/rfc1123
-  if [[ "$CLUSTER_NAME" =~ [^a-z0-9-] ]]; then
-     echoerr "Invalid string. Conform to rfc1035/rfc1123"
-     exit 1
-  fi
+  local cluster_name=$CLUSTER_NAME
 
   if [[ "$IP_FAMILY" != "ipv4" ]] && [[ "$IP_FAMILY" != "ipv6" ]] && [[ "$IP_FAMILY" != "dual" ]]; then
     echoerr "Invalid value for --ip-family \"$IP_FAMILY\", expected \"ipv4\", \"ipv6\", or \"dual\""
@@ -404,9 +493,9 @@ function create {
   fi
 
   set +e
-  kind get clusters | grep -x "$CLUSTER_NAME" > /dev/null 2>&1
+  kind get clusters | grep -x "$cluster_name" > /dev/null 2>&1
   if [[ $? -eq 0 ]]; then
-    echoerr "cluster $CLUSTER_NAME already created"
+    echoerr "cluster $cluster_name already created"
     exit 0
   fi
   set -e
@@ -458,7 +547,12 @@ EOF
     fi
     IMAGE_OPT="--image kindest/node:${K8S_VERSION}"
   fi
-  kind create cluster --name $CLUSTER_NAME --config $config_file $IMAGE_OPT
+
+  (
+    flock -x 200
+    echo "$cluster_name $(date +%s)" >> ~/.antrea/.clusters
+  ) 200>>~/.antrea/.clusters.lock
+  kind create cluster --name $cluster_name --config $config_file $IMAGE_OPT
 
   # force coredns to run on control-plane node because it
   # is attached to kind bridge and uses host dns.
@@ -470,16 +564,16 @@ spec:
   template:
     spec:
       nodeSelector:
-        kubernetes.io/hostname: $CLUSTER_NAME-control-plane
+        kubernetes.io/hostname: $cluster_name-control-plane
 EOF
 )
   kubectl patch deployment coredns -p "$patch" -n kube-system
 
-  configure_networks
-  configure_extra_networks
-  configure_vlan_subnets
-  setup_external_servers
-  load_images
+  configure_networks $cluster_name
+  configure_extra_networks $cluster_name
+  configure_vlan_subnets $cluster_name
+  setup_external_servers $cluster_name
+  load_images $cluster_name
   if [[ $FLEXIBLE_IPAM == true ]]; then
       update_kind_ipam_routes "add"
   fi
@@ -490,11 +584,11 @@ EOF
     if [[ $PROXY == false ]]; then
       cmd+=" --no-proxy"
     fi
-    echo "$cmd $(get_encap_mode) | kubectl apply --context kind-$CLUSTER_NAME -f -"
-    eval "$cmd $(get_encap_mode) | kubectl apply --context kind-$CLUSTER_NAME -f -"
+    echo "$cmd $(get_encap_mode) | kubectl apply --context kind-$cluster_name -f -"
+    eval "$cmd $(get_encap_mode) | kubectl apply --context kind-$cluster_name -f -"
 
     if [[ $PROMETHEUS == true ]]; then
-      kubectl apply --context kind-$CLUSTER_NAME -f $THIS_DIR/../../build/yamls/antrea-prometheus-rbac.yml
+      kubectl apply --context kind-$cluster_name -f $THIS_DIR/../../build/yamls/antrea-prometheus-rbac.yml
     fi
   fi
 
@@ -505,36 +599,35 @@ EOF
   done
 }
 
-function destroy {
-  update_kind_ipam_routes "del"
-  if [[ $UNTIL_TIME_IN_MINS != "" ]]; then
-      clean_kind
-  else
-      kind delete cluster --name $CLUSTER_NAME
-  fi
-  destroy_external_servers
-  delete_networks
-  delete_vlan_subnets
+function delete {
+  local cluster_name="$1"
+  delete_vlan_subnets $cluster_name
+  kind delete cluster --name $cluster_name
+  delete_networks $cluster_name
 }
 
-function printUnixTimestamp {
-    runtimeOS="$(uname)"
-    if [[ "$runtimeOS" == "Darwin" ]]; then
-        echo $(date -ju -f "%Y-%m-%dT%H:%M:%SZ" "$1" "+%s")
-    else
-        echo $(date -d "$1" '+%s')
-    fi
+function destroy {
+  update_kind_ipam_routes "del"
+  destroy_external_servers
+  if [[ "$CLUSTER_NAME" == "*" ]]; then
+      if [[ -e ~/.antrea/.clusters ]]; then
+          clean_old_clusters
+      fi
+  else
+      delete $CLUSTER_NAME
+  fi
 }
 
 function setup_external_servers {
+  local cluster_name="$1"
   if [[ $DEPLOY_EXTERNAL_AGNHOST == true ]]; then
-    docker run -d --name antrea-external-agnhost-$RANDOM --network kind -it --rm registry.k8s.io/e2e-test-images/agnhost:2.40 netexec &> /dev/null
+    docker run -d --name antrea-external-agnhost-$RANDOM --network $cluster_name -it --rm registry.k8s.io/e2e-test-images/agnhost:2.40 netexec &> /dev/null
   fi
 
   if [[ $DEPLOY_EXTERNAL_FRR == true ]]; then
     docker run -d \
       --name antrea-external-frr-$RANDOM \
-      --network kind --cap-add=NET_BIND_SERVICE \
+      --network $cluster_name --cap-add=NET_BIND_SERVICE \
       --cap-add=NET_ADMIN \
       --cap-add=NET_RAW \
       --cap-add=SYS_ADMIN \
@@ -554,21 +647,30 @@ function destroy_external_servers {
   docker rm -f $cid &> /dev/null || true
 }
 
-function clean_kind {
+function clean_old_clusters {
     echo "=== Cleaning up stale kind clusters ==="
-    read -a all_kind_clusters <<< $(kind get clusters)
-    for kind_cluster_name in "${all_kind_clusters[@]}"; do
-        creationTimestamp=$(kubectl get nodes --context kind-$kind_cluster_name -o json -l node-role.kubernetes.io/control-plane | \
-        jq -r '.items[0].metadata.creationTimestamp')
-        creation=$(printUnixTimestamp "$creationTimestamp")
-        now=$(date -u '+%s')
-        diff=$((now-creation))
-        timeout=$(($UNTIL_TIME_IN_MINS*60))
-        if [[ $diff -gt $timeout ]]; then
-           echo "=== kind ${kind_cluster_name} present from more than $UNTIL_TIME_IN_MINS minutes ==="
-           kind delete cluster --name $kind_cluster_name
-        fi
-    done
+    (
+      flock -x 200
+
+      current_timestamp=$(date +%s)
+      > ~/.antrea/.clusters.swp
+      while IFS=' ' read -r name creationTimestamp; do
+          if [[ -z "$name" || -z "$creationTimestamp" ]]; then
+              continue
+          fi
+          # Calculate the time difference
+          time_difference=$((current_timestamp - creationTimestamp))
+          # Check if the creation happened more than UNTIL_TIME_IN_MINS ago
+          if (( time_difference > $UNTIL_TIME_IN_MINS * 60)); then
+              echo "The creation of $name happened more than 1 hour ago."
+              delete "$name" || echo "Cluster could not be deleted"
+          else
+              echo "The creation of $name happened within the last hour."
+              echo "$name $creationTimestamp" >> ~/.antrea/.clusters.swp
+          fi
+      done < ~/.antrea/.clusters
+      mv ~/.antrea/.clusters.swp ~/.antrea/.clusters
+    ) 200>>~/.antrea/.clusters.lock
 }
 
 if ! command -v kind &> /dev/null
@@ -576,6 +678,8 @@ then
     echoerr "kind could not be found"
     exit 1
 fi
+
+mkdir -p ~/.antrea
 
 while [[ $# -gt 0 ]]
  do
@@ -616,9 +720,15 @@ while [[ $# -gt 0 ]]
       shift
       ;;
     --no-kube-proxy)
+      echo "WARNING: '--no-kube-proxy' is deprecated. Use '--kube-proxy-mode none' instead."
       add_option "--no-kube-proxy" "create"
       KUBE_PROXY_MODE="none"
       shift
+      ;;
+    --kube-proxy-mode)
+      add_option "--kube-proxy-mode" "create"
+      KUBE_PROXY_MODE="$2"
+      shift 2
       ;;
     --no-kube-node-ipam)
       add_option "--no-kube-node-ipam" "create"
@@ -632,7 +742,7 @@ while [[ $# -gt 0 ]]
       ;;
     --subnets)
       add_option "--subnets" "create"
-      SUBNETS="$2"
+      SUBNETS+=("$2")
       shift 2
       ;;
     --extra-networks)
@@ -646,7 +756,6 @@ while [[ $# -gt 0 ]]
       shift 2
       ;;
     --flexible-ipam)
-      add_option "--flexible-ipam" "create"
       FLEXIBLE_IPAM=true
       shift
       ;; 
@@ -741,7 +850,9 @@ fi
 
 kind_version=$(kind version | awk  '{print $2}')
 kind_version=${kind_version:1} # strip leading 'v'
+docker_version=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "")
 function version_lt() { test "$(printf '%s\n' "$@" | sort -rV | head -n 1)" != "$1"; }
+function version_ge() { test "$(printf '%s\n' "$@" | sort -rV | head -n 1)" == "$1"; }
 if version_lt "$kind_version" "0.12.0" && [[ "$KUBE_PROXY_MODE" == "none" ]]; then
     # This patch is required when using Antrea without kube-proxy:
     # https://github.com/kubernetes-sigs/kind/pull/2375
@@ -751,14 +862,49 @@ if version_lt "$kind_version" "0.12.0" && [[ "$KUBE_PROXY_MODE" == "none" ]]; th
 fi
 
 if [[ $ACTION == "create" ]]; then
+    # Having a simple validation check for now.
+    # TODO: Making this comprehensive check confirming with rfc1035/rfc1123
+    if [[ "$CLUSTER_NAME" =~ [^a-z0-9-] ]]; then
+        echoerr "Invalid string. Conform to rfc1035/rfc1123"
+        exit 1
+    fi
+
     if [[ ! -z $SUBNETS ]] && [[ ! -z $EXTRA_NETWORKS ]]; then
         echoerr "Only one of '--subnets' and '--extra-networks' can be specified"
         exit 1
     fi
 
-   # Reserve IPs after 192.168.240.63 for e2e tests.
-    if [[ $FLEXIBLE_IPAM == true ]]; then
-        docker network create -d bridge --subnet 192.168.240.0/24 --gateway 192.168.240.1 --ip-range 192.168.240.0/26 kind
+    # Create the docker bridge network used as the primary network for the kind cluster. As long as
+    # we use the expected name, kind will use our network.
+    # We mostly replicate what is in:
+    # https://github.com/kubernetes-sigs/kind/blob/180d624f741e3da5ceba52b643e29c4e64538537/pkg/cluster/internal/providers/docker/network.go#L149-L160
+    # We also add some extra options required for our use case.
+    docker_network_mtu=$(docker network inspect bridge -f '{{ index .Options "com.docker.network.driver.mtu" }}')
+    docker_network_args=("-d" "bridge")
+    docker_network_args+=("-o" "com.docker.network.bridge.enable_ip_masquerade=true")
+    docker_network_args+=("-o" "com.docker.network.driver.mtu=$docker_network_mtu")
+    # Use nat-unprotected to revert to the legacy default behavior (pre Docker Engine v28)
+    # Without this, access to the K8s apiserver from Nodes using a non-default network will be
+    # blocked because of port mapping hardening.
+    # See https://www.docker.com/blog/docker-engine-28-hardening-container-networking-by-default/
+    # While this is only required when we create extra docker networks, it's easier to use it
+    # consistently. It is also better than modifying the iptables rules installed by docker.
+    if version_ge "$docker_version" "28.0.0"; then
+       docker_network_args+=("-o" "com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected")
     fi
+    if [[ "$IP_FAMILY" != "ipv4" ]]; then
+        if version_ge "$docker_version" "28.0.0"; then
+            docker_network_args+=("-o" "com.docker.network.bridge.gateway_mode_ipv6=nat-unprotected")
+        fi
+        docker_network_args+=("--ipv6")
+    fi
+    if [[ $FLEXIBLE_IPAM == true ]]; then
+        docker_network_args+=("--subnet" "192.168.240.0/24")
+        docker_network_args+=("--gateway" "192.168.240.1")
+        # Reserve IPs after 192.168.240.63 for e2e tests.
+        docker_network_args+=("--ip-range" "192.168.240.0/26")
+    fi
+    echo "Creating docker network $CLUSTER_NAME with args: ${docker_network_args[@]}"
+    docker network create "${docker_network_args[@]}" "$CLUSTER_NAME"
     create
 fi

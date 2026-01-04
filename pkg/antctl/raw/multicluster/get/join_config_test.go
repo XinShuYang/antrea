@@ -16,7 +16,6 @@ package get
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"os"
 	"testing"
@@ -86,7 +85,6 @@ data:
   token: MTIzNDU=
 kind: Secret
 metadata:
-  creationTimestamp: null
   name: default-member-token
 type: Opaque
 `
@@ -95,7 +93,6 @@ type: Opaque
 func TestJoinConfig(t *testing.T) {
 	cmd := NewJoinConfigCommand()
 	buf := new(bytes.Buffer)
-	cmd.SetOutput(buf)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
@@ -172,16 +169,16 @@ func TestJoinConfig(t *testing.T) {
 
 func TestOptValidate(t *testing.T) {
 	tests := []struct {
-		name string
-		opts *joinConfigOptions
-		err  error
+		name   string
+		opts   *joinConfigOptions
+		errStr string
 	}{
 		{
 			name: "no Namespace",
 			opts: &joinConfigOptions{
 				k8sClient: fake.NewClientBuilder().WithScheme(mcscheme.Scheme).Build(),
 			},
-			err: fmt.Errorf("Namespace must be specified"),
+			errStr: "Namespace must be specified",
 		},
 		{
 			name: "Namespace specified",
@@ -189,7 +186,7 @@ func TestOptValidate(t *testing.T) {
 				namespace: "ns1",
 				k8sClient: fake.NewClientBuilder().WithScheme(mcscheme.Scheme).Build(),
 			},
-			err: nil,
+			errStr: "",
 		},
 		{
 			name: "token specified",
@@ -198,14 +195,14 @@ func TestOptValidate(t *testing.T) {
 				memberToken: "token1",
 				k8sClient:   fake.NewClientBuilder().WithScheme(mcscheme.Scheme).Build(),
 			},
-			err: nil,
+			errStr: "",
 		},
 		{
 			name: "K8s client error",
 			opts: &joinConfigOptions{
 				namespace: "ns1",
 			},
-			err: fmt.Errorf("flag accessed but not defined: kubeconfig"),
+			errStr: "flag accessed but not defined: kubeconfig",
 		},
 	}
 
@@ -213,7 +210,11 @@ func TestOptValidate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.opts.validateAndComplete(cmd)
-			assert.Equal(t, tt.err, err)
+			if tt.errStr == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.EqualError(t, err, tt.errStr)
+			}
 		})
 	}
 }

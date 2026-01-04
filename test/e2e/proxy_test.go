@@ -185,26 +185,30 @@ func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 	svc, err := data.createAgnhostLoadBalancerService("agnhost-local", true, true, localIngressIP, &ipProtocol, nil)
 	require.NoError(t, err)
 
-	// For the 'Local' externalTrafficPolicy, setup the health checks.
+	// For the 'Local' externalTrafficPolicy, set up the health checks.
 	healthPort := fmt.Sprint(svc.Spec.HealthCheckNodePort)
 	require.NotEqual(t, "", healthPort, "HealthCheckNodePort port number should not be empty")
 	nodeIPs := []string{controlPlaneNodeIPv4(), workerNodeIPv4(1)}
+	if isIPv6 {
+		nodeIPs = []string{controlPlaneNodeIPv6(), workerNodeIPv6(1)}
+	}
 	var healthUrls []string
 	for _, nodeIP := range nodeIPs {
-		healthUrls = append(healthUrls, net.JoinHostPort(nodeIP, healthPort))
+		healthUrls = append(healthUrls, getHttpURL(nodeIP, healthPort))
 	}
 	healthOutputTmpl := `{
 	"service": {
 		"namespace": "%s",
 		"name": "agnhost-local"
 	},
-	"localEndpoints": 1
+	"localEndpoints": 1,
+	"serviceProxyHealthy": true
 }`
 	healthExpected := fmt.Sprintf(healthOutputTmpl, data.testNamespace)
 
 	port := "8080"
-	clusterUrl := net.JoinHostPort(clusterIngressIP[0], port)
-	localUrl := net.JoinHostPort(localIngressIP[0], port)
+	clusterUrl := getHttpURL(clusterIngressIP[0], port)
+	localUrl := getHttpURL(localIngressIP[0], port)
 
 	// Create agnhost Pods which are not on host network.
 	agnhosts := []string{"agnhost-0", "agnhost-1"}
@@ -242,7 +246,6 @@ func loadBalancerTestCases(t *testing.T, data *TestData, clusterUrl, localUrl, h
 }
 
 func testLoadBalancerClusterFromNode(t *testing.T, data *TestData, nodes []string, url string) {
-	skipIfKubeProxyEnabled(t, data)
 	for _, node := range nodes {
 		require.NoError(t, probeFromNode(node, url, data), "Service LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Node")
 	}
@@ -255,7 +258,6 @@ func testLoadBalancerClusterFromPod(t *testing.T, data *TestData, pods []string,
 }
 
 func testLoadBalancerLocalFromNode(t *testing.T, data *TestData, nodes, healthUrls []string, healthExpected, url string) {
-	skipIfKubeProxyEnabled(t, data)
 	for _, node := range nodes {
 		require.NoError(t, probeFromNode(node, url, data), "Service LoadBalancer whose externalTrafficPolicy is Local should be able to be connected from Node")
 
@@ -356,8 +358,8 @@ func testProxyNodePortService(t *testing.T, isIPv6 bool) {
 func nodePortTestCases(t *testing.T, data *TestData, portStrCluster, portStrLocal string, nodes, nodeIPs, pods, hostnames []string, hostNetwork bool) {
 	var clusterUrls, localUrls []string
 	for _, nodeIP := range nodeIPs {
-		clusterUrls = append(clusterUrls, net.JoinHostPort(nodeIP, portStrCluster))
-		localUrls = append(localUrls, net.JoinHostPort(nodeIP, portStrLocal))
+		clusterUrls = append(clusterUrls, getHttpURL(nodeIP, portStrCluster))
+		localUrls = append(localUrls, getHttpURL(nodeIP, portStrLocal))
 	}
 
 	t.Run("ExternalTrafficPolicy:Cluster/Client:Remote", func(t *testing.T) {
@@ -411,12 +413,12 @@ func TestNodePortAndEgressWithTheSameBackendPod(t *testing.T) {
 			break
 		}
 	}
-	testNodePortURL := net.JoinHostPort(nodePortIP, portStr)
+	testNodePortURL := getHttpURL(nodePortIP, portStr)
 
 	// Create an Egress whose external IP is on worker Node.
 	egressNodeIP := workerNodeIPv4(1)
 	egress := data.createEgress(t, "test-egress", nil, map[string]string{"app": "nginx"}, "", egressNodeIP, nil)
-	defer data.crdClient.CrdV1beta1().Egresses().Delete(context.TODO(), egress.Name, metav1.DeleteOptions{})
+	defer data.CRDClient.CrdV1beta1().Egresses().Delete(context.TODO(), egress.Name, metav1.DeleteOptions{})
 
 	// Create the backend Pod on control plane Node.
 	backendPodName := "test-nodeport-egress-backend-pod"
@@ -459,14 +461,12 @@ func createAgnhostPod(t *testing.T, data *TestData, podName string, node string,
 }
 
 func testNodePortClusterFromRemote(t *testing.T, data *TestData, nodes, urls []string) {
-	skipIfKubeProxyEnabled(t, data)
 	for idx, node := range nodes {
 		require.NoError(t, probeFromNode(node, urls[idx], data), "Service NodePort whose externalTrafficPolicy is Cluster should be able to be connected from remote Node")
 	}
 }
 
 func testNodePortClusterFromNode(t *testing.T, data *TestData, nodes, urls []string) {
-	skipIfKubeProxyEnabled(t, data)
 	for idx, node := range nodes {
 		require.NoError(t, probeFromNode(node, urls[idx], data), "Service NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Node")
 	}
@@ -481,8 +481,10 @@ func testNodePortClusterFromPod(t *testing.T, data *TestData, pods, urls []strin
 }
 
 func testNodePortLocalFromRemote(t *testing.T, data *TestData, nodes, urls, expectedClientIPs, expectedHostnames []string) {
-	skipIfKubeProxyEnabled(t, data)
 	errMsg := "Service NodePort whose externalTrafficPolicy is Local should be able to be connected from remote Node"
+	encapMode, err := data.GetEncapMode()
+	require.NoError(t, err)
+
 	for idx, node := range nodes {
 		hostname, err := probeHostnameFromNode(node, urls[idx], data)
 		require.NoError(t, err, errMsg)
@@ -490,12 +492,17 @@ func testNodePortLocalFromRemote(t *testing.T, data *TestData, nodes, urls, expe
 
 		clientIP, err := probeClientIPFromNode(node, urls[idx], data)
 		require.NoError(t, err, errMsg)
-		require.Equal(t, expectedClientIPs[idx], clientIP)
+		if encapMode != config.TrafficEncapModeHybrid {
+			// For Kind cluster in hybrid mode e2e tests, control plane Node resides in one subnet while worker Nodes
+			// reside in another subnet. The subnets are implemented by separate Docker bridges and are reachable to
+			// each other through SNAT. Consequently, connections between Nodes across subnets are SNATed, and their
+			// client IPs do not reflect the original sources. As a result, skip client IP verification.
+			require.Equal(t, expectedClientIPs[idx], clientIP)
+		}
 	}
 }
 
 func testNodePortLocalFromNode(t *testing.T, data *TestData, nodes, urls []string) {
-	skipIfKubeProxyEnabled(t, data)
 	for idx, node := range nodes {
 		require.NoError(t, probeFromNode(node, urls[idx], data), "Service NodePort whose externalTrafficPolicy is Local should be able to be connected from Node")
 	}
@@ -581,7 +588,7 @@ func testProxyExternalTrafficPolicy(t *testing.T, isIPv6 bool) {
 	// Get test NodePort URLs.
 	var urls []string
 	for _, nodeIP := range nodeIPs {
-		urls = append(urls, net.JoinHostPort(nodeIP, portStr))
+		urls = append(urls, getHttpURL(nodeIP, portStr))
 	}
 
 	// Hold on to make sure that the Service is realized, then test the NodePort on each Node.
@@ -667,16 +674,17 @@ func testProxyHairpin(t *testing.T, isIPv6 bool) {
 	}
 	defer teardownTest(t, data)
 	skipIfProxyDisabled(t, data)
+	skipIfNumNodesLessThan(t, 3)
 
 	node := nodeName(1)
 	workerNodeIP := workerNodeIPv4(1)
-	controllerNodeIP := controlPlaneNodeIPv4()
+	worker2NodeIP := workerNodeIPv4(2)
 	ipProtocol := corev1.IPv4Protocol
 	lbClusterIngressIP := []string{"192.168.240.1"}
 	lbLocalIngressIP := []string{"192.168.240.2"}
 	if isIPv6 {
 		workerNodeIP = workerNodeIPv6(1)
-		controllerNodeIP = controlPlaneNodeIPv6()
+		worker2NodeIP = workerNodeIPv6(2)
 		ipProtocol = corev1.IPv6Protocol
 		lbClusterIngressIP = []string{"fd75::aabb:ccdd:ef00"}
 		lbLocalIngressIP = []string{"fd75::aabb:ccdd:ef01"}
@@ -725,17 +733,17 @@ func testProxyHairpin(t *testing.T, isIPv6 bool) {
 
 	// These are test urls.
 	port := "8080"
-	clusterIPUrl := net.JoinHostPort(clusterIPSvc.Spec.ClusterIP, port)
-	workerNodePortClusterUrl := net.JoinHostPort(workerNodeIP, nodePortCluster)
-	workerNodePortLocalUrl := net.JoinHostPort(workerNodeIP, nodePortLocal)
-	controllerNodePortClusterUrl := net.JoinHostPort(controllerNodeIP, nodePortCluster)
-	lbClusterUrl := net.JoinHostPort(lbClusterIngressIP[0], port)
-	lbLocalUrl := net.JoinHostPort(lbLocalIngressIP[0], port)
+	clusterIPUrl := getHttpURL(clusterIPSvc.Spec.ClusterIP, port)
+	workerNodePortClusterUrl := getHttpURL(workerNodeIP, nodePortCluster)
+	workerNodePortLocalUrl := getHttpURL(workerNodeIP, nodePortLocal)
+	worker2NodePortClusterUrl := getHttpURL(worker2NodeIP, nodePortCluster)
+	lbClusterUrl := getHttpURL(lbClusterIngressIP[0], port)
+	lbLocalUrl := getHttpURL(lbLocalIngressIP[0], port)
 
 	// These are expected client IP.
 	expectedGatewayIP, _ := nodeGatewayIPs(1)
 	expectedVirtualIP := config.VirtualServiceIPv4.String()
-	expectedControllerIP := controllerNodeIP
+	expectedNodeIP := worker2NodeIP
 	if isIPv6 {
 		_, expectedGatewayIP = nodeGatewayIPs(1)
 		expectedVirtualIP = config.VirtualServiceIPv6.String()
@@ -745,7 +753,7 @@ func testProxyHairpin(t *testing.T, isIPv6 bool) {
 	createAgnhostPod(t, data, agnhost, node, false)
 	t.Run("Non-HostNetwork Endpoints", func(t *testing.T) {
 		testProxyIntraNodeHairpinCases(data, t, expectedGatewayIP, agnhost, clusterIPUrl, workerNodePortClusterUrl, workerNodePortLocalUrl, lbClusterUrl, lbLocalUrl)
-		testProxyInterNodeHairpinCases(data, t, false, expectedControllerIP, nodeName(0), clusterIPUrl, controllerNodePortClusterUrl, lbClusterUrl)
+		testProxyInterNodeHairpinCases(data, t, false, expectedNodeIP, nodeName(2), clusterIPUrl, worker2NodePortClusterUrl, lbClusterUrl)
 	})
 	require.NoError(t, data.DeletePod(data.testNamespace, agnhost))
 
@@ -754,7 +762,7 @@ func testProxyHairpin(t *testing.T, isIPv6 bool) {
 	t.Run("HostNetwork Endpoints", func(t *testing.T) {
 		skipIfProxyAllDisabled(t, data)
 		testProxyIntraNodeHairpinCases(data, t, expectedVirtualIP, agnhostHost, clusterIPUrl, workerNodePortClusterUrl, workerNodePortLocalUrl, lbClusterUrl, lbLocalUrl)
-		testProxyInterNodeHairpinCases(data, t, true, expectedControllerIP, nodeName(0), clusterIPUrl, controllerNodePortClusterUrl, lbClusterUrl)
+		testProxyInterNodeHairpinCases(data, t, true, expectedNodeIP, nodeName(2), clusterIPUrl, worker2NodePortClusterUrl, lbClusterUrl)
 	})
 }
 
@@ -836,6 +844,9 @@ func testProxyInterNodeHairpinCases(data *TestData, t *testing.T, hostNetwork bo
 	}
 
 	t.Run("InterNode/ClusterIP", func(t *testing.T) {
+		// If kube-proxy is running, kube-proxy takes precedence over AntreaProxy to handle the ClusterIP traffic, skip
+		// the test.
+		skipIfKubeProxyEnabled(t, data)
 		clientIP, err := probeClientIPFromNode(node, clusterIPUrl, data)
 		require.NoError(t, err, "ClusterIP hairpin should be able to be connected")
 		require.Equal(t, expectedClientIP, clientIP)
@@ -1164,7 +1175,7 @@ func TestProxyLoadBalancerModeDSR(t *testing.T) {
 				assert.NoError(t, err, "Failed to delete route to client IP on Node %s, stdout: %s, stderr: %s", backendNode2, stdout, stderr)
 			}()
 
-			serviceName := fmt.Sprintf("svc-dsr")
+			serviceName := "svc-dsr"
 			annotations := map[string]string{
 				types.ServiceLoadBalancerModeAnnotationKey: "dsr",
 			}

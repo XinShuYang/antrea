@@ -36,7 +36,6 @@ import (
 	nodeiptest "antrea.io/antrea/pkg/agent/nodeip/testing"
 	ofClient "antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
-	k8stypes "antrea.io/antrea/pkg/agent/proxy/types"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/agent/util"
 	"antrea.io/antrea/pkg/apis/controlplane/v1beta2"
@@ -120,7 +119,7 @@ func TestConnectivityFlows(t *testing.T) {
 		antrearuntime.WindowsOS = runtime.GOOS
 	}
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge: %v", err))
 	defer func() {
@@ -176,7 +175,7 @@ func TestAntreaFlexibleIPAMConnectivityFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, true, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, true, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge: %v", err))
 	defer func() {
@@ -239,7 +238,7 @@ func TestReplayFlowsConnectivityFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge: %v", err))
 
@@ -281,7 +280,7 @@ func TestReplayFlowsNetworkPolicyFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge: %v", err))
 
@@ -466,7 +465,7 @@ func TestNetworkPolicyFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge %s", br))
 
@@ -580,7 +579,7 @@ func TestIPv6ConnectivityFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, true, true, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge: %v", err))
 
@@ -621,7 +620,7 @@ func TestProxyServiceFlowsAntreaPolicyDisabled(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge %s", br))
 
@@ -639,15 +638,8 @@ func TestProxyServiceFlowsAntreaPolicyDisabled(t *testing.T) {
 	}()
 
 	endpoints := []k8sproxy.Endpoint{
-		k8stypes.NewEndpointInfo(&k8sproxy.BaseEndpointInfo{
-			Endpoint: net.JoinHostPort("192.168.1.2", "8081"),
-			IsLocal:  true,
-		}),
-		k8stypes.NewEndpointInfo(&k8sproxy.BaseEndpointInfo{
-			Endpoint: net.JoinHostPort("10.20.1.11", "8081"),
-			IsLocal:  false,
-			NodeName: "node1",
-		}),
+		k8sproxy.NewBaseEndpointInfo("192.168.1.2", 8081, true, true, false, false, nil, nil),
+		k8sproxy.NewBaseEndpointInfo("10.20.1.11", 8081, false, true, false, false, nil, nil),
 	}
 
 	stickyMaxAgeSeconds := uint16(30)
@@ -706,12 +698,12 @@ func TestProxyServiceFlowsAntreaPolicyDisabled(t *testing.T) {
 	}
 }
 
-func TestProxyServiceFlowsAntreaPoilcyEnabled(t *testing.T) {
+func TestProxyServiceFlowsAntreaPolicyEnabled(t *testing.T) {
 	// Reset OVS metrics (Prometheus) and reinitialize them to test.
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, true, false, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), true, true, false, false, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge %s", br))
 
@@ -729,15 +721,8 @@ func TestProxyServiceFlowsAntreaPoilcyEnabled(t *testing.T) {
 	}()
 
 	endpoints := []k8sproxy.Endpoint{
-		k8stypes.NewEndpointInfo(&k8sproxy.BaseEndpointInfo{
-			Endpoint: net.JoinHostPort("192.168.1.2", "8081"),
-			IsLocal:  true,
-		}),
-		k8stypes.NewEndpointInfo(&k8sproxy.BaseEndpointInfo{
-			Endpoint: net.JoinHostPort("10.20.1.11", "8081"),
-			IsLocal:  false,
-			NodeName: "node1",
-		}),
+		k8sproxy.NewBaseEndpointInfo("192.168.1.2", 8081, true, true, false, false, nil, nil),
+		k8sproxy.NewBaseEndpointInfo("10.20.1.11", 8081, false, true, false, false, nil, nil),
 	}
 
 	stickyMaxAgeSeconds := uint16(30)
@@ -796,10 +781,11 @@ func uninstallServiceFlowsFunc(t *testing.T, svc *types.ServiceConfig, endpointL
 func expectedProxyServiceGroupAndFlows(svc *types.ServiceConfig, endpointList []k8sproxy.Endpoint, antreaPolicyEnabled bool) (tableFlows []expectTableFlows, groupBuckets []string) {
 	nw_proto := 6
 	learnProtoField := "NXM_OF_TCP_DST[]"
-	if svc.Protocol == ofconfig.ProtocolUDP {
+	switch svc.Protocol {
+	case ofconfig.ProtocolUDP:
 		nw_proto = 17
 		learnProtoField = "NXM_OF_UDP_DST[]"
-	} else if svc.Protocol == ofconfig.ProtocolSCTP {
+	case ofconfig.ProtocolSCTP:
 		nw_proto = 132
 		learnProtoField = "OXM_OF_SCTP_DST[]"
 	}
@@ -831,9 +817,9 @@ func expectedProxyServiceGroupAndFlows(svc *types.ServiceConfig, endpointList []
 	groupBuckets = make([]string, 0)
 	for _, ep := range endpointList {
 		epIP := ipToHexString(net.ParseIP(ep.IP()))
-		epPort, _ := ep.Port()
+		epPort := ep.Port()
 		var bucket string
-		if ep.GetIsLocal() {
+		if ep.IsLocal() {
 			bucket = fmt.Sprintf("weight:100,actions=set_field:%s->reg3,set_field:0x%x/0xffff->reg4,resubmit(,%d)", epIP, epPort, ofClient.ServiceLBTable.GetID())
 		} else {
 			bucket = fmt.Sprintf("weight:100,actions=set_field:0x4000000/0x4000000->reg4,set_field:%s->reg3,set_field:0x%x/0xffff->reg4,resubmit(,%d)", epIP, epPort, ofClient.ServiceLBTable.GetID())
@@ -843,13 +829,13 @@ func expectedProxyServiceGroupAndFlows(svc *types.ServiceConfig, endpointList []
 		unionVal := (0b010 << 16) + uint32(epPort)
 		epDNATFlows.flows = append(epDNATFlows.flows, &ofTestUtils.ExpectFlow{
 			MatchStr: fmt.Sprintf("priority=200,%s,reg3=%s,reg4=0x%x/0x7ffff", string(svc.Protocol), epIP, unionVal),
-			ActStr:   fmt.Sprintf("ct(commit,table=%s,zone=65520,nat(dst=%s:%d),exec(set_field:0x10/0x10->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3])", ctTable, ep.IP(), epPort),
+			ActStr:   fmt.Sprintf("ct(commit,table=%s,zone=65520,nat(dst=%s:%d),exec(set_field:0x10/0x10->ct_mark)", ctTable, ep.IP(), epPort),
 		})
 
-		if ep.GetIsLocal() {
+		if ep.IsLocal() {
 			hairpinFlows.flows = append(hairpinFlows.flows, &ofTestUtils.ExpectFlow{
 				MatchStr: fmt.Sprintf("priority=190,ct_state=+new+trk,ip,nw_src=%s,nw_dst=%s", ep.IP(), ep.IP()),
-				ActStr:   "ct(commit,table=SNAT,zone=65520,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))",
+				ActStr:   "ct(commit,table=SNAT,zone=65520,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))",
 			})
 		}
 	}
@@ -1491,20 +1477,20 @@ func prepareDefaultFlows(config *testConfig) []expectTableFlows {
 			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+inv+trk,ip", ActStr: "drop"},
 		)
 		tableConntrackCommitFlows.flows = append(tableConntrackCommitFlows.flows,
-			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk-snat,ct_mark=0/0x10,ip", ActStr: fmt.Sprintf("ct(commit,table=%s,zone=%s,exec(move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))", outputStageTable, ctZone)},
+			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk,ct_mark=0/0x20,ip", ActStr: fmt.Sprintf("ct(commit,table=%s,zone=%s,exec(move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))", outputStageTable, ctZone)},
 		)
 		tableSNATFlows.flows = append(tableSNATFlows.flows,
 			&ofTestUtils.ExpectFlow{
 				MatchStr: "priority=200,ct_state=+new+trk,ct_mark=0x40/0x40,ip,reg0=0x2/0xf",
-				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65521,nat(src=%s),exec(set_field:0x10/0x10->ct_mark,set_field:0x40/0x40->ct_mark))", agentconfig.VirtualServiceIPv4),
+				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65521,nat(src=%s),exec(set_field:0x10/0x10->ct_mark,set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))", agentconfig.VirtualServiceIPv4),
 			},
 			&ofTestUtils.ExpectFlow{
 				MatchStr: "priority=200,ct_state=+new+trk,ct_mark=0x40/0x40,ip,reg0=0x3/0xf",
-				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65521,nat(src=%s),exec(set_field:0x10/0x10->ct_mark,set_field:0x40/0x40->ct_mark))", config.nodeConfig.GatewayConfig.IPv4),
+				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65521,nat(src=%s),exec(set_field:0x10/0x10->ct_mark,set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))", config.nodeConfig.GatewayConfig.IPv4),
 			},
 			&ofTestUtils.ExpectFlow{
 				MatchStr: "priority=190,ct_state=+new+trk,ct_mark=0x20/0x20,ip,reg0=0x2/0xf",
-				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65521,nat(src=%s),exec(set_field:0x10/0x10->ct_mark))", config.nodeConfig.GatewayConfig.IPv4),
+				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65521,nat(src=%s),exec(set_field:0x10/0x10->ct_mark,set_field:0x20/0x20->ct_mark))", config.nodeConfig.GatewayConfig.IPv4),
 			},
 			&ofTestUtils.ExpectFlow{
 				MatchStr: "priority=200,ct_state=-new-rpl+trk,ct_mark=0x20/0x20,ip",
@@ -1516,8 +1502,8 @@ func prepareDefaultFlows(config *testConfig) []expectTableFlows {
 			&ofTestUtils.ExpectFlow{MatchStr: fmt.Sprintf("priority=200,ip,reg0=0/0x200%s,nw_dst=%s", matchVLANString, podCIDR), ActStr: "goto_table:L2ForwardingCalc"},
 		)
 		tableSNATMarkFlows.flows = append(tableSNATMarkFlows.flows,
-			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk,ip,reg0=0x22/0xff", ActStr: fmt.Sprintf("ct(commit,table=SNAT,zone=%s,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))", ctZone)},
-			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk,ip,reg0=0x12/0xff,reg4=0x200000/0x2200000", ActStr: fmt.Sprintf("ct(commit,table=SNAT,zone=%s,exec(set_field:0x20/0x20->ct_mark))", ctZone)},
+			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk,ip,reg0=0x22/0xff", ActStr: fmt.Sprintf("ct(commit,table=SNAT,zone=%s,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))", ctZone)},
+			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk,ip,reg0=0x12/0xff,reg4=0x200000/0x2200000", ActStr: fmt.Sprintf("ct(commit,table=SNAT,zone=%s,exec(set_field:0x20/0x20->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))", ctZone)},
 		)
 		tableL3DecTTLFlows.flows = append(tableL3DecTTLFlows.flows,
 			&ofTestUtils.ExpectFlow{MatchStr: "priority=210,ip,reg0=0x2/0xf", ActStr: "goto_table:SNATMark"},
@@ -1536,20 +1522,20 @@ func prepareDefaultFlows(config *testConfig) []expectTableFlows {
 			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+inv+trk,ipv6", ActStr: "drop"},
 		)
 		tableConntrackCommitFlows.flows = append(tableConntrackCommitFlows.flows,
-			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk-snat,ct_mark=0/0x10,ipv6", ActStr: fmt.Sprintf("ct(commit,table=Output,zone=%s,exec(move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))", ctZoneV6)},
+			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk,ct_mark=0/0x20,ipv6", ActStr: fmt.Sprintf("ct(commit,table=%s,zone=%s,exec(move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))", outputStageTable, ctZoneV6)},
 		)
 		tableSNATFlows.flows = append(tableSNATFlows.flows,
 			&ofTestUtils.ExpectFlow{
 				MatchStr: "priority=200,ct_state=+new+trk,ct_mark=0x40/0x40,ipv6,reg0=0x2/0xf",
-				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65511,nat(src=%s),exec(set_field:0x10/0x10->ct_mark,set_field:0x40/0x40->ct_mark))", agentconfig.VirtualServiceIPv6),
+				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65511,nat(src=%s),exec(set_field:0x10/0x10->ct_mark,set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))", agentconfig.VirtualServiceIPv6),
 			},
 			&ofTestUtils.ExpectFlow{
 				MatchStr: "priority=200,ct_state=+new+trk,ct_mark=0x40/0x40,ipv6,reg0=0x3/0xf",
-				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65511,nat(src=%s),exec(set_field:0x10/0x10->ct_mark,set_field:0x40/0x40->ct_mark))", config.nodeConfig.GatewayConfig.IPv6),
+				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65511,nat(src=%s),exec(set_field:0x10/0x10->ct_mark,set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))", config.nodeConfig.GatewayConfig.IPv6),
 			},
 			&ofTestUtils.ExpectFlow{
 				MatchStr: "priority=190,ct_state=+new+trk,ct_mark=0x20/0x20,ipv6,reg0=0x2/0xf",
-				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65511,nat(src=%s),exec(set_field:0x10/0x10->ct_mark))", config.nodeConfig.GatewayConfig.IPv6),
+				ActStr:   fmt.Sprintf("ct(commit,table=L2ForwardingCalc,zone=65511,nat(src=%s),exec(set_field:0x10/0x10->ct_mark,set_field:0x20/0x20->ct_mark))", config.nodeConfig.GatewayConfig.IPv6),
 			},
 			&ofTestUtils.ExpectFlow{
 				MatchStr: "priority=200,ct_state=-new-rpl+trk,ct_mark=0x20/0x20,ipv6",
@@ -1561,8 +1547,8 @@ func prepareDefaultFlows(config *testConfig) []expectTableFlows {
 			&ofTestUtils.ExpectFlow{MatchStr: fmt.Sprintf("priority=200,ipv6,reg0=0/0x200,ipv6_dst=%s", podCIDR), ActStr: "goto_table:L2ForwardingCalc"},
 		)
 		tableSNATMarkFlows.flows = append(tableSNATMarkFlows.flows,
-			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk,ipv6,reg0=0x22/0xff", ActStr: "ct(commit,table=SNAT,zone=65510,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark))"},
-			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk,ipv6,reg0=0x12/0xff,reg4=0x200000/0x2200000", ActStr: "ct(commit,table=SNAT,zone=65510,exec(set_field:0x20/0x20->ct_mark))"},
+			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk,ipv6,reg0=0x22/0xff", ActStr: "ct(commit,table=SNAT,zone=65510,exec(set_field:0x20/0x20->ct_mark,set_field:0x40/0x40->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))"},
+			&ofTestUtils.ExpectFlow{MatchStr: "priority=200,ct_state=+new+trk,ipv6,reg0=0x12/0xff,reg4=0x200000/0x2200000", ActStr: "ct(commit,table=SNAT,zone=65510,exec(set_field:0x20/0x20->ct_mark,move:NXM_NX_REG0[0..3]->NXM_NX_CT_MARK[0..3]))"},
 		)
 		tableL3DecTTLFlows.flows = append(tableL3DecTTLFlows.flows,
 			&ofTestUtils.ExpectFlow{MatchStr: "priority=210,ipv6,reg0=0x2/0xf", ActStr: "goto_table:SNATMark"},
@@ -1793,7 +1779,7 @@ func testEgressMarkFlows(t *testing.T, trafficShaping bool) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), false, false, false, true, trafficShaping, false, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), false, false, false, true, trafficShaping, false, false, false, false, false, false, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge %s", br))
 
@@ -1850,7 +1836,7 @@ func TestTrafficControlFlows(t *testing.T) {
 	legacyregistry.Reset()
 	metrics.InitializeOVSMetrics()
 
-	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), false, false, false, false, false, false, false, false, false, false, true, false, false, groupIDAllocator, false, defaultPacketInRate)
+	c = ofClient.NewClient(br, bridgeMgmtAddr, nodeiptest.NewFakeNodeIPChecker(), false, false, false, false, false, false, false, false, false, false, true, false, groupIDAllocator, false, defaultPacketInRate)
 	err := ofTestUtils.PrepareOVSBridge(br)
 	require.Nil(t, err, fmt.Sprintf("Failed to prepare OVS bridge %s", br))
 

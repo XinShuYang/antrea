@@ -90,13 +90,19 @@ func TestInitInterfaceStore(t *testing.T) {
 
 	ovsPort1 := ovsconfig.OVSPortData{UUID: uuid1, Name: "p1", IFName: "p1", OFPort: 11,
 		ExternalIDs: convertExternalIDMap(cniserver.BuildOVSPortExternalIDs(
-			interfacestore.NewContainerInterface("p1", uuid1, "pod1", "ns1", "eth0", p1NetMAC, []net.IP{p1NetIP}, 0)))}
+			interfacestore.NewContainerInterface("p1", uuid1, "pod1", "ns1", "eth0", "netns1", p1NetMAC, []net.IP{p1NetIP}, 0)))}
 	ovsPort2 := ovsconfig.OVSPortData{UUID: uuid2, Name: "p2", IFName: "p2", OFPort: 12,
 		ExternalIDs: convertExternalIDMap(cniserver.BuildOVSPortExternalIDs(
-			interfacestore.NewContainerInterface("p2", uuid2, "pod2", "ns2", "eth0", p2NetMAC, []net.IP{p2NetIP}, 0),
+			interfacestore.NewContainerInterface("p2", uuid2, "pod2", "ns2", "eth0", "netns2", p2NetMAC, []net.IP{p2NetIP}, 0),
 		)),
 	}
-	initOVSPorts := []ovsconfig.OVSPortData{ovsPort1, ovsPort2}
+	uuid3 := uuid.New().String()
+	ovsPortUplinkInternal := ovsconfig.OVSPortData{UUID: uuid3, Name: "eth-antrea-test-1", IFName: "eth-antrea-test-1", OFPort: 100,
+		ExternalIDs: map[string]string{
+			interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaHost,
+		},
+	}
+	initOVSPorts := []ovsconfig.OVSPortData{ovsPort1, ovsPort2, ovsPortUplinkInternal}
 
 	mockOVSBridgeClient.EXPECT().GetPortList().Return(initOVSPorts, ovsconfig.NewTransactionError(fmt.Errorf("Failed to list OVS ports"), true))
 	initializer.initInterfaceStore()
@@ -112,7 +118,8 @@ func TestInitInterfaceStore(t *testing.T) {
 	container1, found1 := store.GetContainerInterface(uuid1)
 	if !found1 {
 		t.Errorf("Failed to load OVS port into local store")
-	} else if container1.OFPort != 11 || len(container1.IPs) == 0 || container1.IPs[0].String() != p1IP || container1.MAC.String() != p1MAC || container1.InterfaceName != "p1" {
+	} else if container1.OFPort != 11 || len(container1.IPs) == 0 || container1.IPs[0].String() != p1IP || container1.MAC.String() != p1MAC ||
+		container1.InterfaceName != "p1" || container1.NetNS != "netns1" {
 		t.Errorf("Failed to load OVS port configuration into local store")
 	}
 	_, found2 := store.GetContainerInterface(uuid2)
@@ -169,7 +176,6 @@ func TestInitK8sNodeLocalConfig(t *testing.T) {
 	}
 	podCIDRStr := "172.16.10.0/24"
 	transportCIDRs := []string{"172.16.100.7/24", "2002:1a23:fb46::11:3/32"}
-	_, podCIDR, _ := net.ParseCIDR(podCIDRStr)
 	transportIfaceMAC, _ := net.ParseMAC("00:0c:29:f5:e2:ce")
 	type testTransInterface struct {
 		iface   *net.Interface
@@ -366,13 +372,25 @@ func TestInitK8sNodeLocalConfig(t *testing.T) {
 			},
 			trafficEncapMode: config.TrafficEncapModeEncap,
 			tunnelType:       ovsconfig.GeneveTunnel,
-			expectedErr:      "failed to get Node with name node1 from K8s: connection error",
+			expectedErr:      "failed to get Node with name \"node1\" from K8s: connection error",
 		},
 		{
 			name:             "empty node podCIDR",
 			trafficEncapMode: config.TrafficEncapModeEncap,
 			tunnelType:       ovsconfig.GeneveTunnel,
-			expectedErr:      "Spec.PodCIDR is empty for Node node1",
+			expectedErr:      "Spec.PodCIDR is empty for Node \"node1\"",
+		},
+		{
+			name:                      "networkPolicyOnly mode",
+			trafficEncapMode:          config.TrafficEncapModeNetworkPolicyOnly,
+			transportIfCIDRs:          transportCIDRs,
+			transportInterface:        testTransportIface,
+			expectedNodeLocalIfaceMTU: 1500,
+			expectedMTU:               1500,
+			expectedNodeAnnotation: map[string]string{
+				types.NodeMACAddressAnnotationKey:       transportIfaceMAC.String(),
+				types.NodeTransportAddressAnnotationKey: transportAddresses,
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -399,6 +417,7 @@ func TestInitK8sNodeLocalConfig(t *testing.T) {
 			}
 
 			ifaceStore := interfacestore.NewInterfaceStore()
+			_, podCIDR, _ := net.ParseCIDR(tt.podCIDR)
 			expectedNodeConfig := config.NodeConfig{
 				Name:                       nodeName,
 				Type:                       config.K8sNode,
@@ -440,7 +459,7 @@ func TestInitK8sNodeLocalConfig(t *testing.T) {
 			mockGetIPNetDeviceFromIP(t, nodeIPNet, ipDevice)
 			mockGetNodeTimeout(t, 100*time.Millisecond)
 
-			err := initializer.initK8sNodeLocalConfig(nodeName)
+			err := initializer.initK8sNodeLocalConfig(context.Background(), nodeName)
 			if tt.expectedErr == "" {
 				require.NoError(t, err)
 				assert.Equal(t, expectedNodeConfig, *initializer.nodeConfig)

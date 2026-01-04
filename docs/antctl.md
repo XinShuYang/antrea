@@ -33,6 +33,7 @@ running in three different modes:
   - [Dumping OVS flows](#dumping-ovs-flows)
   - [OVS packet tracing](#ovs-packet-tracing)
   - [Traceflow](#traceflow)
+  - [PacketCapture](#packetcapture)
   - [Antctl Proxy](#antctl-proxy)
   - [Flow Aggregator commands](#flow-aggregator-commands)
     - [Dumping flow records](#dumping-flow-records)
@@ -162,8 +163,8 @@ the command as follows:
 antctl check installation
 ```
 
-In case Antrea is installed in a custom namespace, You
-can specify the namespace by adding the flag:
+In the case that Antrea is installed in a custom Namespace, you can specify the
+Namespace using the `--namespace` flag:
 
 ```bash
 antctl check installation --namespace [NAMESPACE]
@@ -571,6 +572,84 @@ $ antctl traceflow -S pod1 -D svc1 -f tcp --live-traffic -t 1m
 $ antctl traceflow -D pod1 -f tcp,tcp_dst=80 --live-traffic --dropped-only -t 10m
 ```
 
+### PacketCapture
+
+`antctl packetcapture` (or  `antctl pc`) command is used to start a `PacketCapture`
+and retrieve the captured result. After the result packet file (in pcapng format)
+is copied out, the PacketCapture will be deleted. The command will display the
+local path to the pcapng file as it exits. Users can also create a PacketCapture
+with `kubectl`, but `antctl` makes it easier. For more information about PacketCapture,
+refer to [PacketCapture guide](packetcapture-guide.md).
+
+To start a PacketCapture, users must provide `--number` and at least one of `--source` or `--destination`.
+
+* `--source` (or `-S`)
+* `--destination` (or `-D`)
+* `--number` (or `-n`)
+
+Note: one of `--source` and `--destination` must be a Pod.
+
+The `--flow` (or `-f`) argument can be used to specify the PacketCapture packet
+headers with the [ovs-ofctl](http://www.openvswitch.org//support/dist-docs/ovs-ofctl.8.txt)
+flow syntax. This argument works the same way as the one for `antctl traceflow`.
+The supported flow fields include: IP family (`ipv6` to indicate an IPv6 packet),
+IP protocol (`icmp`, `icmpv6`, `tcp`, `udp`), source and destination ports
+(`tcp_src`, `tcp_dst`, `udp_src`, `udp_dst`), TCP flags (`tcp_flags`), ICMP
+messages (`icmp_type`, `icmp_code`) and ICMPv6 messages (`icmpv6_type`, `icmpv6_code`).
+The `icmp_type` value can be provided in either numeric or string type (`icmp-echo`,
+`icmp-echoreply`, `icmp-unreach`, `icmp-timxceed`), and the `icmp_code` value can be
+provided in only numeric type. Similarly, for ICMPv6, the `icmpv6_type` can be specified as a
+string: (`icmpv6-echo`, `icmpv6-echoreply`, `icmpv6-dstunreach`, `icmpv6-timxceed`,
+`icmpv6-pkttoobig`, and `icmpv6-paramprob`).
+
+The `--direction` (or `-d`) argument can be used to specify the capture direction. Valid values are:
+
+* `SourceToDestination` (default): Capture packets flowing from source to destination
+* `DestinationToSource`: Capture packets flowing from destination to source
+* `Both`: Capture packets flowing in both directions
+
+The `--capture-point` (or `-p`) argument can be used to specify the capture point. Valid values are:
+
+* `Source`: Capture packets at the Source, Defaults to 'Source' if a Source Pod is available
+* `Destination`: Capture packets at the Destination
+
+By default, the command will wait for the PacketCapture to succeed or fail, or to
+timeout. The default timeout is 60 seconds, but can be changed with the
+`--timeout` (or `-t`) argument. Add the `--no-wait` flag to start a PacketCapture
+without waiting for its results. In this case, the command will not delete the
+PacketCapture resource.
+
+More examples of `antctl packetcapture`:
+
+```bash
+# Start capturing packets from pod1 to pod2, both Pods are in Namespace default
+$ antctl packetcapture -S pod1 -D pod2
+# Start capturing packets from pod1 in Namespace ns1 to a destination IP
+$ antctl packetcapture -S ns1/pod1 -D 192.168.123.123
+# Start capturing packets from pod1 to pod2, captures at dst pod
+$ antctl packetcapture -S pod1 -D pod2 -p Destination
+# Start capturing TCP FIN packets from pod1 to pod2, with destination port 80
+$ antctl packetcapture -S pod1 -D pod2 -f tcp,tcp_dst=80,tcp_flags=+fin
+# Start capturing TCP SYNs that are not ACKs from pod1 to pod2, with destination port 80
+$ antctl packetcapture -S pod1 -D pod2 -f tcp,tcp_dst=80,tcp_flags=+syn-ack
+# Start capturing IPv6 TCP SYNs packets from pod1 to pod2, with destination port 80
+$ antctl packetcapture -S pod1 -D pod2 -f ipv6,tcp,tcp_dst=80,tcp_flags=+syn
+# Start capturing UDP packets from pod1 to pod2, with destination port 1234
+$ antctl packetcapture -S pod1 -D pod2 -f udp,udp_dst=1234
+# Start capturing ICMP destination unreachable (host unreachable) packets from pod1 to pod2
+$ antctl packetcapture -S pod1 -D pod2 -f icmp,icmp_type=icmp-unreach,icmp_code=1
+# Start capturing ICMP echo packets from pod1 to pod2
+$ antctl packetcapture -S pod1 -D pod2 -f icmp,icmp_type=8
+# Start capturing packets in both directions between pod1 and pod2
+$ antctl packetcapture -S pod1 -D pod2 -d Both
+# Start capturing ICMPv6 destination unreachable (host unreachable) packets from pod1 to pod2
+$ antctl packetcapture -S pod1 -D pod2 -f icmpv6,icmpv6_type=icmpv6-unreach,icmpv6_code=1
+# Start capturing ICMPv6 echo reply packets from pod1 to pod2
+$ antctl packetcapture -S pod1 -D pod2 -f icmpv6,icmpv6_type=129
+# Save the packets file to a specified directory
+$ antctl packetcapture -S 192.168.123.123 -D pod2 -f tcp,tcp_dst=80 -o /tmp
+```
+
 ### Antctl Proxy
 
 antctl can run as a reverse proxy for the Antrea API (Controller or arbitrary
@@ -581,7 +660,7 @@ To run a reverse proxy for the Antrea Controller API, use:
 
 ```bash
 antctl proxy --controller
-````
+```
 
 To run a reverse proxy for the Antrea Agent API for the antrea-agent Pod running
 on Node <TARGET_NODE>, use:
@@ -713,14 +792,15 @@ the following:
 
 * number of records received by the collector process in the Flow Aggregator
 * number of records exported by the Flow Aggregator
-* number of active flows that are being tracked
+* number of records dropped by the Flow Aggregator (Proxy mode)
+* number of active flows that are being tracked (Aggregate mode)
 * number of exporters connected to the Flow Aggregator
 
 Example outputs of record metrics:
 
 ```bash
-RECORDS-EXPORTED RECORDS-RECEIVED FLOWS EXPORTERS-CONNECTED
-46               118              7     2      
+RECORDS-EXPORTED RECORDS-RECEIVED RECORDS-DROPPED FLOWS EXPORTERS-CONNECTED
+46               118              0               7     2
 ```
 
 ### Multi-cluster commands
@@ -760,13 +840,13 @@ worker3 172.18.0.2 Dead
 ### BGP commands
 
 `antctl` agent command `get bgppolicy` prints the effective BGP policy applied on the local Node.
-It includes the name, local ASN, router ID and listen port of the effective BGP policy.
+It includes the name, router ID, local ASN, listen port, confederation identifier and member ASNs of the effective BGP policy.
 
 ```bash
 $ antctl get bgppolicy
 
-NAME               ROUTER-ID  LOCAL-ASN LISTEN-PORT
-example-bgp-policy 172.18.0.2 64512     179
+NAME               ROUTER-ID  LOCAL-ASN LISTEN-PORT CONFEDERATION-IDENTIFIER MEMBER-ASNs
+example-bgp-policy 172.18.0.2 64512     179         65000                    64513,64514
 ```
 
 `antctl` agent command `get bgppeers` print the current status of all BGP peers

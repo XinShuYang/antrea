@@ -47,7 +47,7 @@ WINDOWS_NETWORKPOLICY_FOCUS="\[Feature:NetworkPolicy\]"
 WINDOWS_NETWORKPOLICY_SKIP="SCTP"
 WINDOWS_NETWORKPOLICY_CONTAINERD_SKIP="\[sig-storage\]|SCTP"
 CONFORMANCE_SKIP="\[Slow\]|\[Serial\]|\[Disruptive\]|\[Flaky\]|\[Feature:.+\]|\[sig-cli\]|\[sig-storage\]|\[sig-auth\]|\[sig-api-machinery\]|\[sig-apps\]|\[sig-node\]"
-NETWORKPOLICY_SKIP="NetworkPolicyLegacy|should allow egress access to server in CIDR block|should enforce except clause while egress access to server in CIDR block"
+NETWORKPOLICY_SKIP="NetworkPolicyLegacy"
 
 CONTROL_PLANE_NODE_ROLE="master|control-plane"
 
@@ -73,8 +73,8 @@ Run K8s e2e community tests (Conformance & Network Policy) or Antrea e2e tests o
         --kind-cluster-name      Name of the kind Cluster.
         --proxyall               Enable proxyAll to test AntreaProxy.
         --build-tag              Custom build tag for images.
-        --docker-user             Username for Docker account.
-        --docker-password         Password for Docker account."
+        --docker-user            Username for Docker account.
+        --docker-password        Password for Docker account."
 
 function print_usage {
     echoerr "$_usage"
@@ -201,7 +201,7 @@ function clean_antrea {
     for antrea_yml in ${WORKDIR}/*.yml; do
         kubectl delete -f $antrea_yml --ignore-not-found=true || true
     done
-    docker images --format "{{.Repository}}:{{.Tag}}" | grep 'antrea'| xargs -r docker rmi -f || true
+    docker images --format "{{.Repository}}:{{.Tag}}" | grep ${BUILD_TAG} | xargs -r docker rmi || true
     docker images | grep '<none>' | awk '{print $3}' | xargs -r docker rmi || true
     check_and_cleanup_docker_build_cache
 }
@@ -476,7 +476,7 @@ function deliver_antrea_linux {
 function deliver_antrea_windows {
     echo "===== Build Antrea Windows ====="
     rm -f antrea-windows.tar.gz
-    make build-windows
+    DOCKER_REGISTRY="${DOCKER_REGISTRY}" ./hack/build-antrea-windows-all.sh --pull
     if ! (test -f antrea-windows.tar); then
         echo "antrea-windows.tar wasn't built, exiting"
         exit 1
@@ -489,7 +489,7 @@ function deliver_antrea_windows {
         revert_snapshot_windows ${WORKER_NAME}
         k8s_images=("registry.k8s.io/e2e-test-images/agnhost:2.52" "registry.k8s.io/e2e-test-images/jessie-dnsutils:1.5" "registry.k8s.io/e2e-test-images/nginx:1.14-2" "registry.k8s.io/pause:3.10")
         conformance_images=("k8sprow.azurecr.io/kubernetes-e2e-test-images/agnhost:2.52" "k8sprow.azurecr.io/kubernetes-e2e-test-images/jessie-dnsutils:1.5" "k8sprow.azurecr.io/kubernetes-e2e-test-images/nginx:1.14-2" "registry.k8s.io/e2e-test-images/pause:3.10")
-        e2e_images=("${DOCKER_REGISTRY}/antrea/toolbox:1.4-0" "registry.k8s.io/e2e-test-images/agnhost:2.40")
+        e2e_images=("${DOCKER_REGISTRY}/antrea/toolbox:1.5-1" "registry.k8s.io/e2e-test-images/agnhost:2.40")
         # Pull necessary images in advance to avoid transient error
         for i in "${!k8s_images[@]}"; do
             ssh -o StrictHostKeyChecking=no -n Administrator@${IP} "ctr -n k8s.io images pull --user ${DOCKER_USERNAME}:${DOCKER_PASSWORD} ${k8s_images[i]} && ctr -n k8s.io images tag ${k8s_images[i]} ${conformance_images[i]}" || true
@@ -666,9 +666,9 @@ function run_e2e {
     if [[ $TESTBED_TYPE == "flexible-ipam" ]]; then
         go test -v antrea.io/antrea/test/e2e --logs-export-dir `pwd`/antrea-test-logs --provider remote -timeout=100m --prometheus --antrea-ipam
     elif [[ $TESTBED_TYPE == "kind" ]]; then
-        go test -v antrea.io/antrea/test/e2e --logs-export-dir `pwd`/antrea-test-logs --provider kind -timeout=100m --prometheus
+        go test -v antrea.io/antrea/test/e2e --logs-export-dir `pwd`/antrea-test-logs --provider kind --kind.kubeconfig ${KUBECONFIG_PATH} -timeout=100m --prometheus
     elif [[ $TESTBED_TYPE == "kind-flexible-ipam" ]]; then
-        go test -v antrea.io/antrea/test/e2e --logs-export-dir `pwd`/antrea-test-logs --provider kind -timeout=100m --prometheus --antrea-ipam
+        go test -v antrea.io/antrea/test/e2e --logs-export-dir `pwd`/antrea-test-logs --provider kind --kind.kubeconfig ${KUBECONFIG_PATH} -timeout=100m --prometheus --antrea-ipam
     else
         go test -v antrea.io/antrea/test/e2e --logs-export-dir `pwd`/antrea-test-logs --provider remote -timeout=100m --prometheus
     fi
@@ -942,9 +942,6 @@ function redeploy_k8s_if_ip_mode_changes() {
         POD_SUBNET_STRING="${POD_SUBNET_IPV4},${POD_SUBNET_IPV6}"
         SERVICE_SUBNET_STRING="${SERVICE_SUBNET_IPV4},${SERVICE_SUBNET_IPV6}"
         ADVERTISE_ADDRESS_STRING=${CONTROL_PLANE_IPV4}
-        if [[ ${K8S_VERSION} =~ 1.19. ]] || [[ ${K8S_VERSION} =~ 1.20. ]]; then
-          FEATURE_GATES_STRING=`echo -e "featureGates:\n  IPv6DualStack: true"`
-        fi
         APISERVER_IP_STRING=${ADVERTISE_ADDRESS_STRING}
     fi
     cat <<EOF | tee ${WORKDIR}/kubeadm.conf

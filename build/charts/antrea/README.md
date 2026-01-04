@@ -1,6 +1,6 @@
 # antrea
 
-![Version: 2.3.0-dev](https://img.shields.io/badge/Version-2.3.0--dev-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: latest](https://img.shields.io/badge/AppVersion-latest-informational?style=flat-square)
+![Version: 2.6.0-dev](https://img.shields.io/badge/Version-2.6.0--dev-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: latest](https://img.shields.io/badge/AppVersion-latest-informational?style=flat-square)
 
 Kubernetes networking based on Open vSwitch
 
@@ -12,7 +12,7 @@ Kubernetes networking based on Open vSwitch
 
 ## Requirements
 
-Kubernetes: `>= 1.19.0-0`
+Kubernetes: `>= 1.23.0-0`
 
 ## Values
 
@@ -26,18 +26,23 @@ Kubernetes: `>= 1.19.0-0`
 | agent.antreaAgent.logFileMaxSize | int | `100` | Max size in MBs of any single log file. |
 | agent.antreaAgent.resources | object | `{"requests":{"cpu":"200m"}}` | Resource requests and limits for the antrea-agent container. |
 | agent.antreaAgent.securityContext.capabilities | list | `[]` | Capabilities for the antrea-agent container. |
-| agent.antreaAgent.securityContext.privileged | bool | `true` | Run the antrea-agent container as privileged. Currently we require this to be true (for sysctl configurations), but we may support running as non-privileged in the future. |
+| agent.antreaAgent.securityContext.privileged | bool | `true` | Whether to run the antrea-agent container as privileged. Currently we require this to be true (for sysctl configurations), but we may support running as non-privileged in the future. |
 | agent.antreaIPsec.resources | object | `{"requests":{"cpu":"50m"}}` | Resource requests and limits for the antrea-ipsec container (when IPsec is enabled). |
 | agent.antreaIPsec.securityContext.capabilities | list | `["NET_ADMIN"]` | Capabilities for the antrea-ipsec container. |
-| agent.antreaIPsec.securityContext.privileged | bool | `false` | Run the antrea-ipsec container as privileged. |
+| agent.antreaIPsec.securityContext.privileged | bool | `false` | Whether to run the antrea-ipsec container as privileged. |
 | agent.antreaOVS.extraArgs | list | `[]` | Extra command-line arguments for antrea-ovs. |
 | agent.antreaOVS.extraEnv | object | `{}` | Extra environment variables to be injected into antrea-ovs. |
 | agent.antreaOVS.logFileMaxNum | int | `4` | Max number of log files. |
 | agent.antreaOVS.logFileMaxSize | int | `100` | Max size in MBs of any single log file. |
 | agent.antreaOVS.resources | object | `{"requests":{"cpu":"200m"}}` | Resource requests and limits for the antrea-ovs container. |
 | agent.antreaOVS.securityContext.capabilities | list | `["SYS_NICE","NET_ADMIN","SYS_ADMIN","IPC_LOCK"]` | Capabilities for the antrea-ovs container. |
-| agent.antreaOVS.securityContext.privileged | bool | `false` | Run the antrea-ovs container as privileged. |
+| agent.antreaOVS.securityContext.privileged | bool | `false` | Whether to run the antrea-ovs container as privileged. |
+| agent.antreaSysctlInit.enable | bool | `false` | Enable the sysctl override. When enabled, the init container will do the process. |
+| agent.antreaSysctlInit.hostSysctlDir | string | `"/etc/sysctl.d"` | Path to the sysctl configuration directory on the host. |
+| agent.antreaSysctlInit.resources | object | `{"requests":{"cpu":"50m"}}` | Resource requests and limits for the antrea-sysctl-init init container. |
+| agent.antreaSysctlInit.securityContext.privileged | bool | `true` | Whether to run the antrea-sysctl-init container as privileged. |
 | agent.apiPort | int | `10350` | Port for the antrea-agent APIServer to serve on. |
+| agent.clusterPort | int | `10351` | clusterPort is the server port used by the antrea-agent to run a gossip-based cluster membership protocol. Currently it's used only when the Egress feature is enabled. Defaults to 10351 |
 | agent.dnsPolicy | string | `""` | DNS Policy for the antrea-agent Pods. If empty, the Kubernetes default will be used. |
 | agent.dontLoadKernelModules | bool | `false` | Do not try to load any of the required Kernel modules (e.g., openvswitch) during initialization of the antrea-agent. Most users should never need to set this to true, but it may be required with some specific distributions. Note that we will never try to load a module if we can detect that it is "built-in", regardless of this value. |
 | agent.enablePrometheusMetrics | bool | `true` | Enable metrics exposure via Prometheus. |
@@ -45,7 +50,7 @@ Kubernetes: `>= 1.19.0-0`
 | agent.installCNI.extraEnv | object | `{}` | Extra environment variables to be injected into install-cni. |
 | agent.installCNI.resources | object | `{"requests":{"cpu":"100m"}}` | Resource requests and limits for the install-cni initContainer. |
 | agent.installCNI.securityContext.capabilities | list | `["SYS_MODULE"]` | Capabilities for the install-cni initContainer. |
-| agent.installCNI.securityContext.privileged | bool | `false` | Run the install-cni container as privileged. |
+| agent.installCNI.securityContext.privileged | bool | `false` | Whether to run the install-cni container as privileged. |
 | agent.kubeletRootDir | string | `"/var/lib/kubelet"` | The root directory where kubelet stores its files. This is required to access the pod resources API, which is used to retrieve SR-IOV device allocation details for Pods. By default, the subdirectory containing the pod resources socket is mounted into antrea-agent Pods. Setting it to an empty value disables the mounting. |
 | agent.nodeSelector | object | `{"kubernetes.io/os":"linux"}` | Node selector for the antrea-agent Pods. |
 | agent.podAnnotations | object | `{}` | Annotations to be added to antrea-agent Pods. |
@@ -55,11 +60,12 @@ Kubernetes: `>= 1.19.0-0`
 | agent.updateStrategy | object | `{"type":"RollingUpdate"}` | Update strategy for the antrea-agent DaemonSet. |
 | agentImage | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-agent-ubuntu","tag":""}` | Container image to use for the antrea-agent component. |
 | antreaProxy.defaultLoadBalancerMode | string | `"nat"` | Determines how external traffic is processed when it's load balanced across Nodes by default. It must be one of "nat" or "dsr". |
-| antreaProxy.disableServiceHealthCheckServer | bool | `false` | Disables the health check server run by Antrea Proxy, which provides health information about Services of type LoadBalancer with externalTrafficPolicy set to Local, when proxyAll is enabled. This avoids race conditions between kube-proxy and Antrea proxy, with both trying to bind to the same addresses, when proxyAll is enabled while kube-proxy has not been removed. |
+| antreaProxy.disableServiceHealthCheckServer | bool | `false` | Disables the health check server run by Antrea Proxy, which provides health information about Services of type LoadBalancer with externalTrafficPolicy set to Local, when proxyAll is enabled. This avoids race conditions between kube-proxy and Antrea Proxy, with both trying to bind to the same address, when proxyAll is enabled while kube-proxy has not been removed. |
 | antreaProxy.enable | bool | `true` | To disable AntreaProxy, set this to false. |
 | antreaProxy.nodePortAddresses | list | `[]` | String array of values which specifies the host IPv4/IPv6 addresses for NodePort. By default, all host addresses are used. |
 | antreaProxy.proxyAll | bool | `false` | Proxy all Service traffic, for all Service types, regardless of where it comes from. |
 | antreaProxy.proxyLoadBalancerIPs | bool | `true` | When set to false, AntreaProxy no longer load-balances traffic destined to the External IPs of LoadBalancer Services. |
+| antreaProxy.serviceHealthCheckServerBindAddress | string | `""` | The value of the IP address and the port on which AntreaProxy health server listens when proxyAll is enabled. This server is functionally equivalent to the one of kube-proxy. If it is not specified, it will be automatically set to "0.0.0.0:10256". |
 | antreaProxy.serviceProxyName | string | `""` | The value of the "service.kubernetes.io/service-proxy-name" label for AntreaProxy to match. If it is set, then AntreaProxy will only handle Services with the label that equals the provided value. If it is not set, then AntreaProxy will only handle Services without the "service.kubernetes.io/service-proxy-name" label, but ignore Services with the label no matter what is the value. |
 | antreaProxy.skipServices | list | `[]` | List of Services which should be ignored by AntreaProxy. |
 | auditLogging.compress | bool | `true` | Compress enables gzip compression on rotated files. |
@@ -67,6 +73,7 @@ Kubernetes: `>= 1.19.0-0`
 | auditLogging.maxBackups | int | `3` | MaxBackups is the maximum number of old log files to retain. If set to 0, all log files will be retained (unless MaxAge causes them to be deleted). |
 | auditLogging.maxSize | int | `500` | MaxSize is the maximum size in MB of a log file before it gets rotated. |
 | clientCAFile | string | `""` | File path of the certificate bundle for all the signers that is recognized for incoming client certificates. |
+| cni.configFileMode | string | `"644"` | The file permission for 10-antrea.conflist when it is installed in the CNI configuration directory on the host. |
 | cni.hostBinPath | string | `"/opt/cni/bin"` | Installation path of CNI binaries on the host. |
 | cni.plugins | object | `{"bandwidth":true,"portmap":true}` | Chained plugins to use alongside antrea-cni. |
 | cni.skipBinaries | list | `[]` | CNI binaries shipped with Antrea for which installation should be skipped. |
@@ -92,15 +99,19 @@ Kubernetes: `>= 1.19.0-0`
 | egress.exceptCIDRs | list | `[]` | A list of CIDR ranges to which outbound Pod traffic will not be SNAT'd by Egresses, e.g. ["192.168.0.0/16", "172.16.0.0/12"]. |
 | egress.maxEgressIPsPerNode | int | `255` | The maximum number of Egress IPs that can be assigned to a Node. It is useful when the Node network restricts the number of secondary IPs a Node can have, e.g. EKS. It must not be greater than 255. |
 | egress.snatFullyRandomPorts | bool | `nil` | Fully randomize source port mapping in Egress SNAT rules. This has no impact on the default SNAT rules enforced by each Node for local Pod traffic. By default, we use the same value as for the top-level snatFullyRandomPorts configuration, but this field can be used as an override. |
+| egress.uniqueMACForSubInterfaces | bool | `true` | Enable Egress VLAN sub-interfaces to use unique MAC addresses instead of inheriting the parent interface’s MAC. Useful in cloud environments that require unique MAC addresses per interface. |
 | enableBridgingMode | bool | `false` | Enable bridging mode of Pod network on Nodes, in which the Node's transport interface is connected to the OVS bridge. |
 | featureGates | object | `{}` | To explicitly enable or disable a FeatureGate and bypass the Antrea defaults, add an entry to the dictionary with the FeatureGate's name as the key and a boolean as the value. |
 | flowExporter.activeFlowExportTimeout | string | `"5s"` | timeout after which a flow record is sent to the collector for active flows. |
 | flowExporter.enable | bool | `false` | Enable the flow exporter feature. |
-| flowExporter.flowCollectorAddr | string | `"flow-aggregator/flow-aggregator:4739:tls"` | IPFIX collector address as a string with format <HOST>:[<PORT>][:<PROTO>]. If the collector is running in-cluster as a Service, set <HOST> to <Service namespace>/<Service name>. |
+| flowExporter.flowCollectorAddr | string | `"flow-aggregator/flow-aggregator:14739:grpc"` | IPFIX collector address as a string with format <HOST>:[<PORT>][:<PROTO>]. If the collector is running in-cluster as a Service, set <HOST> to <Service namespace>/<Service name>. |
 | flowExporter.flowPollInterval | string | `"5s"` | Determines how often the flow exporter polls for new connections. |
 | flowExporter.idleFlowExportTimeout | string | `"15s"` | timeout after which a flow record is sent to the collector for idle flows. |
+| flowExporter.protocolFilter | list | `nil` | Filter which flows are exported based on protocol. A nil protocolFilter allows all flows. Supported protocols are "tcp", "udp" and "sctp". |
 | fqdnCacheMinTTL | int | `0` | fqdnCacheMinTTL helps address the issue of applications caching DNS response IPs beyond the TTL value for the DNS record. It is used to enforce FQDN policy rules, ensuring that resolved IPs are included in datapath rules for as long as the application caches them. Ideally, this value should be set to the maximum caching duration across all applications. |
 | hostGateway | string | `"antrea-gw0"` | Name of the interface antrea-agent will create and use for host <-> Pod communication. |
+| hostNetworkAcceleration.enable | bool | `true` | Enable to accelerate Pod-to-Pod traffic in the Node's host network using nftables flowtable when traffic mode is noEncap or hybrid. |
+| hostNetworkMode | string | `"iptables"` | Determines how antrea-agent implements Node host network netfilter rules required by functionalities and features, using either "iptables" or "nftables". The default value is "iptables". If "nftables" is specified, the NFTablesHostNetworkMode feature gate must be enabled; otherwise, antrea-agent will fail to start. Currently, nftables support is limited to the following features:   - AntreaProxy (proxyAll) |
 | image | object | `{}` | Container image to use for Antrea components. DEPRECATED: use agentImage and controllerImage instead. |
 | ipsec.authenticationMode | string | `"psk"` | The authentication mode to use for IPsec. Must be one of "psk" or "cert". |
 | ipsec.csrSigner.autoApprove | bool | `true` | Enable auto approval of Antrea signer for IPsec certificates. |
@@ -129,8 +140,9 @@ Kubernetes: `>= 1.19.0-0`
 | nodePortLocal.portRange | string | `"61000-62000"` | Port range used by NodePortLocal when creating Pod port mappings. |
 | ovs.bridgeName | string | `"br-int"` | Name of the OVS bridge antrea-agent will create and use. |
 | ovs.hwOffload | bool | `false` | Enable hardware offload for the OVS bridge (required additional configuration). |
-| packetInRate | int | `500` | packetInRate defines the OVS controller packet rate limits for different features. All features will apply this rate-limit individually on packet-in messages sent to antrea-agent. The number stands for the rate as packets per second(pps) and the burst size will be automatically set to twice the rate. When the rate and burst size are exceeded, new packets will be dropped. |
-| secondaryNetwork.ovsBridges | list | `[]` | Configuration of OVS bridges for secondary network. At the moment, at most one OVS bridge can be specified. If the specified bridge does not exist on the Node, antrea-agent will create it based on the configuration. The following configuration specifies an OVS bridge with name "br1" and a physical interface "eth1": [{bridgeName: "br1", physicalInterfaces: ["eth1"]}] |
+| packetInRate | int | `5000` | packetInRate defines the OVS controller packet rate limits for different features. All features will apply this rate-limit individually on packet-in messages sent to antrea-agent. The number stands for the rate as packets per second(pps) and the burst size will be automatically set to twice the rate. When the rate and burst size are exceeded, new packets will be dropped. |
+| podCIDRs | string | `""` | The aggregated cluster-wide Pod CIDRs (not the per-Node Pod CIDRs). This field is applicable only in networkPolicyOnly mode and ignored in other traffic modes. It can be left empty, but it is recommended to specify the correct Pod CIDRs string, as Traceflow may not work correctly for inter-Node Pod-to-Pod traffic otherwise. Example: "10.10.0.0/16" for IPv4-only, or "10.10.0.0/16,fd00::/12" for dual-stack. |
+| secondaryNetwork.ovsBridges | list | `[]` | Configuration of OVS bridges for secondary network. At the moment, at most one OVS bridge can be specified. If the specified bridge does not exist on the Node, antrea-agent will create it based on the configuration. The following configuration specifies an OVS bridge with name "br1" and a physical interface "eth1": [{bridgeName: "br1", physicalInterfaces: ["eth1"], enableMulticastSnooping: false}] |
 | serviceCIDR | string | `""` | IPv4 CIDR range used for Services. Required when AntreaProxy is disabled. |
 | serviceCIDRv6 | string | `""` | IPv6 CIDR range used for Services. Required when AntreaProxy is disabled. |
 | snatFullyRandomPorts | bool | `false` | Fully randomize source port mapping in SNAT rules used for egress traffic from Pods to the external network. |

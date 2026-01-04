@@ -66,21 +66,22 @@ func Test_getGatesResponse(t *testing.T) {
 				{Component: "agent", Name: "ExternalNode", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "FlowExporter", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "IPsecCertAuth", Status: "Disabled", Version: "ALPHA"},
-				{Component: "agent", Name: "L7FlowExporter", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "L7NetworkPolicy", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "LoadBalancerModeDSR", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "Multicast", Status: multicastStatus, Version: "BETA"},
 				{Component: "agent", Name: "Multicluster", Status: "Disabled", Version: "ALPHA"},
+				{Component: "agent", Name: "NFTablesHostNetworkMode", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "NetworkPolicyStats", Status: "Enabled", Version: "BETA"},
 				{Component: "agent", Name: "NodeLatencyMonitor", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "NodeNetworkPolicy", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "NodePortLocal", Status: "Enabled", Version: "GA"},
 				{Component: "agent", Name: "PacketCapture", Status: "Disabled", Version: "ALPHA"},
+				{Component: "agent", Name: "PreferSameTrafficDistribution", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "SecondaryNetwork", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "ServiceExternalIP", Status: serviceExternalIPStatus, Version: "BETA"},
-				{Component: "agent", Name: "ServiceTrafficDistribution", Status: "Enabled", Version: "BETA"},
+				{Component: "agent", Name: "ServiceTrafficDistribution", Status: "Enabled", Version: "GA"},
 				{Component: "agent", Name: "SupportBundleCollection", Status: "Disabled", Version: "ALPHA"},
-				{Component: "agent", Name: "TopologyAwareHints", Status: "Enabled", Version: "BETA"},
+				{Component: "agent", Name: "TopologyAwareHints", Status: "Enabled", Version: "GA"},
 				{Component: "agent", Name: "Traceflow", Status: "Enabled", Version: "BETA"},
 				{Component: "agent", Name: "TrafficControl", Status: "Disabled", Version: "ALPHA"},
 			},
@@ -112,12 +113,12 @@ func Test_getGatesWindowsResponse(t *testing.T) {
 				{Component: "agent-windows", Name: "AntreaProxy", Status: "Enabled", Version: "GA"},
 				{Component: "agent-windows", Name: "EndpointSlice", Status: "Enabled", Version: "GA"},
 				{Component: "agent-windows", Name: "ExternalNode", Status: "Disabled", Version: "ALPHA"},
-				{Component: "agent-windows", Name: "FlowExporter", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent-windows", Name: "NetworkPolicyStats", Status: "Enabled", Version: "BETA"},
 				{Component: "agent-windows", Name: "NodePortLocal", Status: "Enabled", Version: "GA"},
-				{Component: "agent-windows", Name: "ServiceTrafficDistribution", Status: "Enabled", Version: "BETA"},
+				{Component: "agent-windows", Name: "PreferSameTrafficDistribution", Status: "Disabled", Version: "ALPHA"},
+				{Component: "agent-windows", Name: "ServiceTrafficDistribution", Status: "Enabled", Version: "GA"},
 				{Component: "agent-windows", Name: "SupportBundleCollection", Status: "Disabled", Version: "ALPHA"},
-				{Component: "agent-windows", Name: "TopologyAwareHints", Status: "Enabled", Version: "BETA"},
+				{Component: "agent-windows", Name: "TopologyAwareHints", Status: "Enabled", Version: "GA"},
 				{Component: "agent-windows", Name: "Traceflow", Status: "Enabled", Version: "BETA"},
 				{Component: "agent-windows", Name: "TrafficControl", Status: "Disabled", Version: "ALPHA"},
 			},
@@ -126,7 +127,7 @@ func Test_getGatesWindowsResponse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := getFeatureGatesResponse(tt.cfg, AgentWindowsMode)
-			assert.Equal(t, got, tt.want, "The feature gates for Antrea agent windows are not correct")
+			assert.Equal(t, tt.want, got, "The feature gates for Antrea agent windows are not correct")
 		})
 	}
 }
@@ -218,7 +219,7 @@ func Test_getControllerGatesResponse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := getFeatureGatesResponse(&Config{}, ControllerMode)
-			assert.Equal(t, got, tt.want, "The feature gates for Antrea Controller are not correct")
+			assert.Equal(t, tt.want, got, "The feature gates for Antrea Controller are not correct")
 		})
 	}
 }

@@ -177,7 +177,7 @@ func (pt *PortTable) GetDataForPod(podKey string) []*NodePortData {
 
 func (pt *PortTable) getDataForPod(podKey string) []*NodePortData {
 	allData, exist := pt.getPortTableCacheFromPodKeyIndex(podKey)
-	if exist == false {
+	if !exist {
 		return nil
 	}
 	return allData
@@ -245,6 +245,8 @@ func (lpo *localPortOpener) OpenLocalPort(port int, protocol string) (io.Closer,
 			return nil, err
 		}
 		socket = conn
+	default:
+		return nil, fmt.Errorf("unknown or missing protocol: %q", protocol)
 	}
 	klog.V(2).InfoS("Opened local port", "port", port)
 	return socket, nil

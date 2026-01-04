@@ -363,14 +363,16 @@ type Source struct {
 type Destination struct {
 	// Pod is the destination Pod, exclusive with destination IP.
 	Pod *PodReference `json:"pod,omitempty"`
-	// IP is the source IPv4 or IPv6 address.
+	// IP is the destination IPv4 or IPv6 address.
 	IP *string `json:"ip,omitempty"`
 }
 
 // TransportHeader describes the spec of a TransportHeader.
 type TransportHeader struct {
-	UDP *UDPHeader `json:"udp,omitempty"`
-	TCP *TCPHeader `json:"tcp,omitempty"`
+	UDP    *UDPHeader    `json:"udp,omitempty"`
+	TCP    *TCPHeader    `json:"tcp,omitempty"`
+	ICMP   *ICMPHeader   `json:"icmp,omitempty"`
+	ICMPv6 *ICMPv6Header `json:"icmpv6,omitempty"`
 }
 
 // UDPHeader describes the spec of a UDP header.
@@ -381,12 +383,75 @@ type UDPHeader struct {
 	DstPort *int32 `json:"dstPort,omitempty"`
 }
 
+// TCPFlagMatcher describes a TCP flags matching filter with flag and mask.
+type TCPFlagsMatcher struct {
+	// Value is the TCP flag value to match.
+	Value int32 `json:"value"`
+	// Mask is used to specify which bits to consider. Defaults to Value if not specified.
+	// It is applied only to the packet header flags, not to the value provided in the 'Value' field.
+	// Make sure that (Flag & Mask) == Value; otherwise, the match will not succeed.
+	Mask *int32 `json:"mask,omitempty"`
+}
+
 // TCPHeader describes the spec of a TCP header.
 type TCPHeader struct {
 	// SrcPort is the source port.
 	SrcPort *int32 `json:"srcPort,omitempty"`
 	// DstPort is the destination port.
 	DstPort *int32 `json:"dstPort,omitempty"`
+	// Flags is a list of TCP flag match conditions that are logically ORed. When direction is set to Both,
+	// the specified TCP flag matching conditions will be applied to traffic in both directions.
+	Flags []TCPFlagsMatcher `json:"flags,omitempty"`
+}
+
+type ICMPMsgType string
+
+const (
+	ICMPMsgTypeEcho       ICMPMsgType = "icmp-echo"      // 8
+	ICMPMsgTypeEchoReply  ICMPMsgType = "icmp-echoreply" // 0
+	ICMPMsgTypeDstUnreach ICMPMsgType = "icmp-unreach"   // 3
+	ICMPMsgTypeTimexceed  ICMPMsgType = "icmp-timxceed"  // 11
+)
+
+type ICMPv6MsgType string
+
+const (
+	ICMPv6MsgTypeEcho         ICMPv6MsgType = "icmpv6-echo"        // 128
+	ICMPv6MsgTypeEchoReply    ICMPv6MsgType = "icmpv6-echoreply"   // 129
+	ICMPv6MsgTypeDstUnreach   ICMPv6MsgType = "icmpv6-unreach"     // 1
+	ICMPv6MsgTypePacketTooBig ICMPv6MsgType = "icmpv6-pkt-too-big" // 2
+	ICMPv6MsgTypeTimexceed    ICMPv6MsgType = "icmpv6-timxceed"    // 3
+	ICMPv6MsgTypeParamProblem ICMPv6MsgType = "icmpv6-paramprob"   // 4
+)
+
+// ICMPMsgMatcher describes an ICMP message matching filter with type and code.
+type ICMPMsgMatcher struct {
+	// Type is the type of ICMP message to match.
+	Type intstr.IntOrString `json:"type"`
+	// Code is the optional code field of the ICMP message to match.
+	Code *int32 `json:"code,omitempty"`
+}
+
+// ICMPv6MsgMatcher describes an ICMPv6 message matching filter with type and code.
+type ICMPv6MsgMatcher struct {
+	// Type is the type of ICMPv6 message to match.
+	Type intstr.IntOrString `json:"type"`
+	// Code is the optional code field of the ICMPv6 message to match.
+	Code *int32 `json:"code,omitempty"`
+}
+
+// ICMPHeader describes the spec of an ICMP header.
+type ICMPHeader struct {
+	// Messages is a list of ICMP message match conditions that are logically ORed. When direction is set to Both,
+	// the specified ICMP message matching conditions will be applied to traffic in both directions.
+	Messages []ICMPMsgMatcher `json:"messages,omitempty"`
+}
+
+// ICMPv6Header describes the spec of an ICMPv6 header.
+type ICMPv6Header struct {
+	// Messages is a list of ICMPv6 message match conditions that are logically ORed. When direction is set to Both,
+	// the specified ICMPv6 message matching conditions will be applied to traffic in both directions.
+	Messages []ICMPv6MsgMatcher `json:"messages,omitempty"`
 }
 
 // Packet includes header info.
@@ -442,14 +507,35 @@ type PacketCaptureFileServer struct {
 	HostPublicKey []byte `json:"hostPublicKey,omitempty"`
 }
 
+type CaptureDirection string
+
+const (
+	CaptureDirectionSourceToDestination CaptureDirection = "SourceToDestination"
+	CaptureDirectionDestinationToSource CaptureDirection = "DestinationToSource"
+	CaptureDirectionBoth                CaptureDirection = "Both"
+)
+
+type CapturePoint string
+
+const (
+	CapturePointSource      CapturePoint = "Source"
+	CapturePointDestination CapturePoint = "Destination"
+)
+
 type PacketCaptureSpec struct {
 	// Timeout is the timeout for this capture session. If not specified, defaults to 60s.
 	Timeout       *int32        `json:"timeout,omitempty"`
 	CaptureConfig CaptureConfig `json:"captureConfig"`
-	// Source is the traffic source we want to perform capture on. Both `Source` and `Destination` is required
+	// Source is the traffic source we want to perform capture on. At least one of Source or Destination must be specified
 	// for a capture session, and at least one `Pod` should be present either in the source or the destination.
 	Source      Source      `json:"source"`
 	Destination Destination `json:"destination"`
+	// Direction specifies which packets to capture (source -> destination, destination -> source or both).
+	// If not specified, defaults to SourceToDestination.
+	Direction CaptureDirection `json:"direction,omitempty"`
+	// CapturePoint specifies where to perform the packet capture: 'Source' or 'Destination'.
+	// If not set, it defaults to 'Source' when source.pod is available, otherwise 'Destination'.
+	CapturePoint CapturePoint `json:"capturePoint,omitempty"`
 	// Packet defines what kind of traffic we want to capture between the source and destination. If not specified,
 	// all kinds of traffic will count.
 	Packet *Packet `json:"packet,omitempty"`
@@ -489,4 +575,136 @@ type PacketCaptureCondition struct {
 	LastTransitionTime metav1.Time                `json:"lastTransitionTime"`
 	Reason             string                     `json:"reason"`
 	Message            string                     `json:"message"`
+}
+
+type FlowExporterTransportProtocol string
+
+const (
+	FlowExporterTransportTCP FlowExporterTransportProtocol = "tcp"
+	FlowExporterTransportUDP FlowExporterTransportProtocol = "udp"
+	FlowExporterTransportTLS FlowExporterTransportProtocol = "tls"
+)
+
+// +genclient
+// +genclient:nonNamespaced
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// FlowExporterDestination is the Schema for the FlowExporterDestination API.
+type FlowExporterDestination struct {
+	metav1.TypeMeta `json:",inline"`
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// +required
+	Spec FlowExporterDestinationSpec `json:"spec,omitempty"`
+}
+
+// FlowExporterDestinationSpec defines the desired state of a FlowExporterDestination.
+type FlowExporterDestinationSpec struct {
+	// The flow collector address including port as a string.
+	//
+	// Example:
+	// - flow-aggregator/flow-aggregator:14739
+	// - 10.244.10.10:4739
+	// +required
+	Address string `json:"address"`
+
+	// The protocol used to send flow details.
+	//
+	// Exactly one must be defined and non-nil.
+	// +required
+	Protocol FlowExporterProtocol `json:"protocol"`
+
+	// Filter criteria to select which flows to export.
+	// +optional
+	Filter *FlowExporterFilter `json:"filter,omitempty"`
+
+	// Provide the active flow export timeout in seconds, which is the timeout after which
+	// a flow record is sent to the collector for active flows.
+	// +optional
+	ActiveFlowExportTimeoutSeconds int32 `json:"activeFlowExportTimeoutSeconds,omitempty"`
+
+	// Provide the idle flow export timeout in seconds, which is the timeout after which
+	// a flow record is sent to the collector for idle flows.
+	// +optional
+	IdleFlowExportTimeoutSeconds int32 `json:"idleFlowExportTimeoutSeconds,omitempty"`
+
+	// TLSConfig is used to configure TLS when using gRPC protocol or IPFIX protocol with TLS transport.
+	// +optional
+	TLSConfig *FlowExporterTLSConfig `json:"tlsConfig,omitempty"`
+}
+
+// FlowExporterProtocol defines the protocol used to send flow details.
+//
+// Exactly one of IPFIX or GRPC must be specified.
+type FlowExporterProtocol struct {
+	// Configuration for using IPFIX protocol.
+	// +optional
+	IPFIX *FlowExporterIPFIXConfig `json:"ipfix,omitempty"`
+
+	// Configuration for using gRPC protocol.
+	// +optional
+	GRPC *FlowExporterGRPCConfig `json:"grpc,omitempty"`
+}
+
+// FlowExporterIPFIXConfig defines configuration for exporting using the IPFIX protocol.
+type FlowExporterIPFIXConfig struct {
+	// Transport protocol to use for IPFIX.
+	//
+	// Supported values are "tcp", "udp", and "tls".
+	// +required
+	Transport FlowExporterTransportProtocol `json:"transport"`
+}
+
+// FlowExporterGRPCConfig defines configuration for exporting using the gRPC protocol.
+type FlowExporterGRPCConfig struct{}
+
+// FlowExporterFilter defines filtering criteria for exported flows.
+type FlowExporterFilter struct {
+	// Filter for only flows whose protocol matches this filter.
+	//
+	// The default is to accept all protocols if unset or nil.
+	//
+	// Supported values are [tcp, udp, icmp, sctp].
+	// +optional
+	Protocols []string `json:"protocols,omitempty"`
+}
+
+// FlowExporterTLSConfig stores the TLS configuration used by the gRPC exporter and IPFIX
+// exporter with TLS transport.
+type FlowExporterTLSConfig struct {
+	// ServerName is used to verify the hostname on the returned certificate. If specified
+	// it will be included in the client's handshake (SNI) to support virtual hosting unless
+	// it is an IP address. If this field is omitted, the hostname used for certificate
+	// verification will default to the provided server address (spec.address)
+	// +optional
+	ServerName string `json:"serverName,omitempty"`
+
+	// MinTLSVersion is the minimum TLS version the exporter will accept.
+	// +optional
+	MinTLSVersion string `json:"minTLSVersion,omitempty"`
+
+	// CAConfigMap captures the location of the ConfigMap containing the CA certificate used to authenticate
+	// the collector service. The ConfigMap must store the certificate under the key 'ca.crt'. To ensure flow
+	// exporter will have access to this resource it must be granted the proper RBAC permissions.
+	// +required
+	CAConfigMap NamespacedName `json:"caConfigMap"`
+
+	// ClientSecret specifies the location of the Secret containing the client certificate and
+	// private key for mTLS. The Secret must contain the keys 'tls.crt' and 'tls.key'.
+	// If omitted, client authentication will be disabled. To ensure flow exporter will
+	// have access to this resource it must be granted the proper RBAC permissions.
+	// +optional
+	ClientSecret *NamespacedName `json:"clientSecret,omitempty"`
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// FlowExporterDestinationList contains a list of FlowExporterDestination resources.
+type FlowExporterDestinationList struct {
+	metav1.TypeMeta `json:",inline"`
+	// +optional
+	metav1.ListMeta `json:"metadata,omitempty"`
+
+	Items []FlowExporterDestination `json:"items"`
 }

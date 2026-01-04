@@ -36,8 +36,6 @@
   - [Rule enforcement based on priorities](#rule-enforcement-based-on-priorities)
 - [Advanced peer selection mechanisms of Antrea-native Policies](#advanced-peer-selection-mechanisms-of-antrea-native-policies)
   - [Selecting Namespace by Name](#selecting-namespace-by-name)
-    - [K8s clusters with version 1.21 and above](#k8s-clusters-with-version-121-and-above)
-    - [K8s clusters with version 1.20 and below](#k8s-clusters-with-version-120-and-below)
   - [Selecting Pods in the same Namespace with Self](#selecting-pods-in-the-same-namespace-with-self)
   - [Selecting Namespaces with the same label values using SameLabels](#selecting-namespaces-with-the-same-label-values-using-samelabels)
   - [FQDN based filtering](#fqdn-based-filtering)
@@ -1171,11 +1169,8 @@ workloads from Namespaces with the use of a label selector (i.e. `namespaceSelec
 However, it is often desirable to be able to select Namespaces directly by their `name`
 as opposed to using the `labels` associated with the Namespaces.
 
-#### K8s clusters with version 1.21 and above
-
-Starting with K8s v1.21, all Namespaces are labeled with the `kubernetes.io/metadata.name: <namespaceName>`
-[label](https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/#automatic-labelling)
-provided that the `NamespaceDefaultLabelName` feature gate (enabled by default) is not disabled in K8s.
+Namespaces are labeled with the `kubernetes.io/metadata.name: <namespaceName>`
+[label](https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/#automatic-labelling).
 K8s NetworkPolicy and Antrea-native policy users can take advantage of this reserved label
 to select Namespaces directly by their `name` in `namespaceSelectors` as follows:
 
@@ -1207,79 +1202,8 @@ spec:
       name: AllowToCoreDNS
 ```
 
-**Note**: `NamespaceDefaultLabelName` feature gate is scheduled to be removed in K8s v1.24, thereby
-ensuring that labeling Namespaces by their name cannot be disabled.
-
-#### K8s clusters with version 1.20 and below
-
-In order to select Namespaces by name, Antrea labels Namespaces with a reserved label `antrea.io/metadata.name`,
-whose value is set to the Namespace's name. Users can then use this label in the
-`namespaceSelector` field, in both K8s NetworkPolicies and Antrea-native policies to
-select Namespaces by name. By default, Namespaces are not labeled with the reserved name label.
-In order for the Antrea controller to label the Namespaces, the `labelsmutator.antrea.io`
-`MutatingWebhookConfiguration` must be enabled. This can be done by applying the following
-webhook configuration YAML:
-
-```yaml
-apiVersion: admissionregistration.k8s.io/v1
-kind: MutatingWebhookConfiguration
-metadata:
-  # Do not edit this name.
-  name: "labelsmutator.antrea.io"
-webhooks:
-  - name: "namelabelmutator.antrea.io"
-    clientConfig:
-      service:
-        name: "antrea"
-        namespace: "kube-system"
-        path: "/mutate/namespace"
-    rules:
-      - operations: ["CREATE", "UPDATE"]
-        apiGroups: [""]
-        apiVersions: ["v1"]
-        resources: ["namespaces"]
-        scope: "Cluster"
-    admissionReviewVersions: ["v1", "v1beta1"]
-    sideEffects: None
-    timeoutSeconds: 5
-```
-
-**Note**: `antrea-controller` Pod must be restarted after applying this YAML.
-
-Once the webhook is configured, Antrea will start labeling all new and updated
-Namespaces with the `antrea.io/metadata.name: <namespaceName>` label. Users may now
-use this reserved label to select Namespaces by name as follows:
-
-```yaml
-apiVersion: crd.antrea.io/v1beta1
-kind: NetworkPolicy
-metadata:
-  name: test-annp-by-name
-  namespace: default
-spec:
-  priority: 5
-  tier: application
-  appliedTo:
-    - podSelector: {}
-  egress:
-    - action: Allow
-      to:
-        - podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-          namespaceSelector:
-            matchLabels:
-              antrea.io/metadata.name: kube-system
-      ports:
-        - protocol: TCP
-          port: 53
-        - protocol: UDP
-          port: 53
-      name: AllowToCoreDNS
-```
-
 The above example allows all Pods from Namespace "default" to connect to all "kube-dns"
-Pods from Namespace "kube-system" on TCP port 53.
+Pods from Namespace "kube-system" on TCP port 53 and UDP port 53.
 
 ### Selecting Pods in the same Namespace with Self
 
@@ -1650,7 +1574,9 @@ only a NodePort Service can be referred by `service` field.
 
 There are a few **restrictions** on configuring a policy/rule that applies to NodePort Services:
 
-1. This feature can only work when Antrea proxyAll is enabled and kube-proxy is disabled.
+1. This feature can only work when Antrea proxyAll is enabled.
+   - For Antrea versions prior to v2.1.0, kube-proxy must also be disabled.
+   - For Antrea v2.1.0 and later, disabling kube-proxy is no longer required.
 2. `service` field cannot be used with any other fields in `appliedTo`.
 3. a policy or a rule can't be applied to both a NodePort Service and other entities at the same time.
 4. If a `appliedTo` with `service` is used at policy level, then this policy can only contain ingress rules.
@@ -2002,14 +1928,13 @@ annotation for K8s NetworkPolicies). Starting with Antrea v1.13, logging is
 rather than start dropping packets or rather than risking to overrun the Antrea
 Agent, which could impact cluster health or other workloads. This behavior
 cannot be changed, and the logging feature is therefore not meant to be used for
-compliance purposes. By default, the Antrea datapath will send up to 500 packets
-per second (with a burst size of 1000 packets) to the Agent for logging. This
-rate applies to all the traffic that needs to be logged, and is enforced at the
-level of each Node. A rate of 500 packets per second roughly translates to 500
-new TCP connections per second, or 500 UDP requests per second. While it is
-possible to adjust the rate and burst size by modifying the `packetInRate`
-parameter in the antrea-agent configuration, we do not recommend doing so. The
-default value was set to 500 after careful consideration.
+compliance purposes. By default, the Antrea datapath will send up to 5000 (was
+500 prior to Antrea v2.4) packets per second (with a burst size of 10,000 packets)
+to the Agent for logging. This rate applies to all the traffic that needs to be
+logged, and is enforced at the level of each Node. A rate of 5000 packets per
+second roughly translates to 5000 new TCP connections per second, or 5000 UDP
+requests per second. The rate and burst size can be adjusted by modifying the
+`packetInRate` parameter in the antrea-agent configuration.
 
 #### Logging prior to Antrea v1.13
 
@@ -2021,7 +1946,7 @@ action. This meant that the logging feature was more suited for audit /
 compliance applications, however, we ultimately decided that the behavior was
 too aggressive and that it was too easy to disrupt application workloads by
 enabling logging - the rate limit was also lower than the default one we use
-today (100 packets per second instead of 500). For example, the following policy
+today (100 packets per second instead of 5000). For example, the following policy
 which allows ingress DNS traffic for coreDNS Pods, and has logging enabled,
 would drastically restrict the number of possible DNS requests in the cluster,
 which in turn would cause a lot of errors in applications which rely on DNS:

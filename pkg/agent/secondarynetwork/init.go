@@ -24,7 +24,10 @@ import (
 	componentbaseconfig "k8s.io/component-base/config"
 	"k8s.io/klog/v2"
 
+	"antrea.io/antrea/pkg/agent/config"
+	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/secondarynetwork/podwatch"
+	crdlisters "antrea.io/antrea/pkg/client/listers/crd/v1beta1"
 	agentconfig "antrea.io/antrea/pkg/config/agent"
 	"antrea.io/antrea/pkg/ovs/ovsconfig"
 	"antrea.io/antrea/pkg/util/channel"
@@ -47,7 +50,10 @@ func NewController(
 	k8sClient clientset.Interface,
 	podInformer cache.SharedIndexInformer,
 	podUpdateSubscriber channel.Subscriber,
+	primaryInterfaceStore interfacestore.InterfaceStore,
+	nodeConfig *config.NodeConfig,
 	secNetConfig *agentconfig.SecondaryNetworkConfig, ovsdb *ovsdb.OVSDB,
+	ipPoolLister crdlisters.IPPoolLister,
 ) (*Controller, error) {
 	ovsBridgeClient, err := createOVSBridge(secNetConfig.OVSBridges, ovsdb)
 	if err != nil {
@@ -65,7 +71,7 @@ func NewController(
 	// k8s.v1.cni.cncf.io/networks Annotation defined.
 	podWatchController, err := podwatch.NewPodController(
 		k8sClient, netAttachDefClient, podInformer,
-		podUpdateSubscriber, ovsBridgeClient)
+		podUpdateSubscriber, primaryInterfaceStore, nodeConfig, ovsBridgeClient, ipPoolLister)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +84,10 @@ func NewController(
 // Run starts the Pod controller for secondary networks.
 func (c *Controller) Run(stopCh <-chan struct{}) {
 	c.podController.Run(stopCh)
+}
+
+func (c *Controller) AllowCNIDelete(podName, podNamespace string) bool {
+	return c.podController.AllowCNIDelete(podName, podNamespace)
 }
 
 // CreateNetworkAttachDefClient creates net-attach-def client handle from the given config.
@@ -100,7 +110,11 @@ func createOVSBridge(bridges []agentconfig.OVSBridgeConfig, ovsdb *ovsdb.OVSDB) 
 	}
 	// Only one OVS bridge is supported.
 	bridgeConfig := bridges[0]
-	ovsBridgeClient := newOVSBridgeFn(bridgeConfig.BridgeName, ovsconfig.OVSDatapathSystem, ovsdb)
+	var options []ovsconfig.OVSBridgeOption
+	if bridgeConfig.EnableMulticastSnooping {
+		options = append(options, ovsconfig.WithMcastSnooping())
+	}
+	ovsBridgeClient := newOVSBridgeFn(bridgeConfig.BridgeName, ovsconfig.OVSDatapathSystem, ovsdb, options...)
 	if err := ovsBridgeClient.Create(); err != nil {
 		return nil, fmt.Errorf("failed to create OVS bridge %s: %v", bridgeConfig.BridgeName, err)
 	}

@@ -16,7 +16,7 @@ package openflow
 
 import (
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 
 	"antrea.io/libOpenflow/openflow15"
@@ -411,6 +411,9 @@ type Client interface {
 
 	// SubscribeOFPortStatusMessage registers a channel to listen the OpenFlow PortStatus message.
 	SubscribeOFPortStatusMessage(statusCh chan *openflow15.PortStatus)
+
+	// InstallL7NetworkPolicyFlows will be called only when at least one L7 NetworkPolicy is applied locally.
+	InstallL7NetworkPolicyFlows() error
 }
 
 // GetFlowTableStatus returns an array of flow table status.
@@ -589,6 +592,12 @@ func (c *client) InstallNodeFlows(hostname string,
 			flows = append(flows, c.featurePodConnectivity.l3FwdFlowsToRemoteViaTun(localGatewayMAC, *peerPodCIDR, tunnelPeerIP)...)
 		} else {
 			flows = append(flows, c.featurePodConnectivity.l3FwdFlowToRemoteViaRouting(localGatewayMAC, remoteGatewayMAC, tunnelPeerIP, peerPodCIDR)...)
+			// Flow to forward the reply packets of Egress connections, whose request packets came from remote Pods
+			// via tunnel, back to those Pods via tunnel, ensuring symmetric paths of the connections. This flow is
+			// only needed when traffic mode is hybrid and remote Nodes are reachable through routing.
+			if c.enableEgress && c.networkConfig.TrafficEncapMode == config.TrafficEncapModeHybrid {
+				flows = append(flows, c.featurePodConnectivity.l3FwdFlowEgressReturnViaTun(localGatewayMAC, *peerPodCIDR, tunnelPeerIP))
+			}
 		}
 		if c.enableEgress {
 			flows = append(flows, c.featureEgress.snatSkipNodeFlow(tunnelPeerIP))
@@ -755,12 +764,12 @@ func (c *client) InstallEndpointFlows(protocol binding.Protocol, endpoints []pro
 	keyToFlows := map[string][]binding.Flow{}
 	for _, endpoint := range endpoints {
 		var flows []binding.Flow
-		endpointPort, _ := endpoint.Port()
+		endpointPort := endpoint.Port()
 		endpointIP := net.ParseIP(endpoint.IP())
 		portVal := util.PortToUint16(endpointPort)
 		cacheKey := generateEndpointFlowCacheKey(endpoint.IP(), endpointPort, protocol)
 		flows = append(flows, c.featureService.endpointDNATFlow(endpointIP, portVal, protocol))
-		if endpoint.GetIsLocal() {
+		if endpoint.IsLocal() {
 			flows = append(flows, c.featureService.podHairpinSNATFlow(endpointIP))
 		}
 		keyToFlows[cacheKey] = flows
@@ -777,10 +786,7 @@ func (c *client) UninstallEndpointFlows(protocol binding.Protocol, endpoints []p
 	flowCacheKeys := make([]string, 0, len(endpoints))
 
 	for _, endpoint := range endpoints {
-		port, err := endpoint.Port()
-		if err != nil {
-			return fmt.Errorf("error when getting port: %w", err)
-		}
+		port := endpoint.Port()
 		flowCacheKeys = append(flowCacheKeys, generateEndpointFlowCacheKey(endpoint.IP(), port, protocol))
 	}
 
@@ -817,7 +823,7 @@ func (c *client) GetServiceFlowKeys(svcIP net.IP, svcPort uint16, protocol bindi
 	cacheKey := generateServicePortFlowCacheKey(svcIP, svcPort, protocol)
 	flowKeys := c.getFlowKeysFromCache(c.featureService.cachedFlows, cacheKey)
 	for _, ep := range endpoints {
-		epPort, _ := ep.Port()
+		epPort := ep.Port()
 		cacheKey = generateEndpointFlowCacheKey(ep.IP(), epPort, protocol)
 		flowKeys = append(flowKeys, c.getFlowKeysFromCache(c.featureService.cachedFlows, cacheKey)...)
 	}
@@ -927,8 +933,7 @@ func (c *client) generatePipelines() {
 			c.enableMulticast,
 			c.proxyAll,
 			c.enableDSR,
-			c.enableTrafficControl,
-			c.enableL7FlowExporter)
+			c.enableTrafficControl)
 		c.activatedFeatures = append(c.activatedFeatures, c.featurePodConnectivity)
 		c.traceableFeatures = append(c.traceableFeatures, c.featurePodConnectivity)
 
@@ -1684,16 +1689,24 @@ func getFlowModMessage(flow binding.Flow, op binding.OFOperation) *openflow15.Fl
 // getMeterStats sends a multipart request to get all the meter statistics and
 // sets values for antrea_agent_ovs_meter_packet_dropped_count.
 func (c *client) getMeterStats() {
+	labels := map[int]string{
+		PacketInMeterIDNP:  metrics.LabelPacketInMeterNetworkPolicy,
+		PacketInMeterIDTF:  metrics.LabelPacketInMeterTraceflow,
+		PacketInMeterIDDNS: metrics.LabelPacketInMeterDNSInterception,
+	}
 	handleMeterStatsReply := func(meterID int, packetCount int64) {
-		switch meterID {
-		case PacketInMeterIDNP:
-			metrics.OVSMeterPacketDroppedCount.WithLabelValues(metrics.LabelPacketInMeterNetworkPolicy).Set(float64(packetCount))
-		case PacketInMeterIDTF:
-			metrics.OVSMeterPacketDroppedCount.WithLabelValues(metrics.LabelPacketInMeterTraceflow).Set(float64(packetCount))
-		case PacketInMeterIDDNS:
-			metrics.OVSMeterPacketDroppedCount.WithLabelValues(metrics.LabelPacketInMeterDNSInterception).Set(float64(packetCount))
-		default:
+		label, exists := labels[meterID]
+		if !exists {
 			klog.V(4).InfoS("Received unexpected meterID", "meterID", meterID)
+			return
+		}
+		metrics.OVSMeterPacketDroppedCount.WithLabelValues(label).Set(float64(packetCount))
+
+		previousCount := c.ovsMeterPacketDrops[meterID].Swap(packetCount)
+		// Log an error if dropped packets increased in the last round.
+		if packetCount > previousCount {
+			klog.ErrorS(nil, "Packets were dropped by OVS meter, please consider increasing the 'packetInRate' configuration",
+				"meter", label, "packetInRate", c.packetInRate, "totalDrops", packetCount, "newDrops", packetCount-previousCount)
 		}
 	}
 	if err := c.bridge.GetMeterStats(handleMeterStatsReply); err != nil {
@@ -1703,4 +1716,14 @@ func (c *client) getMeterStats() {
 
 func (c *client) SubscribeOFPortStatusMessage(statusCh chan *openflow15.PortStatus) {
 	c.bridge.SubscribePortStatusConsumer(statusCh)
+}
+
+// InstallL7NetworkPolicyFlows will be called only when at least one L7 NetworkPolicy is applied locally.
+func (c *client) InstallL7NetworkPolicyFlows() error {
+	c.replayMutex.RLock()
+	defer c.replayMutex.RUnlock()
+
+	cacheKey := "l7_np_flows"
+	flows := c.featureNetworkPolicy.l7NPTrafficControlFlows()
+	return c.addFlows(c.featureNetworkPolicy.cachedFlows, cacheKey, flows)
 }
