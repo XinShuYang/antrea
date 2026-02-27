@@ -1565,6 +1565,10 @@ spec:
                   type: string
                 egressIP:
                   type: string
+                egressIPs:
+                  type: array
+                  items:
+                    type: string
                 conditions:
                   type: array
                   items:
@@ -4327,7 +4331,7 @@ data:
     #  LoadBalancerModeDSR: false
 
     # Enable Egress traffic shaping.
-    #  EgressTrafficShaping: false
+      EgressTrafficShaping: true
 
     # Allow users to allocate Egress IPs from a different subnet from the default Node subnet.
     #  EgressSeparateSubnet: true
