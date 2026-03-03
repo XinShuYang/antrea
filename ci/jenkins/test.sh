@@ -1005,6 +1005,7 @@ fi
 if [[ $TESTCASE =~ "multicast" ]]; then
     MANIFEST_ARGS="$MANIFEST_ARGS --encap-mode noEncap --multicast --multicast-interfaces ens224 --verbose-log"
 fi
+
 echo $MANIFEST_ARGS
 
 source $WORKSPACE/ci/jenkins/utils.sh
