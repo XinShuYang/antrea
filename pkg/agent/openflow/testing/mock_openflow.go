@@ -520,6 +520,34 @@ func (mr *MockClientMockRecorder) InstallSNATMarkFlows(snatIP, mark any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InstallSNATMarkFlows", reflect.TypeOf((*MockClient)(nil).InstallSNATMarkFlows), snatIP, mark)
 }
 
+// InstallSNATMarkFlowsMultiIP mocks base method.
+func (m *MockClient) InstallSNATMarkFlowsMultiIP(ips []net.IP, mark uint32) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "InstallSNATMarkFlowsMultiIP", ips, mark)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// InstallSNATMarkFlowsMultiIP indicates an expected call of InstallSNATMarkFlowsMultiIP.
+func (mr *MockClientMockRecorder) InstallSNATMarkFlowsMultiIP(ips, mark any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InstallSNATMarkFlowsMultiIP", reflect.TypeOf((*MockClient)(nil).InstallSNATMarkFlowsMultiIP), ips, mark)
+}
+
+// InstallDualStackSNATMarkFlows mocks base method.
+func (m *MockClient) InstallDualStackSNATMarkFlows(ips []net.IP, mark uint32) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "InstallDualStackSNATMarkFlows", ips, mark)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// InstallDualStackSNATMarkFlows indicates an expected call of InstallDualStackSNATMarkFlows.
+func (mr *MockClientMockRecorder) InstallDualStackSNATMarkFlows(ips, mark any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InstallDualStackSNATMarkFlows", reflect.TypeOf((*MockClient)(nil).InstallDualStackSNATMarkFlows), ips, mark)
+}
+
 // InstallServiceFlows mocks base method.
 func (m *MockClient) InstallServiceFlows(arg0 *types.ServiceConfig) error {
 	m.ctrl.T.Helper()
@@ -1043,6 +1071,34 @@ func (m *MockClient) UninstallSNATMarkFlows(mark uint32) error {
 func (mr *MockClientMockRecorder) UninstallSNATMarkFlows(mark any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UninstallSNATMarkFlows", reflect.TypeOf((*MockClient)(nil).UninstallSNATMarkFlows), mark)
+}
+
+// UninstallSNATMarkFlowsMultiIP mocks base method.
+func (m *MockClient) UninstallSNATMarkFlowsMultiIP(mark uint32) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UninstallSNATMarkFlowsMultiIP", mark)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UninstallSNATMarkFlowsMultiIP indicates an expected call of UninstallSNATMarkFlowsMultiIP.
+func (mr *MockClientMockRecorder) UninstallSNATMarkFlowsMultiIP(mark any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UninstallSNATMarkFlowsMultiIP", reflect.TypeOf((*MockClient)(nil).UninstallSNATMarkFlowsMultiIP), mark)
+}
+
+// UninstallDualStackSNATMarkFlows mocks base method.
+func (m *MockClient) UninstallDualStackSNATMarkFlows(mark uint32) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UninstallDualStackSNATMarkFlows", mark)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UninstallDualStackSNATMarkFlows indicates an expected call of UninstallDualStackSNATMarkFlows.
+func (mr *MockClientMockRecorder) UninstallDualStackSNATMarkFlows(mark any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UninstallDualStackSNATMarkFlows", reflect.TypeOf((*MockClient)(nil).UninstallDualStackSNATMarkFlows), mark)
 }
 
 // UninstallServiceFlows mocks base method.
