@@ -491,6 +491,14 @@ func (c *Client) DeleteSNATRule(mark uint32) error {
 	return nil
 }
 
+func (c *Client) AddSNATRules(ips []net.IP, mark uint32) error {
+	return nil
+}
+
+func (c *Client) DeleteSNATRules(mark uint32) error {
+	return nil
+}
+
 func (c *Client) AddDualStackSNATRules(ips []net.IP, mark uint32) error {
 	return nil
 }

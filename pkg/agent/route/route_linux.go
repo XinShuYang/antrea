@@ -2325,6 +2325,54 @@ func (c *Client) DeleteDualStackSNATRules(mark uint32) error {
 	return firstErr
 }
 
+// AddSNATRules installs SNAT iptables rules for the given IPs under a shared mark.
+// This is a generalized version that works with any number of IPs (single-stack or multi-stack).
+// It stores the IPs in the cache for later cleanup and is compatible with both single and multiple IPs.
+func (c *Client) AddSNATRules(ips []net.IP, mark uint32) error {
+	if len(ips) == 0 {
+		return nil
+	}
+	// Store in the dual-stack cache to support any number of IPs
+	c.dualStackMarkToSNATIPs.Store(mark, ips)
+	for _, ip := range ips {
+		protocol := iptables.ProtocolIPv4
+		if ip.To4() == nil {
+			protocol = iptables.ProtocolIPv6
+		}
+		if err := c.iptables.InsertRule(protocol, iptables.NATTable, antreaPostRoutingChain, c.snatRuleSpec(ip, mark)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteSNATRules removes the SNAT iptables rules that were installed by AddSNATRules.
+// This is a generalized version that works with any number of IPs.
+func (c *Client) DeleteSNATRules(mark uint32) error {
+	value, ok := c.dualStackMarkToSNATIPs.Load(mark)
+	if !ok {
+		klog.Warningf("Didn't find SNAT rules with mark %#x in cache", mark)
+		return nil
+	}
+	ips := value.([]net.IP)
+	c.dualStackMarkToSNATIPs.Delete(mark)
+
+	var firstErr error
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		protocol := iptables.ProtocolIPv4
+		if ip.To4() == nil {
+			protocol = iptables.ProtocolIPv6
+		}
+		if err := c.iptables.DeleteRule(protocol, iptables.NATTable, antreaPostRoutingChain, c.snatRuleSpec(ip, mark)); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func (c *Client) AddEgressRoutes(tableID uint32, dev int, gateway net.IP, prefixLength int) error {
 	var dst *net.IPNet
 	if gateway.To4() != nil {

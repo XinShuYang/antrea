@@ -56,16 +56,30 @@ type Interface interface {
 	// if linkName is nil, it should remove the routes.
 	UnMigrateRoutesFromGw(route *net.IPNet, linkName string) error
 
+	// AddSNATRules adds SNAT rules for the given IPs using a shared mark.
+	// The ips parameter can contain one or more IPs (e.g., single-stack or dual-stack).
+	// All IPs map to the same mark; the implementation must not let one overwrite the other.
+	// For backward compatibility, this also accepts a single IP via AddSNATRule.
+	AddSNATRules(ips []net.IP, mark uint32) error
+
+	// DeleteSNATRules deletes SNAT rules that were installed by AddSNATRules.
+	// It looks up the IPs from the cache by mark.
+	DeleteSNATRules(mark uint32) error
+
+	// Deprecated: Use AddSNATRules instead.
 	// AddSNATRule should add rule to SNAT outgoing traffic with the mark, using the provided SNAT IP.
 	AddSNATRule(snatIP net.IP, mark uint32) error
 
+	// Deprecated: Use DeleteSNATRules instead.
 	// DeleteSNATRule should delete rule to SNAT outgoing traffic with the mark.
 	DeleteSNATRule(mark uint32) error
 
+	// Deprecated: Use AddSNATRules instead.
 	// AddDualStackSNATRules adds SNAT rules for the given IPs using a shared mark.
 	// All IPs map to the same mark; the implementation must not let one overwrite the other.
 	AddDualStackSNATRules(ips []net.IP, mark uint32) error
 
+	// Deprecated: Use DeleteSNATRules instead.
 	// DeleteDualStackSNATRules deletes SNAT rules that were installed by AddDualStackSNATRules.
 	// It looks up the IPs from the cache by mark.
 	DeleteDualStackSNATRules(mark uint32) error
