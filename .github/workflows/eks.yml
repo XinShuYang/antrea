@@ -1,0 +1,77 @@
+name: EKS Conformance
+
+on:
+  schedule:
+    - cron: '0 0 */2 * *' # Run every 2 days
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read  # Required for actions/checkout
+
+env:
+  ANTREA_REPO: https://github.com/${{ github.repository }}
+  ANTREA_GIT_REVISION: ${{ github.sha }}
+
+jobs:
+  test-conformance-eks:
+    name: EKS Conformance & Network Policy Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      # Configure AWS Credentials using static Access Keys
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_SERVICE_USER_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SERVICE_USER_SECRET_KEY }}
+          aws-region: us-west-2
+
+      - name: Install AWS Session Manager plugin
+        run: |
+          curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+          sudo dpkg -i session-manager-plugin.deb
+          rm session-manager-plugin.deb
+
+      - name: Generate SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
+
+      # RUNNING WITHOUT sudo:
+      # Running the script with sudo is a critical bug since it resets $HOME to /root,
+      # preventing AWS CLI and SSH from finding the credentials and keys in /home/runner.
+      - name: Run EKS Conformance and Network Policy Tests
+        run: |
+          ./ci/test-conformance-eks.sh \
+            --aws-service-user-role-arn "${{ secrets.AWS_SERVICE_USER_ROLE_ARN }}" \
+            --aws-service-user "${{ secrets.AWS_SERVICE_USER_NAME }}" \
+            --cluster-name "antrea-eks-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --log-mode detail \
+            --setup-only
+
+      - name: Clean up EKS Cluster
+        if: always()
+        run: |
+          ./ci/test-conformance-eks.sh \
+            --aws-service-user-role-arn "${{ secrets.AWS_SERVICE_USER_ROLE_ARN }}" \
+            --aws-service-user "${{ secrets.AWS_SERVICE_USER_NAME }}" \
+            --cluster-name "antrea-eks-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --cleanup-only
+
+      - name: Archive Test Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eks-test-logs
+          path: |
+            eks-test.log
+            *sonobuoy*.tar.gz

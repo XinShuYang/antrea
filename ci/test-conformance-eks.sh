@@ -36,6 +36,8 @@ KUBE_CONFORMANCE_IMAGE_VERSION=auto
 INSTALL_EKSCTL=true
 AWS_SERVICE_USER_ROLE_ARN=""
 AWS_SERVICE_USER_NAME=""
+AWS_ACCESS_KEY=""
+AWS_SECRET_KEY=""
 
 _usage="Usage: $0 [--cluster-name <EKSClusterNameToUse>] [--kubeconfig <KubeconfigSavePath>] [--k8s-version <ClusterVersion>]\
                   [--aws-access-key <AccessKey>] [--aws-secret-key <SecretKey>] [--aws-region <Region>] [--aws-service-user <ServiceUserName>]\
@@ -164,6 +166,13 @@ managedNodeGroups:
     desiredCapacity: 2
     ami: ${AMI_ID}
     amiFamily: AmazonLinux2
+    privateNetworking: true
+    iam:
+      attachPolicyARNs:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
     ssh:
       allow: true
       publicKeyPath: ${SSH_KEY_PATH}
@@ -187,35 +196,39 @@ function setup_eks() {
     aws --version
 
     set +e
-    if [[ "$AWS_SERVICE_USER_ROLE_ARN" != "" ]] && [[ "$AWS_SERVICE_USER_NAME" != "" ]]; then
-        mkdir -p ~/.aws
-        cat > ~/.aws/config <<EOF
+    if [[ "$AWS_ACCESS_KEY" != "" ]] && [[ "$AWS_SECRET_KEY" != "" ]]; then
+        if [[ "$AWS_SERVICE_USER_ROLE_ARN" != "" ]] && [[ "$AWS_SERVICE_USER_NAME" != "" ]]; then
+            mkdir -p ~/.aws
+            cat > ~/.aws/config <<EOF
 [default]
 region = $REGION
 role_arn = $AWS_SERVICE_USER_ROLE_ARN
 source_profile = $AWS_SERVICE_USER_NAME
 output = json
 EOF
-        cat > ~/.aws/credentials <<EOF
+            cat > ~/.aws/credentials <<EOF
 [$AWS_SERVICE_USER_NAME]
 aws_access_key_id = $AWS_ACCESS_KEY
 aws_secret_access_key = $AWS_SECRET_KEY
 EOF
-    elif [[ "$AWS_SERVICE_USER_ROLE_ARN" = "" ]] && [[ "$AWS_SERVICE_USER_NAME" = "" ]]; then
-        mkdir -p ~/.aws
-        cat > ~/.aws/config <<EOF
+        elif [[ "$AWS_SERVICE_USER_ROLE_ARN" = "" ]] && [[ "$AWS_SERVICE_USER_NAME" = "" ]]; then
+            mkdir -p ~/.aws
+            cat > ~/.aws/config <<EOF
 [default]
 region = $REGION
 output = json
 EOF
-        cat > ~/.aws/credentials <<EOF
+            cat > ~/.aws/credentials <<EOF
 [default]
 aws_access_key_id = $AWS_ACCESS_KEY
 aws_secret_access_key = $AWS_SECRET_KEY
 EOF
+        else
+            echo "Invalid input either specify both aws-service-user-role-arn and aws-service-user or none."
+            exit 1
+        fi
     else
-        echo "Invalid input either specify both aws-service-user-role-arn and aws-service-user or none."
-        exit 1
+        echo "=== AWS_ACCESS_KEY and AWS_SECRET_KEY not provided, assuming credentials are pre-configured in environment ==="
     fi
 
     if [[ "$INSTALL_EKSCTL" == true ]]; then
@@ -287,9 +300,12 @@ function deliver_antrea_to_eks() {
     DOCKER_CONTROLLER_IMG_NAME="antrea/antrea-controller-ubuntu"
     docker save -o ${antrea_images_tar} ${DOCKER_AGENT_IMG_NAME}:${DOCKER_IMG_VERSION} ${DOCKER_CONTROLLER_IMG_NAME}:${DOCKER_IMG_VERSION}
 
-    kubectl get nodes -o wide --no-headers=true | awk '{print $7}' | while read IP; do
-        scp -o StrictHostKeyChecking=no -i ${SSH_PRIVATE_KEY_PATH} ${antrea_images_tar} ec2-user@${IP}:~
-        ssh -o StrictHostKeyChecking=no -i ${SSH_PRIVATE_KEY_PATH} -n ec2-user@${IP} "sudo ctr -n=k8s.io images import ~/${antrea_images_tar} ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_AGENT_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_AGENT_IMG_NAME}:latest --force ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_CONTROLLER_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_CONTROLLER_IMG_NAME}:latest --force"
+    node_instance_ids=$(kubectl get nodes -o jsonpath='{.items[*].spec.providerID}' | tr ' ' '\n' | awk -F'/' '{print $NF}')
+    for INSTANCE_ID in ${node_instance_ids}; do
+        scp -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p" \
+            -o StrictHostKeyChecking=no -i ${SSH_PRIVATE_KEY_PATH} ${antrea_images_tar} ec2-user@${INSTANCE_ID}:~
+        ssh -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p" \
+            -o StrictHostKeyChecking=no -i ${SSH_PRIVATE_KEY_PATH} -n ec2-user@${INSTANCE_ID} "sudo ctr -n=k8s.io images import ~/${antrea_images_tar} ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_AGENT_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_AGENT_IMG_NAME}:latest --force ; sudo ctr -n=k8s.io images tag docker.io/${DOCKER_CONTROLLER_IMG_NAME}:${DOCKER_IMG_VERSION} docker.io/${DOCKER_CONTROLLER_IMG_NAME}:latest --force"
     done
     rm ${antrea_images_tar}
 
