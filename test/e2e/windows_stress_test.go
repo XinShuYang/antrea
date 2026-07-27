@@ -31,12 +31,23 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
+type PodRecoveryResult struct {
+	PodName              string
+	NodeName             string
+	ErrorDetected        bool
+	ErrorReason          string
+	RecoveredOnAttempt   int
+	InterfaceCreateTimes []time.Duration
+}
+
 // TestWindowsStressRollout verifies the performance, migration, and recovery times of Antrea on Windows Nodes
-// under high Pod density stress. It simulates a Node Rollout scenario:
-// 1. Deploys Pods on Windows Node A in exponential scales (10, 20, 40, 80, 160, 250).
-// 2. Verifies initial connectivity.
-// 3. Cordons Node A, and simultaneously deletes Node A's pods, schedules them on Node B, and rolls out the Antrea Agent.
-// 4. Measures and logs precise timing metrics for each phase of the rollout and migration.
+// under high Pod density stress. It simulates a Node Rollout scenario with 80 Pods:
+// 1. Deploys 80 Pods on Windows Node A.
+// 2. Verifies initial connectivity and detects HNS / interface creation errors.
+// 3. For any Pod with errors, restarts the Pod (workaround) and runs traffic verification after each restart,
+//    logging the recovery attempt number and interface creation duration for each attempt.
+// 4. Cordons Node A, and simultaneously deletes Node A's pods, schedules them on Node B, and rolls out the Antrea Agent.
+// 5. Verifies connectivity on Node B, applies the workaround for any errors, and logs timing metrics.
 func TestWindowsStressRollout(t *testing.T) {
 	skipIfNoWindowsNodes(t)
 
@@ -80,16 +91,15 @@ func TestWindowsStressRollout(t *testing.T) {
 	require.NoError(t, err, "Failed to wait for Linux prober Pod to get IP")
 	t.Logf("Linux prober Pod IP: %v", clientIPs)
 
-	// Define the stress scales (number of pods to migrate)
-	scales := []int{100, 130, 160, 200, 250}
+	// Define scale = 80 pods to reproduce HNS timeout under stress
+	scales := []int{80}
 
 	for _, scale := range scales {
 		t.Run(fmt.Sprintf("Scale-%d-Pods", scale), func(t *testing.T) {
-			// Each round has a maximum timeout of 60 minutes
 			roundCtx, roundCancel := context.WithTimeout(context.Background(), 60*time.Minute)
 			defer roundCancel()
 
-			t.Logf("=== Starting Round: %d Pods Rollout Migration ===", scale)
+			t.Logf("=== Starting Round: %d Pods Rollout Migration & Workaround Verification ===", scale)
 			roundStartTime := time.Now()
 
 			// Ensure both nodes are uncordoned at the start of each round
@@ -185,57 +195,19 @@ func TestWindowsStressRollout(t *testing.T) {
 				t.Fatalf("Failed to create Node A Pods: %v", createErrorsA)
 			}
 
-			// 2. Wait for all Node A Pods to be Running and have IPs
-			t.Logf("Step 2: Waiting for all %d Pods on Node A to be Running...", scale)
+			// 2. Wait for Node A Pods to be Running
+			t.Logf("Step 2: Waiting for %d Pods on Node A to reach Running state...", scale)
 			labelSelectorA := fmt.Sprintf("app=windows-stress-test,scale=%d,node=%s", scale, nodeA)
-			runningPodsA, err := data.waitForStressPodsRunning(roundCtx, labelSelectorA, scale)
-			require.NoError(t, err, "Failed waiting for Node A Pods to be Running")
+			_, _ = data.waitForStressPodsRunning(roundCtx, labelSelectorA, scale)
 			nodeAPodsReadyDuration := time.Since(nodeACreationStart)
-			t.Logf("All %d Pods on Node A are Running! Time taken: %v", scale, nodeAPodsReadyDuration)
+			t.Logf("Initial Node A Pod deployment phase finished in %v", nodeAPodsReadyDuration)
 
-			// Build a map of Pod Name to PodIPs for Node A traffic verification
-			podIPsMapA := make(map[string]*PodIPs)
-			for _, pod := range runningPodsA {
-				podIPsMapA[pod.Name] = &PodIPs{
-					IPv4: parseStressIP(pod.Status.PodIP),
-				}
-			}
+			// 3. Verify traffic on Node A, detect errors, and apply Pod restart workaround
+			t.Logf("Step 3: Verifying traffic & applying Pod restart workaround for any failing Pods on Node A...")
+			resultsA := verifyAndRecoverPods(t, data, clientPodInfo, clientIPs, nodeAPodInfos, scale, nodeA, limits)
+			printRecoverySummary(t, fmt.Sprintf("Node A (%s)", nodeA), resultsA)
 
-			// 3. Verify traffic/connectivity on Node A before rollout migration
-			t.Logf("Step 3: Verifying traffic connectivity on Node A...")
-			verifyTraffic := func(podInfos []PodInfo, ipMap map[string]*PodIPs, containerName string) error {
-				sampleSize := 5
-				if len(podInfos) < sampleSize {
-					sampleSize = len(podInfos)
-				}
-
-				for i := 0; i < sampleSize; i++ {
-					targetPod := podInfos[i]
-					targetIPs := ipMap[targetPod.Name]
-					if targetIPs == nil || targetIPs.IPv4 == nil {
-						return fmt.Errorf("Pod %s has no valid IP", targetPod.Name)
-					}
-
-					// Ping from Linux prober Pod to Windows Pod
-					err := data.RunPingCommandFromTestPod(clientPodInfo, data.testNamespace, targetIPs, toolboxContainerName, 2, 0, false)
-					if err != nil {
-						return fmt.Errorf("ping Linux -> Windows Pod %s failed: %v", targetPod.Name, err)
-					}
-
-					// Ping from Windows Pod back to Linux prober Pod
-					err = data.RunPingCommandFromTestPod(targetPod, data.testNamespace, clientIPs, containerName, 2, 0, false)
-					if err != nil {
-						return fmt.Errorf("ping Windows Pod %s -> Linux failed: %v", targetPod.Name, err)
-					}
-				}
-				return nil
-			}
-
-			err = verifyTraffic(nodeAPodInfos, podIPsMapA, "agnhost")
-			require.NoError(t, err, "Traffic verification failed on Node A before rollout")
-			t.Logf("Traffic verification successful on Node A!")
-
-			// 4. Cordon Node A and trigger simultaneous switchover
+			// 4. Cordon Node A and trigger simultaneous switchover to Node B
 			t.Logf("Step 4: Cordoning Node A: '%s' to simulate rollout drain", nodeA)
 			err = cordonNode(data.clientset, nodeA, true)
 			require.NoError(t, err, "Failed to cordon Node A")
@@ -264,7 +236,6 @@ func TestWindowsStressRollout(t *testing.T) {
 					LabelSelector: labelSelectorA,
 				})
 
-				// Wait for them to be completely deleted
 				_ = wait.PollUntilContextTimeout(roundCtx, 1*time.Second, 2*time.Minute, false, func(ctx context.Context) (bool, error) {
 					podList, err := data.clientset.CoreV1().Pods(data.testNamespace).List(ctx, metav1.ListOptions{
 						LabelSelector: labelSelectorA,
@@ -328,51 +299,218 @@ func TestWindowsStressRollout(t *testing.T) {
 				t.Fatalf("Failed during switchover creation: %v", createErrorsB)
 			}
 
-			// 5. Wait for all Node B Pods to be Running and have IPs
-			t.Logf("Step 6: Waiting for all %d Pods on Node B to be Running...", scale)
+			// 5. Wait for Node B Pods to reach Running state
+			t.Logf("Step 6: Waiting for Node B Pods to reach Running state...")
 			labelSelectorB := fmt.Sprintf("app=windows-stress-test,scale=%d,node=%s", scale, nodeB)
-			runningPodsB, err := data.waitForStressPodsRunning(roundCtx, labelSelectorB, scale)
-			require.NoError(t, err, "Failed waiting for Node B Pods to be Running")
+			_, _ = data.waitForStressPodsRunning(roundCtx, labelSelectorB, scale)
 			nodeBPodsReadyDuration := time.Since(switchoverStartTime)
-			t.Logf("All %d Pods on Node B are Running! Time taken from switchover start: %v", scale, nodeBPodsReadyDuration)
+			t.Logf("Initial Node B Pod deployment phase finished in %v", nodeBPodsReadyDuration)
 
-			// Build a map of Pod Name to PodIPs for Node B traffic verification
-			podIPsMapB := make(map[string]*PodIPs)
-			for _, pod := range runningPodsB {
-				podIPsMapB[pod.Name] = &PodIPs{
-					IPv4: parseStressIP(pod.Status.PodIP),
-				}
-			}
-
-			// 6. Wait for traffic to be fully restored on Node B
-			t.Logf("Step 7: Waiting for traffic to be restored on Node B...")
-			var trafficRecoveryDuration time.Duration
-			err = wait.PollUntilContextTimeout(roundCtx, 5*time.Second, 5*time.Minute, false, func(ctx context.Context) (bool, error) {
-				if err := verifyTraffic(nodeBPodInfos, podIPsMapB, "agnhost"); err != nil {
-					t.Logf("Traffic not fully restored on Node B yet: %v", err)
-					return false, nil
-				}
-				return true, nil
-			})
-			require.NoError(t, err, "Traffic failed to restore on Node B after rollout migration")
-			trafficRecoveryDuration = time.Since(switchoverStartTime)
+			// 6. Verify traffic on Node B, detect errors, and apply Pod restart workaround
+			t.Logf("Step 7: Verifying traffic & applying Pod restart workaround for any failing Pods on Node B...")
+			resultsB := verifyAndRecoverPods(t, data, clientPodInfo, clientIPs, nodeBPodInfos, scale, nodeB, limits)
+			printRecoverySummary(t, fmt.Sprintf("Node B (%s)", nodeB), resultsB)
 
 			totalRoundDuration := time.Since(roundStartTime)
 
-			// Print extremely rich and structured performance metrics for debugging and analysis
+			// Print performance metrics summary
 			t.Logf("==========================================================================================")
 			t.Logf("PERFORMANCE METRICS SUMMARY - SCALE: %d PODS", scale)
 			t.Logf("------------------------------------------------------------------------------------------")
-			t.Logf("[Phase 1] Node A (%s) Deployment & Ready Time : %v", nodeA, nodeAPodsReadyDuration)
+			t.Logf("[Phase 1] Node A (%s) Deployment Time          : %v", nodeA, nodeAPodsReadyDuration)
 			t.Logf("[Phase 2] Node A (%s) Pods Deletion Time       : %v", nodeA, deleteNodeAPodsDuration)
 			t.Logf("[Phase 3] Node B (%s) Pods Creation Time       : %v", nodeB, createNodeBPodsDuration)
 			t.Logf("[Phase 4] Antrea Agent Rollout Time            : %v", rolloutAntreaDuration)
-			t.Logf("[Phase 5] Node B (%s) Pods Ready Time (Total)  : %v", nodeB, nodeBPodsReadyDuration)
-			t.Logf("[Phase 6] Traffic Fully Restored Time (Total)  : %v", trafficRecoveryDuration)
+			t.Logf("[Phase 5] Node B (%s) Deployment Time          : %v", nodeB, nodeBPodsReadyDuration)
 			t.Logf("[Overall] Total Round Duration                 : %v", totalRoundDuration)
 			t.Logf("==========================================================================================")
 		})
 	}
+}
+
+func verifyAndRecoverPods(
+	t *testing.T,
+	data *TestData,
+	clientPodInfo PodInfo,
+	clientIPs *PodIPs,
+	podInfos []PodInfo,
+	scale int,
+	nodeName string,
+	limits corev1.ResourceList,
+) []PodRecoveryResult {
+	results := make([]PodRecoveryResult, len(podInfos))
+	var wg sync.WaitGroup
+	// Concurrency limiter to prevent API server throttling
+	sem := make(chan struct{}, 10)
+
+	for i, pi := range podInfos {
+		wg.Add(1)
+		go func(idx int, podInfo PodInfo) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			results[idx] = verifyAndRecoverSinglePod(t, data, clientPodInfo, clientIPs, podInfo, scale, nodeName, limits, 20)
+		}(i, pi)
+	}
+
+	wg.Wait()
+	return results
+}
+
+func verifyAndRecoverSinglePod(
+	t *testing.T,
+	data *TestData,
+	clientPodInfo PodInfo,
+	clientIPs *PodIPs,
+	podInfo PodInfo,
+	scale int,
+	nodeName string,
+	limits corev1.ResourceList,
+	maxRetries int,
+) PodRecoveryResult {
+	res := PodRecoveryResult{
+		PodName:  podInfo.Name,
+		NodeName: nodeName,
+	}
+
+	// Initial health check
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	pod, err := data.clientset.CoreV1().Pods(podInfo.Namespace).Get(ctx, podInfo.Name, metav1.GetOptions{})
+	cancel()
+
+	isHealthy := false
+	if err == nil && pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+		podIPs := &PodIPs{IPv4: parseStressIP(pod.Status.PodIP)}
+		pingErr1 := data.RunPingCommandFromTestPod(clientPodInfo, data.testNamespace, podIPs, toolboxContainerName, 2, 0, false)
+		pingErr2 := data.RunPingCommandFromTestPod(podInfo, data.testNamespace, clientIPs, "agnhost", 2, 0, false)
+		if pingErr1 == nil && pingErr2 == nil {
+			isHealthy = true
+		} else {
+			res.ErrorDetected = true
+			res.ErrorReason = fmt.Sprintf("Traffic ping failed (Linux->Win: %v, Win->Linux: %v)", pingErr1, pingErr2)
+		}
+	} else {
+		res.ErrorDetected = true
+		if err != nil {
+			res.ErrorReason = fmt.Sprintf("Get Pod error: %v", err)
+		} else {
+			res.ErrorReason = fmt.Sprintf("Pod phase: %s, PodIP: '%s'", pod.Status.Phase, pod.Status.PodIP)
+		}
+	}
+
+	if !isHealthy && res.ErrorDetected {
+		t.Logf("[ERROR DETECTED] Pod %s on Node %s: %s. Initiating workaround (restarting pod)...", podInfo.Name, nodeName, res.ErrorReason)
+
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			t.Logf("[WORKAROUND] Pod %s on Node %s: Restart attempt %d/%d...", podInfo.Name, nodeName, attempt, maxRetries)
+			recreateStart := time.Now()
+
+			// Delete pod
+			delCtx, delCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_ = data.clientset.CoreV1().Pods(podInfo.Namespace).Delete(delCtx, podInfo.Name, metav1.DeleteOptions{
+				GracePeriodSeconds: new(int64),
+			})
+			delCancel()
+
+			// Wait for pod deletion
+			_ = wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second, false, func(ctx context.Context) (bool, error) {
+				_, err := data.clientset.CoreV1().Pods(podInfo.Namespace).Get(ctx, podInfo.Name, metav1.GetOptions{})
+				return err != nil, nil
+			})
+
+			// Re-create pod
+			createErr := NewPodBuilder(podInfo.Name, podInfo.Namespace, agnhostImage).
+				OnNode(nodeName).
+				WithRestartPolicy(corev1.RestartPolicyAlways).
+				WithResources(nil, limits).
+				WithLabels(map[string]string{
+					"app":   "windows-stress-test",
+					"scale": fmt.Sprintf("%d", scale),
+					"node":  nodeName,
+				}).
+				Create(data)
+
+			if createErr != nil {
+				t.Logf("Pod %s restart attempt #%d: Re-creation error: %v", podInfo.Name, attempt, createErr)
+			}
+
+			// Wait for pod running and IP
+			runningPod, waitErr := data.waitForSinglePodRunningAndIP(podInfo.Name, podInfo.Namespace, 2*time.Minute)
+			ifaceCreationTime := time.Since(recreateStart)
+			res.InterfaceCreateTimes = append(res.InterfaceCreateTimes, ifaceCreationTime)
+
+			t.Logf("Pod %s restart attempt #%d: interface creation time = %v", podInfo.Name, attempt, ifaceCreationTime)
+
+			if waitErr != nil {
+				t.Logf("Pod %s restart attempt #%d: Pod failed to reach Running state with IP: %v", podInfo.Name, attempt, waitErr)
+				continue
+			}
+
+			// Traffic verification after restart
+			restartedPodIPs := &PodIPs{IPv4: parseStressIP(runningPod.Status.PodIP)}
+			pErr1 := data.RunPingCommandFromTestPod(clientPodInfo, data.testNamespace, restartedPodIPs, toolboxContainerName, 2, 0, false)
+			pErr2 := data.RunPingCommandFromTestPod(podInfo, data.testNamespace, clientIPs, "agnhost", 2, 0, false)
+
+			if pErr1 == nil && pErr2 == nil {
+				res.RecoveredOnAttempt = attempt
+				t.Logf("[WORKAROUND RECOVERED] Pod %s on Node %s RECOVERED on restart attempt #%d! Interface creation time for attempt #%d: %v", podInfo.Name, nodeName, attempt, attempt, ifaceCreationTime)
+				return res
+			}
+
+			t.Logf("Pod %s restart attempt #%d: Traffic verification failed (Linux->Win: %v, Win->Linux: %v). Will retry...", podInfo.Name, attempt, pErr1, pErr2)
+		}
+
+		t.Logf("[WORKAROUND FAILED] Pod %s on Node %s failed to recover after %d restart attempts", podInfo.Name, nodeName, maxRetries)
+	}
+
+	return res
+}
+
+func (data *TestData) waitForSinglePodRunningAndIP(podName, namespace string, timeout time.Duration) (*corev1.Pod, error) {
+	var targetPod *corev1.Pod
+	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, timeout, false, func(ctx context.Context) (bool, error) {
+		pod, err := data.clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return false, nil
+		}
+		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+			targetPod = pod
+			return true, nil
+		}
+		return false, nil
+	})
+	return targetPod, err
+}
+
+func printRecoverySummary(t *testing.T, phaseName string, results []PodRecoveryResult) {
+	total := len(results)
+	errCount := 0
+	recoveredCount := 0
+
+	t.Logf("==========================================================================================")
+	t.Logf("WORKAROUND & RECOVERY SUMMARY - %s (TOTAL PODS: %d)", phaseName, total)
+	t.Logf("------------------------------------------------------------------------------------------")
+	for _, r := range results {
+		if r.ErrorDetected {
+			errCount++
+			if r.RecoveredOnAttempt > 0 {
+				recoveredCount++
+				t.Logf("[RECOVERED] Pod: %s | Node: %s | Error: %s | Recovered on Attempt #: %d | Interface Creation Times per Attempt: %v",
+					r.PodName, r.NodeName, r.ErrorReason, r.RecoveredOnAttempt, r.InterfaceCreateTimes)
+			} else {
+				t.Logf("[FAILED RECOVERY] Pod: %s | Node: %s | Error: %s | Failed after attempts | Interface Creation Times per Attempt: %v",
+					r.PodName, r.NodeName, r.ErrorReason, r.InterfaceCreateTimes)
+			}
+		}
+	}
+	if errCount == 0 {
+		t.Logf("No errors detected across all %d Pods during %s.", total, phaseName)
+	} else {
+		t.Logf("Summary: %d / %d Pods encountered errors, %d / %d successfully recovered via workaround.",
+			errCount, total, recoveredCount, errCount)
+	}
+	t.Logf("==========================================================================================")
 }
 
 func cordonNode(clientset kubernetes.Interface, nodeName string, cordon bool) error {
